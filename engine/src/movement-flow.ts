@@ -921,6 +921,12 @@ export class FlowMovement implements MovementModel {
     this.retarget(ctx, dot, place);
   }
 
+  /** The game ended early: anyone still on their way turns round and never arrives. */
+  release(ctx: SimContext): void {
+    const { dots } = ctx;
+    for (let i = 0; i < dots.count; i++) if (dots.stateOf(i) === 'arriving') dots.setState(i, 'gone');
+  }
+
   describe(dot: number) {
     return {
       homeGate: this.homeGate[dot] ?? -1,

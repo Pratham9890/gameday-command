@@ -73,6 +73,8 @@ export interface MovementModel {
   sendTo?(ctx: SimContext, dot: number, place: number): void;
   /** Every gate's door and flow, for the app. */
   gateStats?(ctx: SimContext): GateStat[];
+  /** The game was ended early: fans not yet arrived stay away. */
+  release?(ctx: SimContext): void;
   /** Movement state the inspector shows. */
   describe?(dot: number): Pick<DotInfo, 'homeGate' | 'seatCell' | 'admitted' | 'arriveAt'>;
 }
@@ -784,6 +786,9 @@ export class Simulation {
           break;
         case 'release':
           act.raiseSituation('exit_route');
+          // exit_route only reaches fans on the map; the ones still on their
+          // way would otherwise arrive and walk into a stadium that is emptying.
+          this.opts.movement.release?.(this.ctx);
           break;
       }
     }

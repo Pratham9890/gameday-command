@@ -204,6 +204,17 @@ describe('live police orders', () => {
     expect(decisions.every((record) => record.t === sim.ctx.t)).toBe(true);
   });
 
+  it('keeps fans still on their way from arriving once the crowd is released', async () => {
+    const sim = makeSim('release-arrivals');
+    await steps(sim, 120);
+    const { dots } = sim.ctx;
+    const onTheWay = Array.from({ length: dots.count }, (_, i) => i).filter((i) => dots.stateOf(i) === 'arriving');
+    expect(onTheWay.length).toBeGreaterThan(0);
+    sim.queueOrder({ type: 'release' });
+    await steps(sim, 600);
+    expect(onTheWay.every((i) => dots.stateOf(i) === 'gone')).toBe(true);
+  });
+
   it('replays orders after a checkpoint with identical officers, closures and crowd positions', async () => {
     const sim = makeSim('rewind');
     await steps(sim, 120);
