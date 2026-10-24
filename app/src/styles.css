@@ -191,3 +191,127 @@ input[type='number'] { width: 54px; }
 .compare .run h2 { border-bottom: 1px solid var(--line); }
 
 .tag.muted-tag { background: #21262d; color: var(--dim); }
+
+/* ─── v2: layered maps, weather, traffic, clickable heat ─── */
+
+header.top { align-items: center; background: linear-gradient(180deg, #121821, #0d1117); }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .logo {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 7px;
+  background: linear-gradient(135deg, #d01f1f, #7a0000); font-weight: 800; font-size: 12px; letter-spacing: 0.02em;
+  box-shadow: 0 0 0 1px #ffffff1a inset, 0 4px 14px #bb000044;
+}
+header.top .controls label.toggle { gap: 6px; cursor: pointer; }
+header.top .controls label.toggle input { accent-color: var(--scarlet); }
+
+.maps-stack { position: relative; width: 100%; touch-action: none; user-select: none; cursor: grab; }
+.maps-stack:active { cursor: grabbing; }
+.maps-stack .layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.maps-stack .layer.live { pointer-events: none; }
+.maps-stack .weather-fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+.hud { position: absolute; inset: 0; display: grid; pointer-events: none; }
+.hud-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px; min-width: 0; }
+.chip {
+  display: flex; align-items: center; gap: 8px; max-width: 100%;
+  background: rgba(10, 14, 20, 0.72); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  border: 1px solid #ffffff14; border-radius: 8px; padding: 5px 9px; font-size: 11px; color: var(--ink);
+  box-shadow: 0 6px 18px #0007;
+}
+.weather-chip .wx-icon { font-size: 18px; line-height: 1; }
+.weather-chip > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.weather-chip em { font-style: normal; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.weather-chip .strike { color: #ffd84d; font-weight: 700; }
+.wx-thunderstorm { border-color: #ffd84d55; }
+.wx-heavy_rain, .wx-rain { border-color: #6ea8ff44; }
+.wx-snow { border-color: #ffffff44; }
+.wx-heat { border-color: #ff8a2b55; }
+.traffic-chip { flex-wrap: wrap; gap: 4px 10px; }
+.traffic-chip span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.traffic-chip .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.traffic-chip .dot.moving { background: #b4f07a; }
+.traffic-chip .dot.stopped { background: #ff3030; box-shadow: 0 0 6px #ff3030; }
+.traffic-chip .dot.parked { background: #7c848e; }
+.traffic-chip .hot { color: #ff8a8a; font-weight: 600; }
+.traffic-chip .ems { color: #ffd1d1; }
+
+.zoom-controls {
+  position: absolute; left: 10px; bottom: 10px; display: flex; align-items: center; gap: 4px;
+  background: rgba(10, 14, 20, 0.78); border: 1px solid #ffffff14; border-radius: 9px; padding: 4px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); cursor: default;
+}
+.zoom-controls button { padding: 3px 9px; font-size: 12px; border-radius: 6px; background: #161b22; }
+.zoom-controls .zoom-level { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; min-width: 38px; text-align: right; }
+.map-hint {
+  position: absolute; right: 10px; bottom: -22px; color: var(--dim); font-size: 11px; pointer-events: none;
+}
+.compare .canvas-wrap { overflow: visible; margin-bottom: 22px; }
+/* clip, not hidden: a hidden overflow can still be scrolled by focusing a button inside it. */
+.compare .canvas-wrap .maps-stack { border-radius: 8px; overflow: clip; }
+
+.legend-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px; padding: 4px 0 2px; }
+.legend-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.legend-title { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.legend-group.fans { gap: 12px; font-size: 12px; color: var(--dim); }
+.legend-group.fans span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-group.fans i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.legend-group.fans i.officer { background: #2f81f7; box-shadow: 0 0 0 2px #e6f0ff inset; }
+
+.band-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 6px; border-radius: 999px;
+  transition: opacity 0.15s, border-color 0.15s, transform 0.15s;
+}
+.band-chip i { width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 10px currentColor; }
+.band-chip span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+.band-chip strong { font-size: 11.5px; }
+.band-chip em { font-style: normal; color: var(--dim); font-size: 10.5px; }
+.band-chip b { font-size: 11px; color: var(--dim); font-weight: 500; font-variant-numeric: tabular-nums; }
+.band-chip.on { border-color: #e6edf3; background: #1f2630; transform: translateY(-1px); }
+.band-chip.off { opacity: 0.45; }
+
+.muted-inline { color: var(--dim); font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.panel h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.panel h2 button.small { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.small-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; text-transform: none; letter-spacing: 0; color: var(--dim); font-weight: 400; cursor: pointer; }
+.small-toggle input { accent-color: var(--scarlet); }
+
+.vehicle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.vehicle-chip {
+  display: grid; grid-template-columns: 1fr; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 8px;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.vehicle-chip.on { border-color: #e6edf3; background: #1f2630; }
+.vehicle-chip.off { opacity: 0.45; }
+.vehicle-icon { width: 100%; height: 26px; display: block; margin-bottom: 4px; }
+.vehicle-name { font-weight: 600; font-size: 12px; }
+.vehicle-size { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.vehicle-count { color: var(--dim); font-size: 10.5px; }
+
+.areas { width: 100%; border-collapse: collapse; font-size: 12px; }
+.areas th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.areas th .label, .spot-col h3 .label, .plan h3 .label { background: var(--scarlet); border-radius: 4px; padding: 0 6px; font-size: 10.5px; color: #fff; }
+.areas td { padding: 6px 8px; border-bottom: 1px solid #1d242c; vertical-align: top; font-variant-numeric: tabular-nums; }
+.areas td em { display: block; color: var(--dim); font-style: normal; font-size: 11px; }
+.areas tbody tr { cursor: pointer; transition: background 0.12s; }
+.areas tbody tr:hover { background: #1b2230; }
+.areas tbody tr.on { background: #1f2630; box-shadow: inset 3px 0 0 #e6edf3; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+
+.spots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.spot-col h3 { font-size: 12px; margin: 0 0 6px; }
+.spot { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; text-align: left; margin-bottom: 6px; }
+.spot .where { font-weight: 600; font-size: 12px; }
+.spot .nums { grid-column: 1; color: var(--dim); font-size: 11px; }
+.spot .go { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--dim); font-size: 11px; }
+.spot:hover .go { color: var(--ink); }
+
+.scorecard dt.section, .scorecard dd.section { border-top: 1px solid var(--line); padding-top: 5px; margin-top: 3px; }
+.vehicle-detail { display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: start; }
+.vehicle-detail .vehicle-icon { height: 34px; }
+
+@media (max-width: 1200px) {
+  .spots { grid-template-columns: 1fr; }
+  .hud-panel { padding: 4px; }
+  .chip { font-size: 10px; padding: 3px 6px; }
+  .weather-chip em { display: none; }
+}

@@ -26,6 +26,17 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - `server/src/fm.ts` — the commander briefing through Apple's on-device model via `fm serve` (a Chat Completions server; model `system`, always `stream: false`). The prompt measures **399 tokens** by `fm count-tokens` against a 4,000 budget. Keep it that small: an overflow comes back as a safety-looking error, not a length error.
 - `server/src/briefing.ts` — `briefingIsSupported()` is the guard on the briefing: any number the model writes must already be on a scorecard (or in a name the request supplied). One invented figure throws the whole briefing away for the template.
 
+## Vehicles and weather (v2)
+
+- `engine/src/traffic.ts` — `TrafficModel`. The position it steers by is the **front bumper**; the frame reports the centre. A vehicle claims the cells under its footprint and may not enter one another vehicle holds; after `SQUEEZE_AFTER_S` boxed in it may squeeze past vehicles (never people), because single-cell lanes at a junction can otherwise lock in a cycle forever. Fields are built over road + lot + driveway cells; `walk` cells within 3 cells of a lot count as driveway, since OSM rarely maps the stub into a lot (43 of 140 lots were islands without this).
+- Entries are only border roads that lead to a lot **with stalls**. Spawning on service-road stubs that go nowhere left ~1,000 cars queued at the map edge all game.
+- Closed streets get a second BFS pass, so a vehicle on a street the moment it closes can still drive off it, while no route from open road runs through it.
+- The ambulance targets the stretch of the incident zone nearest the stadium. A closed street runs off the map edge, and aiming at the whole street made it "arrive" the second it spawned.
+- Traffic has its **own RNG** (`TrafficConfig.seed`) and only reads dots. `traffic.test.ts` asserts the crowd and its scorecard are identical with traffic on; keep it that way.
+- `world/src/weather.ts` — clear weather multiplies speeds by exactly 1 and maps to decision weather `'clear'`, which is why v1 runs reproduce bit for bit.
+- `app/src/ComparisonMaps.tsx` — Pixi draws map, banded heat and zone (zoomable via a world container per masked panel); a 2D canvas on top draws fans (pixel bytes) and vehicles (`app/src/vehicleArt.ts`, LOD by on-screen length); `WeatherFx.tsx` animates on its own clock. Wheel zoom uses a native non-passive listener — React's onWheel is passive and the page scrolled under the map. The stack uses `overflow: clip`, because a hidden overflow scrolled itself when a zoom button took focus.
+- `window.gamedayMap.lookAt(xM, yM, zoom)` and `window.gameday.vehiclesIn(run, state)` exist for unattended checks.
+
 ## The OSM map
 
 `world/data/ohio-stadium.osm.json` is a committed 2.5 MB Overpass extract (6,291 elements) around Ohio Stadium, OSM way 119153498. Refetch with `npm run fetch-map`.
@@ -182,5 +193,5 @@ Last demo run, plain Chrome with no debugger attached, cache warmed: plan A clea
 
    Note the speed cap when testing: wall time for a full run has a floor of `5400 / speed` seconds. Six minutes at speed 20 is barely past that floor, which is part of why the original failure looked ambiguous.
 3. **`pick_gate` is assigned by walking distance rather than asked of Kev.** It should become a live decision; it is the one situation in the contract the engine still decides by itself.
-4. **The in-app browser pane will not display**, so the map canvas cannot be checked from inside Claude Code. Real Chrome is fine — drive it over the DevTools Protocol as described above. This is the environment, not the app.
+4. **The in-app browser pane now renders the PixiJS canvas** (seen on 2026-10-24 with the v2 maps), so the map can be checked from inside Claude Code at a desktop-sized viewport.
 5. **The perf assertions are load-sensitive.** They pass with roughly a 5x margin (47-50x measured against a bar of 10x) while Chrome and Kev are both busy, but a much heavier machine could close that. A `npm test` failure here is worth re-running before believing.

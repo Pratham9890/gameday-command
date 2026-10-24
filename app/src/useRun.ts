@@ -16,6 +16,8 @@ import type {
 export interface RunSnapshotView {
   frame: TickFrame;
   density?: DensityGrid;
+  /** Wall clock it arrived, for gliding from the frame before it. */
+  at?: number;
 }
 
 export interface RunState {
@@ -38,6 +40,8 @@ export interface RunState {
 
 export interface RunHandle extends RunState {
   latest: React.RefObject<RunSnapshotView | null>;
+  /** The frame before `latest`, so the map can move smoothly between the two. */
+  previous: React.RefObject<RunSnapshotView | null>;
   frames: React.RefObject<RunSnapshotView[]>;
   /** Last decision per dot, for the dot detail panel. */
   decisionsByDot: React.RefObject<Map<number, DecisionRecord>>;
@@ -65,6 +69,7 @@ const RECENT_DECISIONS = 12;
 export function useRun(init: RunInit | null): RunHandle {
   const workerRef = useRef<Worker | null>(null);
   const latest = useRef<RunSnapshotView | null>(null);
+  const previous = useRef<RunSnapshotView | null>(null);
   const frames = useRef<RunSnapshotView[]>([]);
   const decisionsByDot = useRef<Map<number, DecisionRecord>>(new Map());
   const recent = useRef<DecisionRecord[]>([]);
@@ -90,6 +95,7 @@ export function useRun(init: RunInit | null): RunHandle {
     const worker = new Worker(new URL('../../engine/src/worker.ts', import.meta.url), { type: 'module' });
     workerRef.current = worker;
     latest.current = null;
+    previous.current = null;
     frames.current = [];
     decisionsByDot.current = new Map();
     recent.current = [];
@@ -102,7 +108,9 @@ export function useRun(init: RunInit | null): RunHandle {
           setState((s) => ({ ...s, ready: true, error: null }));
           return;
         case 'frame': {
-          const view: RunSnapshotView = { frame: out.frame, density: out.density };
+          const view: RunSnapshotView = { frame: out.frame, density: out.density, at: performance.now() };
+          // A frame from before the current one is a rewind: do not glide backwards.
+          previous.current = latest.current && latest.current.frame.t < view.frame.t ? latest.current : null;
           latest.current = view;
           frames.current.push(view);
           setState((s) => ({
@@ -189,5 +197,5 @@ export function useRun(init: RunInit | null): RunHandle {
     setState((s) => ({ ...s, scorecard: null, frameCount: frames.current.length }));
   }, []);
 
-  return { ...state, latest, frames, decisionsByDot, recent, send, seekTo };
+  return { ...state, latest, previous, frames, decisionsByDot, recent, send, seekTo };
 }

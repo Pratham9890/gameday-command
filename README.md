@@ -10,7 +10,7 @@ Five npm workspaces plus one frozen contract at the root. Every lane talks to th
 
 ```
                      ┌──────────────────────────────────────────┐
-                     │  contracts.ts  (frozen, gameday.v1)      │
+                     │  contracts.ts  (frozen, gameday.v2)      │
                      │  types + decisionKey() + constants       │
                      └──────────────────────────────────────────┘
                               ▲         ▲         ▲
@@ -151,6 +151,19 @@ a fraction of both. Again: a tradeoff, not a recommendation.
 One thing is unresolved, and it is a browser, not the build. **Safari had not finished a run**, and the cause was almost certainly the worker's pacing loop: it slept once per simulated second, and Safari clamps timers to about a second in a tab whose app is not frontmost, which paced a 90 minute scenario at real time. That loop now makes up every step the wall clock owes before sleeping, so a clamped timer costs fewer, bigger batches rather than a slower run — and the same change took the Chrome bench from 222.5x to 254.4x. **Whether Safari now completes has not been confirmed:** the verifying run was cut short. **Demo in Chrome.**
 
 Everything else above was watched happening. `CLAUDE.md` carries the remaining open items, the largest being that a cold cache is mostly fallbacks for its first eighty seconds while the background warmer catches up.
+
+## Vehicles and weather (gameday.v2)
+
+Traffic and weather were added with the contract bumped to `gameday.v2`. Every addition is optional, so a run with no traffic and clear weather steps exactly as v1 did, and a test holds that down.
+
+- **4,500 vehicles at real size.** Compacts, sedans, SUVs, pickups, minivans, rideshares, motorcycles, RVs, charter buses, a police cruiser and an ambulance, each with its real footprint (`world/src/vehicles.ts`) and drawn to scale, so a 13.7 m coach is visibly almost three sedans long.
+- **They drive like the crowd walks.** Road flow fields, bumper-to-bumper queues on each vehicle's footprint, lane changes when blocked, and **they yield to people**: a car will not drive into a crowd, which is what stops Lane Avenue when the game lets out (`engine/src/traffic.ts`).
+- **Parking is real.** Stalls are laid out in every road-connected OSM lot (3,530 of them); buses and RVs take a run of stalls along a row. Lots fill, and drivers who find every reachable lot full turn back out.
+- **Fans and cars are linked one way.** Fans who choose to go back to their car free up a parked car to leave; at the final whistle the lots empty over the next hour. Traffic runs on its own RNG and never writes to the crowd, so **the pedestrian scorecard is identical with traffic on** (tested).
+- **An ambulance responds to every incident.** It drives from the best edge entry to the incident and the scorecard records how long it took: crowds and closures slow it, which is a tradeoff plans now show.
+- **Weather timelines** (`world/src/weather.ts`): clear, rain at kickoff, a thunderstorm, snow, river fog, heat. Weather slows walkers and drivers and sets the decision context's `weather`, and a lightning delay always shows lightning. Non-clear skies create new decision keys, so the first run in new weather leans on fallbacks until Kev has answered them.
+
+The map is now zoomable (scroll, drag, double-click, or Fit / Stadium / Incident) and glides between frames. The heatmap is drawn in five density bands; **click a colour** in the legend or on the map to isolate it on all three runs and list where those areas are, with a zoom-to button for each. Click any vehicle for its type, size, state, speed and time stopped.
 
 ## Rules this project holds to
 
