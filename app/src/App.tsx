@@ -42,8 +42,17 @@ function ScorecardView({ card, live }: { card: Scorecard | null; live: RunHandle
           {live.decisionCount.toLocaleString()}
           {live.kevCount > 0 && <span className="tag kev">{live.kevCount.toLocaleString()} Kev</span>}
         </dd>
-        <dt>fallbacks</dt>
-        <dd className={live.fallbackCount > 0 ? 'warn' : undefined}>{live.fallbackCount.toLocaleString()}</dd>
+        <dt>{card ? 'fallback decisions' : 'fallbacks so far'}</dt>
+        {/* The scorecard counts one fallback per decision the run had to guess;
+            the live tally counts every dot that acted on one, which is a much
+            bigger number. Showing the live tally after the run finished made
+            the panel disagree with the briefing, which quotes the scorecard. */}
+        <dd className={(card ? card.fallbackDecisions : live.fallbackCount) > 0 ? 'warn' : undefined}>
+          {(card ? card.fallbackDecisions : live.fallbackCount).toLocaleString()}
+          {card && live.fallbackCount > 0 && (
+            <span className="tag muted-tag">{live.fallbackCount.toLocaleString()} dots</span>
+          )}
+        </dd>
         {card ? (
           <>
             <dt>time to clear</dt>
