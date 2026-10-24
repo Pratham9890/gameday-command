@@ -24,6 +24,7 @@ import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
+import type { DotEdit, DotInfo } from './edits.ts';
 import { Rng } from './rng.ts';
 
 /** One sim second per step. Coarse enough for 10x real time, fine enough for 2 m cells. */
@@ -58,6 +59,10 @@ export interface MovementModel {
    */
   capture?(): unknown;
   restore?(state: unknown): void;
+  /** The commander sent this dot somewhere by hand. */
+  sendTo?(ctx: SimContext, dot: number, place: number): void;
+  /** Movement state the inspector shows. */
+  describe?(dot: number): Pick<DotInfo, 'homeGate' | 'seatCell' | 'admitted' | 'arriveAt'>;
 }
 
 /** Everything needed to put a run back exactly where it was, inside one worker. */
@@ -98,6 +103,14 @@ export class Simulation {
   private readonly alerted: Uint8Array;
   private raised: RaisedSituation[] = [];
   private finished = false;
+  /**
+   * Commander edits, kept for the life of the run rather than applied and
+   * forgotten: a rewind to before an edit then steps forward through it again,
+   * so the edit is replayed at the same sim second instead of lost.
+   */
+  private edits: DotEdit[] = [];
+  /** Bumps whenever any dot's fan type may have changed. */
+  typesVersion = 0;
 
   private readonly opts: SimulationOptions;
 
@@ -389,6 +402,7 @@ export class Simulation {
     const { config } = this.opts;
     this.ctx.t += SIM_DT;
 
+    this.applyEdits();
     this.hooks.onStep(this.ctx.t, this.worldView(), this.worldActions());
     await this.resolveDecisions();
     this.stepOfficers(SIM_DT);
@@ -436,5 +450,57 @@ export class Simulation {
     this.opts.movement.restore?.(point.movement);
     this.scorer.restore(point.scorer);
     this.finished = false;
+    this.typesVersion++;
+  }
+
+  /**
+   * Queue an edit. One already in the past lands on the next step: the app asks
+   * for a moment a little ahead of every plan so all three apply it at the same
+   * sim second, but a worker that got there first must not drop it.
+   */
+  queueEdit(edit: DotEdit): void {
+    const at = Math.max(Math.ceil(edit.at), this.ctx.t + SIM_DT);
+    const dots = edit.dots.filter((d) => Number.isInteger(d) && d >= 0 && d < this.ctx.dots.count);
+    if (dots.length === 0) return;
+    this.edits.push({ ...edit, at, dots });
+  }
+
+  /** Forget edits after a moment the run was rewound to, as the frames after it are. */
+  dropEditsAfter(t: SimSeconds): void {
+    this.edits = this.edits.filter((e) => e.at <= t);
+  }
+
+  private applyEdits(): void {
+    const { dots, population } = this.ctx;
+    for (const edit of this.edits) {
+      if (edit.at !== this.ctx.t) continue;
+      for (const dot of edit.dots) {
+        if (dots.state[dot] === GONE) continue;
+        if (edit.fanType !== undefined && edit.fanType >= 0 && edit.fanType < population.types.length) {
+          dots.typeIndex[dot] = edit.fanType;
+        }
+        if (edit.sendTo !== undefined && edit.sendTo >= 0 && edit.sendTo < this.ctx.map.places.length) {
+          this.opts.movement.sendTo?.(this.ctx, dot, edit.sendTo);
+        }
+      }
+      if (edit.fanType !== undefined) this.typesVersion++;
+    }
+  }
+
+  inspect(dot: number): DotInfo | null {
+    const { dots, t } = this.ctx;
+    if (!Number.isInteger(dot) || dot < 0 || dot >= dots.count) return null;
+    const moved = this.opts.movement.describe?.(dot) ?? { homeGate: -1, seatCell: -1, admitted: false, arriveAt: t };
+    return {
+      dot,
+      t,
+      x: dots.x[dot]!,
+      y: dots.y[dot]!,
+      state: dots.state[dot]!,
+      typeIndex: dots.typeIndex[dot]!,
+      targetPlace: dots.targetPlace[dot]!,
+      ...moved,
+      edits: this.edits.filter((e) => e.dots.includes(dot)).length,
+    };
   }
 }

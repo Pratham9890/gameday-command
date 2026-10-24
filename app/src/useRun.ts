@@ -12,6 +12,7 @@ import type {
   WorkerIn,
   WorkerOut,
 } from '../../contracts.ts';
+import type { DotInfo, EditIn, EditOut } from '../../engine/src/edits.ts';
 
 export interface RunSnapshotView {
   frame: TickFrame;
@@ -42,7 +43,11 @@ export interface RunHandle extends RunState {
   /** Last decision per dot, for the dot detail panel. */
   decisionsByDot: React.RefObject<Map<number, DecisionRecord>>;
   recent: React.RefObject<DecisionRecord[]>;
-  send: (message: WorkerIn) => void;
+  /** Every dot's fan type, as the worker last reported it. */
+  typeIndex: React.RefObject<Uint16Array | null>;
+  /** The worker's answer to the last `inspect`. */
+  inspected: DotInfo | null;
+  send: (message: WorkerIn | EditIn) => void;
   /** Rewind this plan's worker to a moment and drop the frames after it. */
   seekTo: (t: number) => void;
 }
@@ -69,6 +74,8 @@ export function useRun(init: RunInit | null): RunHandle {
   const decisionsByDot = useRef<Map<number, DecisionRecord>>(new Map());
   const recent = useRef<DecisionRecord[]>([]);
   const counts = useRef({ decisions: 0, fallbacks: 0, kev: 0 });
+  const typeIndex = useRef<Uint16Array | null>(null);
+  const [inspected, setInspected] = useState<DotInfo | null>(null);
 
   const [state, setState] = useState<RunState>({
     ready: false,
@@ -94,10 +101,18 @@ export function useRun(init: RunInit | null): RunHandle {
     decisionsByDot.current = new Map();
     recent.current = [];
     counts.current = { decisions: 0, fallbacks: 0, kev: 0 };
+    typeIndex.current = null;
+    setInspected(null);
 
-    worker.onmessage = (event: MessageEvent<WorkerOut>) => {
+    worker.onmessage = (event: MessageEvent<WorkerOut | EditOut>) => {
       const out = event.data;
       switch (out.type) {
+        case 'types':
+          typeIndex.current = out.typeIndex;
+          return;
+        case 'inspect':
+          setInspected(out.info);
+          return;
         case 'ready':
           setState((s) => ({ ...s, ready: true, error: null }));
           return;
@@ -175,7 +190,7 @@ export function useRun(init: RunInit | null): RunHandle {
     };
   }, [init]);
 
-  const send = useCallback((message: WorkerIn) => workerRef.current?.postMessage(message), []);
+  const send = useCallback((message: WorkerIn | EditIn) => workerRef.current?.postMessage(message), []);
 
   /**
    * Ask the worker to rewind. It restores its nearest checkpoint and steps
@@ -189,5 +204,5 @@ export function useRun(init: RunInit | null): RunHandle {
     setState((s) => ({ ...s, scorecard: null, frameCount: frames.current.length }));
   }, []);
 
-  return { ...state, latest, frames, decisionsByDot, recent, send, seekTo };
+  return { ...state, latest, frames, decisionsByDot, recent, typeIndex, inspected, send, seekTo };
 }

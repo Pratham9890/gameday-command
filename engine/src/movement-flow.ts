@@ -570,6 +570,38 @@ export class FlowMovement implements MovementModel {
     ctx.dots.setState(i, 'walking');
   }
 
+  /**
+   * The commander sent this group somewhere by hand. A fan not yet through a
+   * turnstile cannot be sent straight to a seat or the concourse, which are
+   * inside the bowl: they go to their gate first and on from there as usual.
+   */
+  sendTo(ctx: SimContext, dot: number, place: number): void {
+    const kind = ctx.map.places[place]?.kind;
+    const inside = kind === 'seating' || kind === 'concourse';
+    if (kind === 'gate') {
+      // A new gate means a new queue; they are not through it yet.
+      this.admitted[dot] = 0;
+      this.retarget(ctx, dot, place);
+      return;
+    }
+    if (inside && this.admitted[dot] !== 1) {
+      this.retarget(ctx, dot, this.homeGate[dot]!);
+      return;
+    }
+    // Leaving through a gate is a door, not a turnstile.
+    if (kind === 'parking' || kind === 'exit') this.admitted[dot] = 1;
+    this.retarget(ctx, dot, place);
+  }
+
+  describe(dot: number) {
+    return {
+      homeGate: this.homeGate[dot] ?? -1,
+      seatCell: this.seatCell[dot] ?? -1,
+      admitted: this.admitted[dot] === 1,
+      arriveAt: this.spawnT[dot] ?? 0,
+    };
+  }
+
   onChoice(ctx: SimContext, dot: number, situation: SituationId, option: string): void {
     const { dots } = ctx;
 

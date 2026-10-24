@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import type { CellKind, MapBundle } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES } from '../../contracts.ts';
+import { STATE_RGB } from './people.ts';
 import type { RunHandle } from './useRun.ts';
 
 /**
@@ -27,18 +28,6 @@ const RGB: Record<CellKind, [number, number, number]> = {
   shelter: [0x2c, 0x40, 0x38],
   parking: [0x26, 0x2b, 0x33],
 };
-
-/** Dot colour by DotState, in the contract's own order. The last state is 'gone'. */
-const STATE_RGB: [number, number, number][] = [
-  [0x7a, 0xa2, 0xf7], // arriving
-  [0xbb, 0x9a, 0xf7], // tailgating
-  [0xe0, 0xaf, 0x68], // queued
-  [0x9e, 0xce, 0x6a], // walking
-  [0x7d, 0xcf, 0xff], // seated
-  [0xf7, 0x76, 0x8e], // sheltering
-  [0xc0, 0xca, 0xf5], // leaving
-  [0x00, 0x00, 0x00], // gone, never drawn
-];
 
 /** The static map as pixel bytes — never one fillRect per cell. */
 function paintBase(map: MapBundle): HTMLCanvasElement {
@@ -104,6 +93,9 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
   const appRef = useRef<Application | null>(null);
   const panelsRef = useRef<Panel[]>([]);
   const shownRef = useRef<(RunHandle['latest']['current'])[]>([]);
+  // Bumped once the Application is up, so a remount (switching back from the
+  // close-up while paused) draws the current frame instead of waiting for one.
+  const [ready, setReady] = useState(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -153,6 +145,7 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
         // ticker would redraw an unchanged scene sixty times a second.
         app.ticker.stop();
         app.render();
+        setReady((n) => n + 1);
       });
 
     return () => {
@@ -242,7 +235,7 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
     });
 
     app.render();
-  }, [ticks, scrubIndex, runs, map, dangerDensity, PX, panelW, panelH]);
+  }, [ticks, scrubIndex, runs, map, dangerDensity, PX, panelW, panelH, ready]);
 
   // The incident zone never moves, so it is drawn only when it changes.
   useEffect(() => {
@@ -259,7 +252,7 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
       panel.zone.stroke({ color: 0xffd166, width: 1, alpha: 0.45 });
     }
     appRef.current?.render();
-  }, [incidentCells, map, PX, ticks]);
+  }, [incidentCells, map, PX, ticks, ready]);
 
   /** Click anywhere to pick the nearest dot in whichever panel was clicked. */
   const handleClick = (event: React.MouseEvent<HTMLCanvasElement>) => {

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig } from '../../contracts.ts';
 import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S } from '../../contracts.ts';
-import { makePopulation } from '../../brain/src/fan-types.ts';
+import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
 import { ComparisonMaps } from './ComparisonMaps.tsx';
+import { CrowdView } from './CrowdView.tsx';
+import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, PlanEditor } from './PlanEditor.tsx';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
 
@@ -97,6 +99,11 @@ export function App() {
   const [speed, setSpeed] = useState(20);
   const [scrub, setScrub] = useState<number | null>(null);
   const [picked, setPicked] = useState<{ run: number; dot: number } | null>(null);
+  /** Close-up of one run (the default) or the three maps side by side. */
+  const [view, setView] = useState<'close' | 'compare'>(params.get('view') === 'compare' ? 'compare' : 'close');
+  const [closeRun, setCloseRun] = useState(0);
+  const [focusToken, setFocusToken] = useState(0);
+  const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingBusy, setBriefingBusy] = useState(false);
 
@@ -204,6 +211,40 @@ export function App() {
   }, [allDone, incident, briefing, briefingBusy, cards, planStates]);
 
   const pickedRecord = picked ? runs[picked.run]?.decisionsByDot.current?.get(picked.dot) : undefined;
+  const pickedRun = picked ? runs[picked.run] : undefined;
+
+  // Ask the picked group's worker about them on every frame: the inspector
+  // shows movement state (gate, admitted, edits) that a TickFrame does not carry.
+  useEffect(() => {
+    if (!picked || !pickedRun?.ready) return;
+    pickedRun.send({ type: 'inspect', dot: picked.dot });
+  }, [picked, pickedRun?.tick, pickedRun?.ready]);
+
+  /**
+   * An edit goes to all three workers for the same sim second, a little ahead
+   * of whichever plan is furthest along, so none of them has passed it yet and
+   * the three runs still differ only by their plans.
+   */
+  const applyEdit = (edit: EditRequest) => {
+    if (!picked) return;
+    const frame = runs[picked.run]?.latest.current?.frame;
+    if (!frame) return;
+    let dots = [picked.dot];
+    if (edit.radiusM > 0 && frame.x[picked.dot]! >= 0) {
+      const x = frame.x[picked.dot]!;
+      const y = frame.y[picked.dot]!;
+      dots = [];
+      for (let i = 0; i < frame.x.length; i++) {
+        if (frame.x[i]! < 0) continue;
+        if (Math.hypot(frame.x[i]! - x, frame.y[i]! - y) <= edit.radiusM) dots.push(i);
+      }
+    }
+    const at = Math.max(...runs.map((r) => r.t)) + FRAME_EVERY_S * 2;
+    for (const run of runs) run.send({ type: 'edit', edit: { at, dots, fanType: edit.fanType, sendTo: edit.sendTo } });
+    setSavedComparison(null);
+    setAppliedNote(`Queued for ${dots.length.toLocaleString()} ${dots.length === 1 ? 'group' : 'groups'} at ${minutes(at)} from kickoff.`);
+  };
+  useEffect(() => setAppliedNote(null), [picked?.dot]);
 
   // Published for an unattended run: a browser with no debugger attached can
   // still be checked, because the server sees the saved comparison.
@@ -326,17 +367,74 @@ export function App() {
         <main>
           {loaded && (
             <div className="compare">
-              <div className="canvas-wrap">
-                {/* One PixiJS Application for all three runs: three WebGL
-                    contexts meant paying Pixi's GPU probe three times. */}
-                <ComparisonMaps
-                  map={loaded.map}
-                  runs={runs}
-                  scrubIndex={scrub}
-                  dangerDensity={DEFAULT_DANGER_DENSITY}
-                  incidentCells={incident?.cells}
-                  onPickDot={(run, dot) => setPicked({ run, dot })}
-                />
+              <div className="view-tabs">
+                <button className={view === 'close' ? 'on' : undefined} onClick={() => setView('close')}>
+                  Close up
+                </button>
+                <button className={view === 'compare' ? 'on' : undefined} onClick={() => setView('compare')}>
+                  Side by side
+                </button>
+                {view === 'close' && (
+                  <span className="run-chips">
+                    {LABELS.map((label, i) => (
+                      <button
+                        key={label}
+                        className={closeRun === i ? 'on' : undefined}
+                        title={planStates[i]?.plan.name}
+                        onClick={() => {
+                          setCloseRun(i);
+                          if (picked) setPicked({ run: i, dot: picked.dot });
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <span className="muted">{planStates[closeRun]?.plan.name}</span>
+                  </span>
+                )}
+              </div>
+              <div className={`canvas-wrap${view === 'close' ? ' close' : ''}`}>
+                {/* Only one of these is mounted at a time, so the page holds a
+                    single WebGL context. ComparisonMaps draws all three runs in
+                    one PixiJS Application for the same reason. */}
+                {view === 'compare' ? (
+                  <ComparisonMaps
+                    map={loaded.map}
+                    runs={runs}
+                    scrubIndex={scrub}
+                    dangerDensity={DEFAULT_DANGER_DENSITY}
+                    incidentCells={incident?.cells}
+                    onPickDot={(run, dot) => setPicked({ run, dot })}
+                  />
+                ) : (
+                  <>
+                    <CrowdView
+                      map={loaded.map}
+                      run={runs[closeRun]!}
+                      types={FAN_TYPES}
+                      scrubIndex={scrub}
+                      dangerDensity={DEFAULT_DANGER_DENSITY}
+                      incidentCells={incident?.cells}
+                      selected={picked?.run === closeRun ? picked.dot : null}
+                      onPick={(dot) => setPicked(dot === null ? null : { run: closeRun, dot })}
+                      focusToken={focusToken}
+                    />
+                    {picked && pickedRun && (
+                      <Inspector
+                        map={loaded.map}
+                        types={FAN_TYPES}
+                        run={pickedRun}
+                        label={LABELS[picked.run]}
+                        dot={picked.dot}
+                        scrubbing={scrub !== null}
+                        appliedNote={appliedNote}
+                        onApply={applyEdit}
+                        onFocus={() => setFocusToken((n) => n + 1)}
+                        onClose={() => setPicked(null)}
+                      />
+                    )}
+                  </>
+                )}
                 {runs.some((r) => r.deciding !== null) && (
                   <div className="deciding">
                     deciding… {runs.reduce((n, r) => n + (r.deciding ?? 0), 0)} groups
@@ -427,6 +525,20 @@ export function App() {
             <section className="panel">
               <h2>Why this group moved</h2>
               {!picked && <p className="muted">Click a dot on any map.</p>}
+              {picked && view === 'compare' && (
+                <p>
+                  <button
+                    className="small"
+                    onClick={() => {
+                      setCloseRun(picked.run);
+                      setView('close');
+                      setFocusToken((n) => n + 1);
+                    }}
+                  >
+                    Zoom in on this group
+                  </button>
+                </p>
+              )}
               {picked && !pickedRecord && (
                 <p className="muted">
                   Dot {picked.dot} in run {LABELS[picked.run]} has not hit a decision yet — it is still walking its

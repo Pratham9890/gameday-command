@@ -102,6 +102,26 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 - `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
 - **All three runs draw into ONE PixiJS Application** (`ComparisonMaps.tsx`), as three panels of a single canvas with the base map texture shared between them. Three Applications meant three WebGL contexts and paying Pixi's GPU probe three times over. Dots are pixel bytes, the heatmap reuses one `ImageData`, the incident zone is drawn only when it changes, and the renderer is stopped and driven by hand — frames arrive every 15 sim seconds, so a running ticker redraws an unchanged scene sixty times a second.
 
+## The close-up view
+
+`app/src/CrowdView.tsx` + `app/src/crowd-scene.ts` are the default map: one run on an isometric map you can zoom into until dots become people, click one, and change them. The look follows the operator view in Cryplo/MHacks26. The A/B/C chips pick the run; **Side by side** brings back `ComparisonMaps`.
+
+- **Only one of the two map views is mounted at a time**, so the page still holds one WebGL context. `ComparisonMaps` now redraws when its Application comes up, or switching back while paused showed a blank canvas.
+- **Level of detail keeps 20,000 dots cheap.** Zoomed out, the crowd is one 800x800 cell texture, the same trick as the side-by-side maps. Past `PEOPLE_MIN_SCALE` only groups inside the viewport get a pooled figure (five sprites from five shared white textures, tinted), capped at `MAX_PEOPLE`. Cost follows the screen, not the crowd.
+- **Unlike `ComparisonMaps`, this one runs Pixi's ticker.** People tween between the last two frames over the measured gap between arrivals, so they walk instead of hopping every 15 sim seconds. A replayed frame is drawn exactly, with no tween.
+- **Buildings are extruded polygons**, one roof per run of at most 6 blocked cells and a wall on every south or east face (the two this viewpoint sees), sorted by x + y. Height and roof colour come from the connected building; pieces under 40 cells are walls and fences and stay 2.5 m. Runs are short because a long run sorted by one key paints over buildings in front of it. People always draw over buildings.
+- **Shirt colour is the fan type, ring colour is the state.** Names come from `groupName(dot)`, so the person you clicked is someone you can find again.
+- **Pixi does start under SwiftShader in this Linux container** (Playwright's Chromium with `--use-angle=swiftshader --enable-unsafe-swiftshader`), unlike headless Chrome on the Mac. That is how the close-up was checked: canvas up in 2.4 s, zoom, click, edit, zero page errors.
+
+### Editing fans
+
+The inspector sends an edit (`fanType`, `sendTo`, for one group or everyone within 10 or 25 m) to **all three workers for the same sim second**, two frames ahead of the furthest plan, so the runs still differ only by their plans. The extra worker messages (`edit`, `inspect`, `types`) live in `engine/src/edits.ts`, **not** in the frozen `contracts.ts`: only the app and the engine's own worker speak them.
+
+- `Simulation` keeps every edit for the life of the run and applies it when the clock reaches its second. A rewind to before an edit replays it; `seek` drops edits after the target, like the frames after it. `edits.test.ts` holds both down.
+- `seek` now also drops checkpoints after the restart point. They were taken on a timeline an edit can rewrite, and a later seek would have restored one that lies.
+- `FlowMovement.sendTo` will not walk an un-admitted fan straight into the bowl: "their seat" or the concourse sends them to their gate first. A new gate resets `admitted`; heading for the car marks them through, because on the way out a gate is a door.
+- Fan types ride to the app in a `types` message only when they change (spawn, edit, rewind), never per frame.
+
 ## Running the real Kev
 
 Kev is cloned at `/Users/nipun/Projects/kev` (Apache-2.0). Start it with the command from `GOAL.md`:
@@ -159,7 +179,7 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 
 ## Current state
 
-Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 105 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
+Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 110 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
 
 Measured on the stadium map (800x800 cells at 2 m, 100,000 fans as 20,000 dots):
 
