@@ -1,0 +1,34 @@
+{
+  "name": "gameday-command",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "engine",
+    "world",
+    "brain",
+    "server",
+    "app"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "npm run dev --workspace @gameday/app",
+    "serve": "node --watch server/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4",
+    "vite": "^6.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "better-sqlite3@13.0.3": true
+  },
+  "overrides": {
+    "vite": "$vite"
+  }
+}
