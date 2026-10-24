@@ -7,3 +7,5 @@ dist/
 data/*.db
 data/*.db-journal
 coverage/
+data/*.db-wal
+data/*.db-shm

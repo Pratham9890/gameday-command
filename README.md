@@ -48,7 +48,9 @@ Why it is shaped this way:
 
 ## Quick start
 
-From a fresh clone, with Node 22 or newer:
+From a fresh clone. The project runs TypeScript directly with no build step
+(`node server/src/index.ts`), so it needs a Node whose type stripping is on by
+default — **Node 23.6 or newer**; developed and tested on 26.12.
 
 ```bash
 npm install
@@ -69,7 +71,13 @@ The app works with no model running: every decision shows as a fallback. To get 
 uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 ```
 
-Copy `.env.example` to `.env` to change ports or the Kev URL.
+Everything above works with no configuration. `.env.example` documents all
+thirteen environment variables the code reads, each with its default and why you
+might change it; copy it to `.env` only if you need to move a port or a model URL.
+
+Before a demo, warm the decision cache so fans are answered by the model rather
+than the fallback table — `npm run warm`. The shipped seed already covers the
+three scenarios, so this is only needed after changing the decision vocabulary.
 
 ## Where things stand
 
@@ -77,11 +85,11 @@ The real engine runs. Fans arrive on their type's schedule, walk a flow field to
 
 Measured on an 800x800 grid (the stadium plus half a mile at 2 m cells) with 20,000 dots standing for 100,000 fans, in one worker:
 
-- **225x real time** in one browser Web Worker with a warm cache, zero fallbacks
-- **107x real time** through a lightning delay that asks every dot at once
-- **57,974 dot decisions collapse to 121 distinct model calls**
+- **222x real time** in one browser Web Worker with a warm cache, zero fallbacks
+- **103x real time** through a lightning delay that asks every dot at once
+- **57,974 dot decisions collapse to about 144 distinct model calls**
 
-The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153498) covering the stadium plus half a mile: an 800x800 grid of 2 m cells with 12 gates, the bowl and its concourse, 140 parking lots, and closable real streets — Woody Hayes Drive, Lane Avenue, Cannon Drive. Three plans run on it with 100,000 fans at about 300x real time.
+The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153498) covering the stadium plus half a mile: an 800x800 grid of 2 m cells with 12 gates, the bowl and its concourse, 140 parking lots, and closable real streets — Woody Hayes Drive, Lane Avenue, Cannon Drive. Three plans run on it side by side with 100,000 fans at **56.8x real time each** — and that is the UI's speed setting, not the engine's ceiling.
 
 Refetch the map with `npm run fetch-map` (it is committed, so you only need this to update it).
 
@@ -106,28 +114,43 @@ Three workers, 20,000 dots each, ran those 90 simulated minutes in 95 seconds �
 
 Closing the hot gate never clears it — the crowd piles up outside. Opening a relief gate reaches almost everyone but takes longer. Six officers clears fastest and reaches nobody. That is the tradeoff the commander is being shown, and the briefing underneath it is written by the on-device model from those numbers alone.
 
+The three **lightning delay** plans separate too, which they did not until officers
+were made to change what the crowd does rather than only to cost officer minutes:
+
+| | danger minutes | fallback decisions |
+| --- | --- | --- |
+| A, shelter order + PA | 284,704 | 144 |
+| B, gates open + officers on the gates | **278,758** | 1,021 |
+| C, phone alert, shelter order at two minutes | 283,901 | 514 |
+
+B buys the lowest danger minutes, and gets roughly 1,300 more fans out of the
+open, by spending officers and far more model decisions. A is nearly as safe for
+a fraction of both. Again: a tradeoff, not a recommendation.
+
 ### Verified, and not
 
 | Requirement | State |
 | --- | --- |
-| Workspaces, typecheck, tests | 98 tests, `tsc` clean |
+| Workspaces, typecheck, tests | **105 tests in 13 files**, `tsc` clean |
 | Engine in a worker, no AI in movement | yes; flow fields, seeded RNG, frames every 15 s, snapshot **and** seek-to-rewind exercised through the worker |
 | 20,000 dots at 10x or faster | **222x** in one browser worker, **56.8x** per plan with three running in the app |
 | Stadium map from OSM at kickoff minus 60 | yes, 800x800 cells from a committed extract |
 | Three incidents, 3 editable plans each | yes, all three run on the stadium map |
 | Same moment, same seed, three plans | yes, side by side |
 | Scorecard, checked against a hand count | yes, on the 3 gate test map |
-| Decisions grouped, cached, sim pauses, fallbacks counted | yes; **57,974 dot decisions to 135 model calls** |
+| Decisions grouped, cached, sim pauses, fallbacks counted | yes; **57,974 dot decisions to about 144 model calls** |
 | Live decisions from the real Kev-4B on :8009 | **yes**, MLX on this Mac, `source: "kev"` end to end |
 | Fans actually get into the stadium | **18,185 of 20,000** by kickoff plus 30 |
 | DecisionTape replay gives identical scorecards | yes, proven by test |
-| Cold-cache lightning under 60 s | **44.1 s** against the real Kev-4B |
+| Cold-cache lightning under 60 s | **43.2 s** against the real Kev-4B |
 | Briefing from `fm serve`, numbers checked | yes, verified live; 399-token prompt |
 | App screens | all built and **seen rendering in Chrome** |
 | Runs with Kev off, every decision a fallback | yes, tested |
-| Full demo in a fresh browser | **run in the Mac's own default browser** via `open`, no flags or debugger; verified by the comparison the server saved |
+| Full demo in a fresh browser | **run in the Mac's own default browser** via `open`, no flags or debugger; verified by the comparison the server saved. Chrome and the default browser both complete; **Safari does not** — see below |
 
-Two things are genuinely unproven. The real **Kev-4B has never run here** — it is not installed on this machine, so the decision path is verified over real HTTP against a stand-in that answers in 150 ms. And the **app has not been seen rendering**: it builds, mounts with no console errors, and emits its worker chunk, but the in-app browser pane will not display and Playwright cannot reach DOMContentLoaded, so the browser demo needs a human to confirm. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
+One thing is unresolved, and it is a browser, not the build. **Safari does not finish a run.** It loads the app and its workers genuinely call `/decide` — the server-side cache grows while it sits there — but ninety simulated minutes had not completed after six wall minutes. The likely cause is Safari throttling the timers the worker paces itself with when the tab is not frontmost, which would slow the pacing loop to roughly one sim second per wall second. That is a hypothesis, not a diagnosis: it has not been confirmed or fixed. **Demo in Chrome.**
+
+Everything else above was watched happening. `CLAUDE.md` carries the remaining open items, the largest being that a cold cache is mostly fallbacks for its first eighty seconds while the background warmer catches up.
 
 ## Rules this project holds to
 

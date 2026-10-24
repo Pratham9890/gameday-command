@@ -25,7 +25,7 @@
     "vite": "^6.0.5"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=23.6"
   },
   "allowScripts": {
     "esbuild@0.25.12": true,
