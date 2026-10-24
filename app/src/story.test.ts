@@ -50,9 +50,17 @@ describe('commander screen words', () => {
     expect(stats.peak).toBe(5);
   });
 
-  it('leaves seated fans out of the danger count', () => {
-    const rho = new Float32Array([5, 5, 1]);
-    const stats = liveStats(rho, [], 4, new Uint8Array([1, 0, 0]));
-    expect(stats.dangerPeople).toBe(20);
+  it('leaves seated fans out of the danger count, as the scorecard does', () => {
+    // Four dots in cell 0 (a 2x1 map): two seated, two queued at 2.5/m² is under the line.
+    const frame = {
+      x: Float32Array.from([0.5, 0.6, 0.7, 0.8, 2.5]),
+      y: Float32Array.from([0.5, 0.5, 0.5, 0.5, 0.5]),
+      state: Uint8Array.from([4, 4, 2, 2, 3]),
+    };
+    const rho = new Float32Array([5, 1.25]);
+    expect(liveStats(rho, [], 4).dangerPeople).toBe(20);
+    const stats = liveStats(rho, [], 4, frame, 2);
+    expect(stats.dangerPeople).toBe(0);
+    expect(stats.peak).toBe(2.5);
   });
 });

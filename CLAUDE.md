@@ -108,10 +108,29 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 
 - **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
 - **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
-- **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work", because **both are dominated by seated fans**. The stands sit at the 5/m² cap by design, so every plan read ~175,000 danger minutes and 5.0/m². The live "dangerously packed" count skips stands cells for the same reason. Fixing this properly means teaching `world/src/scoring.ts` to leave seating out, which changes the scorecard and the briefing. It has not been done.
+- **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work". See "Danger scoring" below for why they still barely separate the plans.
 - **Plan edits no longer restart the runs on every keystroke.** `inits` depends on `[loaded, generation]` only, and edits show **Restart with my changes**.
 - **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The ⚠ button goes back there and ⤢ shows the whole map.
 - The canned briefing (template, used whenever `fm serve` is down) is folded under "Full numbers for every plan". It is a wall of raw figures, and the verdict sentence says the same thing in one line.
+
+## Danger scoring
+
+`dangerMinutes` and `peakDensity` used to read ~175,000 and 5.0/m² for every plan. Two separate causes, both fixed in `world/src/scoring.ts`:
+
+1. **Seated fans counted as crush danger.** A full stand sits at `MAX_DOTS_PER_CELL` by design. `DensityField` now also keeps `standingPerM2`, which leaves out dots in the `seated` state, and `Simulation` passes it to the scorer. Fans walking or queueing *through* the stands still count, because an aisle crush during an evacuation is real. The app's live "dangerously packed" count uses the same rule, from the frame's dot states.
+2. **The hour before the incident was counted.** A diagnostic run on the stadium map found ~1,000-1,400 cells over 4/m² at any moment before kickoff, almost all `walking` or `queued` fans at the twelve gates, and ~2,400 admitted fans jammed on the way to their seats. No plan acts before the incident, so that hour is identical in every plan. Danger and peak are now counted from `incident.at` onward, like time to clear.
+
+Measured after both fixes, at 60× in the app with the shipped cache:
+
+| | A | B | C |
+| --- | --- | --- | --- |
+| gate surge | 36,837 | 36,987 | 37,884 |
+| lightning delay | 128,461 | 124,068 | 129,313 |
+| suspicious package | 108,707 | 108,781 | 110,321 |
+
+The plans now differ, but only by 1-4%. The danger is counted map-wide, and the queues at the eleven gates no plan touches still make up most of it. Counting only near the incident would separate the plans far more, but it would also hide a plan that moves the crush to another gate, which is exactly the tradeoff the tool exists to show. Not decided. Peak density is 5.0 everywhere because some queue somewhere is always at the cap.
+
+**Also found:** lightning and the suspicious package never clear their zones under any plan.
 
 ## The close-up view
 
@@ -190,7 +209,7 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 
 ## Current state
 
-Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 117 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
+Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 120 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
 
 Measured on the stadium map (800x800 cells at 2 m, 100,000 fans as 20,000 dots):
 

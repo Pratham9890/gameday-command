@@ -99,6 +99,22 @@ describe('DensityField', () => {
     expect(field.dotsInCells([0])).toBe(3);
   });
 
+  it('keeps seated fans in the crowd but out of the standing count', () => {
+    const field = new DensityField(2, 2);
+    const dots = new DotStore(3);
+    for (let i = 0; i < 3; i++) {
+      dots.x[i] = 0.5;
+      dots.y[i] = 0.5;
+      dots.setState(i, 'walking');
+    }
+    dots.setState(0, 'seated');
+    dots.setState(1, 'seated');
+    field.update(dots);
+    expect(field.peoplePerM2[0]).toBeCloseTo(3.75, 6);
+    // only the one walking dot: 5 fans / 4 square meters
+    expect(field.standingPerM2[0]).toBeCloseTo(1.25, 6);
+  });
+
   it('ignores dots that are gone', () => {
     const field = new DensityField(2, 2);
     const dots = new DotStore(2);

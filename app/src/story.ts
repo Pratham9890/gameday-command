@@ -1,5 +1,5 @@
 import type { Incident, Scorecard } from '../../contracts.ts';
-import { CELL_SIZE_M } from '../../contracts.ts';
+import { CELL_SIZE_M, DOT_GROUP_SIZE, DOT_STATES } from '../../contracts.ts';
 import { INCIDENT_LABELS } from '../../world/src/incidents.ts';
 
 /**
@@ -34,28 +34,53 @@ export interface LiveStats {
   peak: number;
 }
 
+/** The dots of one frame, enough to count who is standing where. */
+export interface FrameDots {
+  x: Float32Array;
+  y: Float32Array;
+  state: Uint8Array;
+}
+
 /**
- * `skip` marks cells left out of "dangerously packed": fans sitting shoulder to
- * shoulder in the stands are at the density cap by design, and counting them
- * made every plan read the same 44,000 people in danger.
+ * "Dangerously packed" counts the same way the scorecard does: fans in their
+ * seats are left out, because a full stand sits at the density cap by design
+ * and counting it made every plan read the same 44,000 people in danger.
  */
 export function liveStats(
   peoplePerM2: Float32Array | undefined,
   zone: number[] | undefined,
   danger: number,
-  skip?: Uint8Array,
+  frame?: FrameDots,
+  width = 0,
 ): LiveStats {
   if (!peoplePerM2) return { zonePeople: 0, dangerPeople: 0, peak: 0 };
   const area = CELL_SIZE_M * CELL_SIZE_M;
   let zonePeople = 0;
   for (const cell of zone ?? []) zonePeople += (peoplePerM2[cell] ?? 0) * area;
+
   let dangerPeople = 0;
   let peak = 0;
-  for (let i = 0; i < peoplePerM2.length; i++) {
-    const rho = peoplePerM2[i]!;
-    if (skip?.[i]) continue;
-    if (rho > peak) peak = rho;
-    if (rho >= danger) dangerPeople += rho * area;
+  if (frame && width > 0) {
+    const seated = DOT_STATES.indexOf('seated');
+    const gone = DOT_STATES.indexOf('gone');
+    const standing = new Map<number, number>();
+    for (let i = 0; i < frame.x.length; i++) {
+      const s = frame.state[i];
+      if (s === seated || s === gone || frame.x[i]! < 0) continue;
+      const cell = ((frame.y[i]! / CELL_SIZE_M) | 0) * width + ((frame.x[i]! / CELL_SIZE_M) | 0);
+      standing.set(cell, (standing.get(cell) ?? 0) + 1);
+    }
+    for (const dots of standing.values()) {
+      const rho = (dots * DOT_GROUP_SIZE) / area;
+      if (rho > peak) peak = rho;
+      if (rho >= danger) dangerPeople += dots * DOT_GROUP_SIZE;
+    }
+  } else {
+    for (let i = 0; i < peoplePerM2.length; i++) {
+      const rho = peoplePerM2[i]!;
+      if (rho > peak) peak = rho;
+      if (rho >= danger) dangerPeople += rho * area;
+    }
   }
   return { zonePeople: Math.round(zonePeople), dangerPeople: Math.round(dangerPeople), peak };
 }

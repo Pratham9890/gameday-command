@@ -5,6 +5,13 @@ export interface ScoreSample {
   t: SimSeconds;
   dt: SimSeconds;
   density: DensityGrid;
+  /**
+   * People per m² leaving out fans in their seats, laid out like `density`.
+   * Danger minutes and peak density read this when it is given: seated fans
+   * fill the stands at the density cap by design, and counting them made every
+   * plan score ~175,000 danger minutes and 5.0/m² alike.
+   */
+  standingPerM2?: Float32Array;
   /** Dots (not people) still inside the incident zone. */
   dotsInZone: number;
   /** True once at least one officer stands inside the incident zone. */
@@ -55,15 +62,22 @@ export class Scorer {
   }
 
   observe(s: ScoreSample): void {
-    const { peoplePerM2 } = s.density;
-    const threshold = this.init.dangerDensity;
-    let overCells = 0;
-    for (let i = 0; i < peoplePerM2.length; i++) {
-      const v = peoplePerM2[i]!;
-      if (v > this.peakDensity) this.peakDensity = v;
-      if (v > threshold) overCells++;
+    // Danger and peak are counted from the incident onward, like time to clear.
+    // Before it, no plan has done anything yet, so every plan has the identical
+    // crowd: about a thousand cells of gate queues at the cap through the hour
+    // before kickoff. Counting that buried the difference the plans made under
+    // ~128,000 danger minutes they all shared.
+    if (s.t >= this.init.incident.at) {
+      const peoplePerM2 = s.standingPerM2 ?? s.density.peoplePerM2;
+      const threshold = this.init.dangerDensity;
+      let overCells = 0;
+      for (let i = 0; i < peoplePerM2.length; i++) {
+        const v = peoplePerM2[i]!;
+        if (v > this.peakDensity) this.peakDensity = v;
+        if (v > threshold) overCells++;
+      }
+      this.dangerCellMinutes += (overCells * s.dt) / 60;
     }
-    this.dangerCellMinutes += (overCells * s.dt) / 60;
     this.officerSeconds += s.officersCommitted * s.dt;
 
     if (this.firstOfficerAt === null && s.officerInZone) this.firstOfficerAt = s.t;

@@ -44,6 +44,34 @@ describe('Scorer against a hand count', () => {
     expect(card.fallbackDecisions).toBe(2);
   });
 
+  it('leaves seated fans out of danger minutes and peak density', () => {
+    const scorer = new Scorer({ runId: 'r', planId: 'p', label: 'A', incident, dangerDensity: 4, totalDots: 100 });
+    // A full stand (5/m² everywhere) where only one cell's people are standing, at 4.5.
+    scorer.observe({
+      t: 60,
+      dt: 60,
+      density: grid([5, 5, 5, 5], 60),
+      standingPerM2: Float32Array.from([0, 4.5, 0, 1.25]),
+      dotsInZone: 0,
+      officerInZone: false,
+      officersCommitted: 0,
+    });
+    const card = scorer.finish();
+    expect(card.dangerMinutes).toBeCloseTo(1, 6); // one standing cell over 4, for one minute
+    expect(card.peakDensity).toBeCloseTo(4.5, 6);
+  });
+
+  it('counts danger only from the incident onward, when the plans start to differ', () => {
+    const late: Incident = { ...incident, at: 120 };
+    const scorer = new Scorer({ runId: 'r', planId: 'p', label: 'A', incident: late, dangerDensity: 4, totalDots: 100 });
+    const packed = { density: grid([5, 5, 0, 0]), dotsInZone: 0, officerInZone: false, officersCommitted: 0 };
+    scorer.observe({ ...packed, t: 60, dt: 60 }); // before the incident: ignored
+    scorer.observe({ ...packed, t: 120, dt: 60, density: grid([4.5, 0, 0, 0]) });
+    const card = scorer.finish();
+    expect(card.dangerMinutes).toBeCloseTo(1, 6);
+    expect(card.peakDensity).toBeCloseTo(4.5, 6);
+  });
+
   it('reports null when the zone never clears', () => {
     const scorer = new Scorer({ runId: 'r', planId: 'p', label: 'B', incident, dangerDensity: 4, totalDots: 1 });
     scorer.observe({ t: 30, dt: 30, density: grid([1, 1, 1, 1], 30), dotsInZone: 4, officerInZone: false, officersCommitted: 0 });

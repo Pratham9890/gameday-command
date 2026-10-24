@@ -80,7 +80,6 @@ function PlanCard({
   run,
   map,
   incident,
-  seats,
   totalFans,
   selected,
   rank,
@@ -92,7 +91,6 @@ function PlanCard({
   run: RunHandle;
   map: MapBundle;
   incident: Incident;
-  seats: Uint8Array;
   totalFans: number;
   selected: boolean;
   rank: number | null;
@@ -100,7 +98,7 @@ function PlanCard({
   onEdit: (plan: ResponsePlan, disabled: Set<number>) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const live = liveStats(run.latest.current?.density?.peoplePerM2, incident.cells, DANGER, seats);
+  const live = liveStats(run.latest.current?.density?.peoplePerM2, incident.cells, DANGER, run.latest.current?.frame, map.width);
   const alerts = state.plan.actions.some((a, i) => a.type === 'alert' && !state.disabled.has(i));
   const officers = state.plan.actions.some((a, i) => a.type === 'send_officers' && !state.disabled.has(i));
   const card = run.scorecard;
@@ -164,7 +162,7 @@ function PlanCard({
           </dt>
           <dd>{run.ready ? n(live.zonePeople) : '…'}</dd>
           <dt>
-            Dangerously packed <Info>People standing (not seated) anywhere on the map tighter than {DANGER} per m², where crowd crush becomes possible.</Info>
+            Dangerously packed <Info>People on their feet (not in a seat) anywhere on the map tighter than {DANGER} per m², where crowd crush becomes possible.</Info>
           </dt>
           <dd className={live.dangerPeople > 0 ? 'bad' : undefined}>{run.ready ? n(live.dangerPeople) : '…'}</dd>
           <dt className="muted">Result</dt>
@@ -272,13 +270,6 @@ export function App() {
 
   const incidents = useMemo<Incident[]>(() => (loaded ? incidentsFor(loaded.map) : []), [loaded]);
   const incident = incidents[incidentIndex];
-  const seats = useMemo(() => {
-    const mask = new Uint8Array(loaded?.map.cells.length ?? 0);
-    loaded?.map.cells.forEach((kind, i) => {
-      if (kind === 'stands') mask[i] = 1;
-    });
-    return mask;
-  }, [loaded]);
   const zoneName = (incident?.placeId && loaded?.map.places.find((p) => p.id === incident.placeId)?.name) || 'the closed street';
 
   const restart = () => {
@@ -685,7 +676,6 @@ export function App() {
                   run={runs[i]!}
                   map={loaded.map}
                   incident={incident}
-                  seats={seats}
                   totalFans={fanCount(loaded.map)}
                   selected={view === 'close' && closeRun === i}
                   rank={rankOf(i)}

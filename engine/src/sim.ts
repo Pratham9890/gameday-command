@@ -414,6 +414,7 @@ export class Simulation {
       t: this.ctx.t,
       dt: SIM_DT,
       density: this.ctx.density.view(this.ctx.t),
+      standingPerM2: this.ctx.density.standingPerM2,
       dotsInZone: this.ctx.density.dotsInCells(zone),
       officerInZone: zone.some((cell) => this.ctx.officers.some((o) => o.cell === cell)),
       officersCommitted: this.hooks.committedOfficers(),

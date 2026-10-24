@@ -103,6 +103,23 @@ export function useRun(init: RunInit | null): RunHandle {
     counts.current = { decisions: 0, fallbacks: 0, kev: 0 };
     typeIndex.current = null;
     setInspected(null);
+    // A new run starts from nothing. Without this the last run's scorecard
+    // survived a restart or a new situation, so the screen read "Finished"
+    // before the new run had taken a step.
+    setState({
+      ready: false,
+      t: init.config.startAt,
+      deciding: null,
+      decisionCount: 0,
+      fallbackCount: 0,
+      kevCount: 0,
+      frameCount: 0,
+      scorecard: null,
+      snapshotAt: null,
+      snapshotDots: null,
+      error: null,
+      tick: 0,
+    });
 
     worker.onmessage = (event: MessageEvent<WorkerOut | EditOut>) => {
       const out = event.data;
