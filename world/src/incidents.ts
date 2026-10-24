@@ -3,12 +3,19 @@ import { CELL_SIZE_M } from '../../contracts.ts';
 
 /**
  * People per square meter a zone has to come back down to before it counts as
- * clear. A crowd never reaches zero while fans are still arriving, so
- * safeCount: 0 would read as "never cleared" for every plan alike and the
- * scorecard could not tell them apart. Two per square meter is a crowd you can
- * walk through.
+ * clear: one person per five square meters, which is an area you can walk
+ * straight across.
+ *
+ * A crowd never reaches zero while fans are still arriving, so safeCount: 0
+ * reads as "never cleared" for every plan alike. But too generous a threshold
+ * fails the same way from the other side — at two per square meter the north
+ * gate zone was "clear" at its worst moment, having held only 855 people
+ * against a threshold of 2,432, so every plan again scored the same. Measured
+ * against the real occupancy curve, this threshold separates them: the plans
+ * that disperse the crowd clear in seven to eight minutes, while closing the
+ * hot gate never clears at all because the crowd piles up outside it.
  */
-export const CLEAR_DENSITY = 2;
+export const CLEAR_DENSITY = 0.2;
 
 /** How many people a zone holds at the comfortable density. */
 export function safeCountFor(cells: readonly number[]): number {

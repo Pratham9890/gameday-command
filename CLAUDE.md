@@ -61,7 +61,8 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **Admission reach is measured along the flow field**, not as a box around the gate's centre. A gate is a block of cells, so a fan ten steps from its edge can be thirteen from its middle, and the box quietly refused to serve the very front of the queue.
 - **A fan whose gate is unreachable is reassigned** to one they can reach, rather than standing still for the rest of the game.
 - **Everyone is assigned a seat before they arrive**, and walks to it in a straight line once inside the bowl. Without it they stopped at whichever stands cell sat just inside their gate. Settling early is also wrong: fans sat down in the gate mouth and corked the gate behind them.
-- **`safeCountFor()` sets "clear" at 2 people/m², not zero.** A zone never empties while fans are still arriving, so `safeCount: 0` read as "never cleared" for every plan alike and the scorecard could not tell them apart.
+- **`safeCountFor()` sets "clear" at 0.2 people/m²**, one person per five square meters. Both ends of this get it wrong: `safeCount: 0` never clears because fans keep arriving, while 2/m² was so generous the north gate zone counted as clear at its worst moment (855 people against a threshold of 2,432). Either way every plan scored alike.
+- **Clearance is only counted from the incident onward.** The zone is busy long before kickoff, so scoring the whole run let it "clear" during the build-up; the negative time clamped to zero and all three plans read 0.0 minutes.
 
 ## Verifying the app in a browser
 
@@ -119,8 +120,7 @@ Measured on an 800x800 map (stadium plus half a mile at 2 m cells), 20,000 dots 
 On the real stadium map (800x800 cells, 100,000 fans as 20,000 dots), three plans run at about 300x real time with peak density at exactly the physical cap.
 
 **Open items, in order:**
-1. **Time to clear no longer separates the plans.** Now that the crowd actually gets in, the gate-surge zone stays above its "clear" threshold for the whole window and every plan reads "not cleared", so the headline metric cannot tell them apart. The other scorecard numbers still do (fans not reached, fallbacks, officer minutes). Measure the zone's occupancy curve per plan before changing the threshold or the window.
-2. **Plans A and B for a lightning delay are identical** because opening already-open gates is a no-op and officers do not yet influence crowd movement. Only officer minutes differ.
-3. **Not yet run against the real Kev-4B.** Kev is not installed on this machine (no `kev` module, nothing under `~/Projects`), so `uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009` has never been exercised here. The whole path *is* verified end to end over real HTTP against a stand-in on :8009 that answers in 150 ms serially — cold cache: 39.8 s wall for the full lightning run, 1.7 s of it paused on 135 keys, 16,381 model-backed dot decisions; warm: 16,381 from cache. Expect fewer keys answered with a slower model, by design.
-4. `pick_gate` is assigned by walking distance rather than asked of Kev; it should become a live decision.
-5. The app has been seen rendering in Chrome, dev and production. It builds, mounts with no console errors, and `vite build` emits the worker chunk, but the in-app browser pane refuses to display and Playwright cannot reach DOMContentLoaded.
+1. **Plans A and B for a lightning delay are identical** because opening already-open gates is a no-op and officers do not yet influence crowd movement. Only officer minutes differ.
+2. **Not yet run against the real Kev-4B.** Kev is not installed on this machine (no `kev` module, nothing under `~/Projects`), so `uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009` has never been exercised here. The whole path *is* verified end to end over real HTTP against a stand-in on :8009 that answers in 150 ms serially — cold cache: 39.8 s wall for the full lightning run, 1.7 s of it paused on 135 keys, 16,381 model-backed dot decisions; warm: 16,381 from cache. Expect fewer keys answered with a slower model, by design.
+3. `pick_gate` is assigned by walking distance rather than asked of Kev; it should become a live decision.
+4. The app has been seen rendering in Chrome, dev and production. It builds, mounts with no console errors, and `vite build` emits the worker chunk, but the in-app browser pane refuses to display and Playwright cannot reach DOMContentLoaded.

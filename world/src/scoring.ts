@@ -57,13 +57,17 @@ export class Scorer {
 
     if (this.firstOfficerAt === null && s.officerInZone) this.firstOfficerAt = s.t;
 
-    // Time to clear only means something once there was a crowd to clear. An
-    // incident zone is empty the instant it is declared, and calling that
-    // "cleared in 0 minutes" would flatter every plan equally.
-    const safeCount = this.init.incident.safeCount ?? 0;
-    const people = s.dotsInZone * DOT_GROUP_SIZE;
-    if (people > safeCount) this.everOccupied = true;
-    else if (this.everOccupied && this.clearedAt === null) this.clearedAt = s.t;
+    // Time to clear only means something once there was a crowd to clear, and
+    // only from the incident onwards. The zone is busy long before kickoff as
+    // fans arrive, and counting that ebb and flow meant the zone "cleared"
+    // during the build-up; the negative time then clamped to zero and every
+    // plan scored 0.0 minutes alike.
+    if (s.t >= this.init.incident.at) {
+      const safeCount = this.init.incident.safeCount ?? 0;
+      const people = s.dotsInZone * DOT_GROUP_SIZE;
+      if (people > safeCount) this.everOccupied = true;
+      else if (this.everOccupied && this.clearedAt === null) this.clearedAt = s.t;
+    }
   }
 
   /** Called once per decision answer the run consumed. */
