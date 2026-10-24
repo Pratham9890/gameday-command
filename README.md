@@ -85,7 +85,9 @@ The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153
 
 Refetch the map with `npm run fetch-map` (it is committed, so you only need this to update it).
 
-Still to come: live Kev decisions end to end, the other two incidents, the briefing through Apple's on-device model, and the replay scrubber. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
+All three incidents work — a lightning delay, a gate surge at a north gate at kickoff, and a suspicious package closing a street as the game lets out — each with three editable plans. The commander briefing comes from Apple's on-device model through `fm serve`, and every number in it is checked against the scorecard before it is shown; one invented figure and you get the template instead.
+
+Still to come: live Kev decisions end to end, and the remaining app screens (incident panel, plan editor, replay scrubber, dot detail). Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
 ## Rules this project holds to
 

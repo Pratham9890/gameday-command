@@ -21,6 +21,7 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - `engine/src/sim.ts` → `buildAsks()` — turns raised situations into one `DecisionAsk` per `decisionKey`. This is what keeps model calls to a handful per step instead of thousands.
 - `brain/src/client.ts` — the only thing that talks to the server about decisions. Every failure path (timeout, refused, bad JSON, odds that do not sum to 1) returns defaults with `source: 'default'`. Nothing here is allowed to throw.
 - `world/src/scoring.ts` — a plain accumulator. Same samples in, same scorecard out, which is what makes replay-from-tape scoring match a live run.
+- `server/src/fm.ts` — the commander briefing through Apple's on-device model via `fm serve` (a Chat Completions server; model `system`, always `stream: false`). The prompt measures **399 tokens** by `fm count-tokens` against a 4,000 budget. Keep it that small: an overflow comes back as a safety-looking error, not a length error.
 - `server/src/briefing.ts` — `briefingIsSupported()` is the guard on the briefing: any number the model writes must already be on a scorecard (or in a name the request supplied). One invented figure throws the whole briefing away for the template.
 
 ## The OSM map
@@ -91,7 +92,6 @@ On the real stadium map (800x800 cells, 100,000 fans as 20,000 dots), three plan
 
 **Open items, in order:**
 1. **Entry throughput.** Gate load is now even (roughly 750-1,900 fans per gate, was 160-4,195) and admissions roughly doubled, but gates still run at about 14% of their rated throughput: around 5,000 of 20,000 dots are inside by kickoff plus 15, with the rest queued on the approach. Ruled out as causes: OSM barriers (no measurable difference), gate geometry, and banked throughput. The remaining suspect is approach width around the bowl once routes through the interior are correctly forbidden. Measure where non-admitted dots sit relative to their gate before changing anything else.
-2. Live Kev decisions end to end (the client, server, cache, tape and fallback all work; it has not yet been run against a live Kev).
-3. The other two incidents (lightning delay, suspicious package) wired to the stadium map.
-4. The briefing through `fm serve`, and the replay scrubber.
-5. `pick_gate` is assigned by seat rather than asked of Kev; it should become a live decision.
+2. Live Kev decisions end to end (the client, server, cache, tape and fallback all work and are tested; it has not yet been run against a live Kev on :8009).
+3. App screens still missing: incident panel, plan editor, replay scrubber, dot detail.
+4. `pick_gate` is assigned by seat rather than asked of Kev; it should become a live decision.

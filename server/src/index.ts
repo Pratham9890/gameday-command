@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import type { DecisionAnswer, DecisionAsk, Incident, MapBundle, ResponsePlan, Scorecard } from '../../contracts.ts';
+import type { BriefingRequest, DecisionAnswer, DecisionAsk, Incident, MapBundle, ResponsePlan, Scorecard } from '../../contracts.ts';
 import { DECISION_TIMEOUT_MS } from '../../contracts.ts';
 import { DECISION_DEFAULTS } from '../../brain/src/defaults.ts';
 import { SITUATIONS } from '../../brain/src/situations.ts';
@@ -10,11 +10,15 @@ import { playbookFor } from '../../world/src/playbook.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from '../../world/src/osm/stadium.ts';
 import { openDb, type Db } from './db.ts';
 import { askKev } from './kev.ts';
-import { templateBriefing } from './briefing.ts';
+import { briefingIsSupported, templateBriefing } from './briefing.ts';
+import { askFm, briefingFrom } from './fm.ts';
 
 const KEV_URL = process.env.KEV_URL ?? 'http://127.0.0.1:8009';
 const KEV_MODEL = process.env.KEV_MODEL ?? 'jaredpalmer/kev-4b';
 const PORT = Number(process.env.PORT ?? 8787);
+const FM_URL = process.env.FM_URL ?? 'http://127.0.0.1:8080';
+const FM_MODEL = process.env.FM_MODEL ?? 'system';
+const FM_TIMEOUT_MS = Number(process.env.FM_TIMEOUT_MS ?? 20000);
 
 const TEST_MAP_ID = 'test-3gate';
 
@@ -44,7 +48,7 @@ export function createApp(db: Db): Hono {
   const app = new Hono();
 
   app.get('/api/health', (c) =>
-    c.json({ ok: true, kev: KEV_URL, stadiumMap: extractExists(), defaultMapId: defaultMap().id }),
+    c.json({ ok: true, kev: KEV_URL, fm: FM_URL, stadiumMap: extractExists(), defaultMapId: defaultMap().id }),
   );
 
   app.get('/api/maps/:id', (c) => {
@@ -136,8 +140,17 @@ export function createApp(db: Db): Hono {
     return row ? c.json(JSON.parse(row.json)) : c.json({ error: 'no such comparison' }, 404);
   });
 
-  /** Milestone 1 always uses the template; the on-device model lands with the briefing milestone. */
-  app.post('/api/briefing', async (c) => c.json(templateBriefing(await c.req.json())));
+  /**
+   * Apple's on-device model writes the briefing, but only if every number in it
+   * is already on a scorecard. One invented figure and the commander gets the
+   * template instead — they cannot check arithmetic mid-incident.
+   */
+  app.post('/api/briefing', async (c) => {
+    const req = await c.req.json<BriefingRequest>();
+    const result = await askFm(req, { url: FM_URL, model: FM_MODEL, timeoutMs: FM_TIMEOUT_MS });
+    if (result && briefingIsSupported(result.text, req)) return c.json(briefingFrom(result));
+    return c.json(templateBriefing(req));
+  });
 
   return app;
 }
