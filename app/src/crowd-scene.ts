@@ -9,7 +9,7 @@ import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from 
 import { paintFor } from './vehicleArt.ts';
 import { diagonalZ, heightAt, personZ, vehicleDiagonal } from './depth.ts';
 import { DiagonalPool } from './diagonal-pool.ts';
-import { barricadePlacements, buildBarricades, closedAreas, closureKey, streetCellAt, type BarricadeGroup } from './barricadeArt.ts';
+import { barricadePlacements, buildBarricades, closedAreas, closureKey, type BarricadeGroup } from './barricadeArt.ts';
 import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
@@ -124,8 +124,10 @@ export interface CrowdSceneInit {
   onFollowChange: (following: boolean) => void;
   /** A vehicle was clicked. Checked before fans, since a car sits on top of them. */
   onPickVehicle?: (vehicle: number) => void;
-  /** Empty road or roadside walk cell, after clearing the fan selection. */
+  /** While an order waits for a map click (`picking()` is true): the clicked open cell, taking the click before any fan, officer or vehicle. */
   onPickStreet?: (cell: number) => void;
+  /** True while an order is waiting for a map click. A function, so a change does not rebuild the scene. */
+  picking?: () => boolean;
 }
 
 interface Layer {
@@ -709,24 +711,27 @@ export class CrowdScene {
     const onUp = (e: PointerEvent) => {
       if (down && !down.moved) {
         const p = local(e);
+        // An order waiting for a map click (picking() says so) takes the
+        // click outright: zoomed out, the nearest fan is almost
+        // always within reach and would otherwise swallow every click. Any
+        // open cell will do — officers can be sent anywhere, and the barricade
+        // order checks for a road itself.
+        if (this.init.onPickStreet && this.init.picking?.()) {
+          const { mx, my } = this.groundAt(p.x, p.y);
+          const { map } = this.init;
+          const u = Math.floor(mx / CELL_SIZE_M), v = Math.floor(my / CELL_SIZE_M);
+          // Check coordinates before flattening, so off-map clicks cannot wrap rows.
+          if (u >= 0 && u < map.width && v >= 0 && v < map.height && map.cells[v * map.width + u] !== 'blocked') {
+            this.init.onPickStreet(v * map.width + u);
+          }
+          down = null;
+          return;
+        }
         const officer = this.officerAt(p.x, p.y);
         const vehicle = officer === null ? this.pickVehicleAt(p.x, p.y) : null;
         if (officer !== null) this.init.onPickOfficer(officer);
         else if (vehicle !== null && this.init.onPickVehicle) this.init.onPickVehicle(vehicle);
-        else {
-          const fan = this.pickAt(p.x, p.y);
-          this.init.onPick(fan);
-          if (fan === null && vehicle === null && this.init.onPickStreet) {
-            const { mx, my } = this.groundAt(p.x, p.y);
-            const { map } = this.init;
-            const u = Math.floor(mx / CELL_SIZE_M), v = Math.floor(my / CELL_SIZE_M);
-            // Check coordinates before flattening, so off-map clicks cannot wrap rows.
-            if (u >= 0 && u < map.width && v >= 0 && v < map.height) {
-              const cell = v * map.width + u;
-              if (streetCellAt(map, cell)) this.init.onPickStreet(cell);
-            }
-          }
-        }
+        else this.init.onPick(this.pickAt(p.x, p.y));
       }
       down = null;
     };

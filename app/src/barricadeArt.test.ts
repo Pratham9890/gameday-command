@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONTRACT_VERSION, type MapBundle } from '../../contracts.ts';
 import type { SceneInfo } from '../../engine/src/edits.ts';
-import { barricadePlacements, buildBarricades, closedAreas, closureKey, streetCellAt } from './barricadeArt.ts';
+import { barricadePlacements, buildBarricades, closedAreas, closureKey } from './barricadeArt.ts';
 import { diagonalZ, personZ, vehicleDiagonal } from './depth.ts';
 
 function roadMap(): MapBundle {
@@ -85,12 +85,4 @@ it('recognises gates by overlapping cells, with the marker along the doorway', (
   expect(area?.angle).toBeCloseTo(0);
   expect(area?.x).toBe(9);
   expect(area?.y).toBe(9);
-});
-
-it('accepts roads and adjacent walks, rejects other cells and row wrapping', () => {
-  const map = roadMap();
-  map.cells[30] = 'road';
-  map.cells[90] = 'blocked';
-  for (const cell of [150, 91, 210]) expect(streetCellAt(map, cell)).toBe(true);
-  for (const cell of [61, 90, 29, -1, 360, 1.5, NaN]) expect(streetCellAt(map, cell)).toBe(false);
 });

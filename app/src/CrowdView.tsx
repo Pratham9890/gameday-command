@@ -86,6 +86,7 @@ export function CrowdView(props: CrowdViewProps) {
       onPickOfficer: (id) => pickOfficerRef.current(id),
       onPickVehicle: (vehicle) => pickVehicleRef.current(vehicle),
       onPickStreet: (cell) => pickStreetRef.current?.(cell),
+      picking: () => pickStreetRef.current !== undefined,
       onFollowChange: setFollowing,
     });
     sceneRef.current = scene;

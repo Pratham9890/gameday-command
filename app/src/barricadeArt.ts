@@ -73,17 +73,6 @@ export function closedAreas(map: MapBundle, info: SceneInfo | null): ClosedArea[
   return areas;
 }
 
-/** Roads and their four-adjacent pedestrian approaches accept street commands. */
-export function streetCellAt(map: Pick<MapBundle, 'width' | 'height' | 'cells'>, cell: number): boolean {
-  if (!Number.isInteger(cell) || cell < 0 || cell >= map.width * map.height) return false;
-  if (map.cells[cell] === 'road') return true;
-  if (map.cells[cell] !== 'walk') return false;
-  const u = cell % map.width;
-  const v = Math.floor(cell / map.width);
-  return (u > 0 && map.cells[cell - 1] === 'road') || (u + 1 < map.width && map.cells[cell + 1] === 'road') ||
-    (v > 0 && map.cells[cell - map.width] === 'road') || (v + 1 < map.height && map.cells[cell + map.width] === 'road');
-}
-
 /** Place capped doorway rows or road-end rows plus pieces every roughly eight metres. */
 export function barricadePlacements(cells: number[], width: number, cellKind: (cell: number) => CellKind | undefined, isGate: boolean): BarricadePlacement[] {
   if (!cells.length) return [];
