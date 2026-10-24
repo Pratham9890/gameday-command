@@ -79,10 +79,10 @@ Use two `explore` subagents in parallel: one maps the frame pipeline in app/src/
 one maps the decide path in server/src/index.ts. Report both before editing.
 ```
 
-If your environment actually exposes OpenChamber MCP tools (`session.create`, `session.fork`,
-`subagent`), you may dispatch or fork a session yourself. If it does not, never assume it — put the
-instruction in the order and let the builder run it. Either way, **Claude Code's own subagent
-feature is not used for build or review work here.**
+OpenChamber has no MCP server of its own. MCP there is client-side only: it consumes servers
+configured in `opencode.json`, and none are configured on this machine. So you cannot call its
+tools from Claude Code. Put the subagent instruction in the order and let the builder run it.
+**Claude Code's own subagent feature is not used for build or review work here.**
 
 ## Non-negotiables
 
