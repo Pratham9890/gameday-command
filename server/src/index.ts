@@ -15,6 +15,18 @@ import { askFm, briefingFrom } from './fm.ts';
 
 const KEV_URL = process.env.KEV_URL ?? 'http://127.0.0.1:8009';
 const KEV_MODEL = process.env.KEV_MODEL ?? 'jaredpalmer/kev-4b';
+/**
+ * Deliberately tighter than the engine's DECISION_TIMEOUT_MS.
+ *
+ * The engine aborts the whole POST after 2 s and falls back for every key in
+ * the batch. If the server waited the same 2 s per key it would lose that race
+ * and throw away the answers it did manage to get, so it gives up early enough
+ * to always reply in time with Kev's answers for the keys that came back and
+ * defaults for the rest.
+ */
+const KEV_TIMEOUT_MS = Number(process.env.KEV_TIMEOUT_MS ?? Math.round(DECISION_TIMEOUT_MS * 0.75));
+/** How many questions to have in flight at once. One GPU answers roughly serially. */
+const KEV_CONCURRENCY = Number(process.env.KEV_CONCURRENCY ?? 4);
 const PORT = Number(process.env.PORT ?? 8787);
 const FM_URL = process.env.FM_URL ?? 'http://127.0.0.1:8080';
 const FM_MODEL = process.env.FM_MODEL ?? 'system';
@@ -59,10 +71,22 @@ export function createApp(db: Db): Hono {
 
   app.get('/api/decision-defaults', (c) => c.json(DECISION_DEFAULTS));
 
-  /** Cache first, then Kev, then defaults. Never fails: a dead Kev just means fallbacks. */
+  /**
+   * Cache first, then Kev, then defaults. Never fails: a dead Kev just means
+   * fallbacks.
+   *
+   * The keys with the most dots behind them are asked first, under one shared
+   * deadline. A cold lightning delay raises well over a hundred keys at once
+   * and the model answers them one at a time, so there is no way to get them
+   * all inside the engine's 2 s pause. Spending the budget on the biggest
+   * groups means the fans whose behaviour actually moves the crowd get a real
+   * answer, and the long tail of small groups takes the default — rather than
+   * asking for everything and timing out into defaults for all of it.
+   */
   app.post('/api/decide', async (c) => {
     const body = await c.req.json<{ runId: string; asks: DecisionAsk[] }>();
     const asks = body.asks ?? [];
+    const deadline = Date.now() + KEV_TIMEOUT_MS;
 
     const readCache = db.prepare<[string], { odds: string; model: string | null; ms: number | null }>(
       'select odds, model, ms from decision_cache where key = ?',
@@ -71,34 +95,61 @@ export function createApp(db: Db): Hono {
       'insert or replace into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
     );
 
-    const answers = await Promise.all(
-      asks.map(async (ask): Promise<DecisionAnswer> => {
-        const options = SITUATIONS[ask.situation]?.options.map((o) => o.key) ?? [];
-        const fallback: DecisionAnswer = {
-          key: ask.key,
-          odds: DECISION_DEFAULTS.defaults[ask.situation],
-          source: 'default',
-        };
+    const optionsFor = (ask: DecisionAsk) => SITUATIONS[ask.situation]?.options.map((o) => o.key) ?? [];
+    const fallbackFor = (ask: DecisionAsk): DecisionAnswer => ({
+      key: ask.key,
+      odds: DECISION_DEFAULTS.defaults[ask.situation],
+      source: 'default',
+    });
 
-        const cached = readCache.get(ask.key);
-        if (cached) {
-          const odds = JSON.parse(cached.odds) as Record<string, number>;
-          if (oddsAreValid(odds, options)) {
-            return { key: ask.key, odds, source: 'cache', model: cached.model ?? undefined, ms: cached.ms ?? undefined };
-          }
+    const answers = new Map<string, DecisionAnswer>();
+    const misses: DecisionAsk[] = [];
+
+    for (const ask of asks) {
+      if (answers.has(ask.key)) continue;
+      const cached = readCache.get(ask.key);
+      if (cached) {
+        const odds = JSON.parse(cached.odds) as Record<string, number>;
+        if (oddsAreValid(odds, optionsFor(ask))) {
+          answers.set(ask.key, {
+            key: ask.key,
+            odds,
+            source: 'cache',
+            model: cached.model ?? undefined,
+            ms: cached.ms ?? undefined,
+          });
+          continue;
         }
+      }
+      misses.push(ask);
+    }
 
+    // Biggest groups first: one call can answer thousands of dots.
+    misses.sort((a, b) => b.dotIds.length - a.dotIds.length);
+
+    let next = 0;
+    const worker = async () => {
+      while (next < misses.length) {
+        const ask = misses[next++]!;
+        const remaining = deadline - Date.now();
         const situation = SITUATIONS[ask.situation];
-        if (!situation) return fallback;
-        const result = await askKev(ask, situation, { url: KEV_URL, model: KEV_MODEL, timeoutMs: DECISION_TIMEOUT_MS });
-        if (!result || !oddsAreValid(result.odds, options)) return fallback;
-
+        if (!situation || remaining < 100) {
+          answers.set(ask.key, fallbackFor(ask));
+          continue;
+        }
+        const result = await askKev(ask, situation, { url: KEV_URL, model: KEV_MODEL, timeoutMs: remaining });
+        if (!result || !oddsAreValid(result.odds, optionsFor(ask))) {
+          answers.set(ask.key, fallbackFor(ask));
+          continue;
+        }
         writeCache.run(ask.key, JSON.stringify(result.odds), result.model, result.ms, Date.now());
-        return { key: ask.key, odds: result.odds, source: 'kev', model: result.model, ms: result.ms };
-      }),
-    );
+        answers.set(ask.key, { key: ask.key, odds: result.odds, source: 'kev', model: result.model, ms: result.ms });
+      }
+    };
 
-    return c.json({ answers });
+    await Promise.all(Array.from({ length: Math.min(KEV_CONCURRENCY, Math.max(misses.length, 1)) }, worker));
+
+    return c.json({ answers: asks.map((ask) => answers.get(ask.key) ?? fallbackFor(ask)) });
   });
 
   app.get('/api/plans', (c) => {
