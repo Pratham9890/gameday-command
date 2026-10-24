@@ -89,7 +89,26 @@ All three incidents work — a lightning delay, a gate surge at a north gate at 
 
 The commander view has the live map with a density heatmap, the incident panel, a plan editor that edits each step's timing and size, the three runs side by side, a scorecard each, the briefing, a replay scrubber over the kept frames, a deciding indicator while sim time waits on Kev, and dot detail — click any dot to see which group it belonged to, what it was deciding, the odds it was given, and whether a model or the fallback table answered.
 
-Still to come: live Kev decisions end to end. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
+### Verified, and not
+
+| Requirement | State |
+| --- | --- |
+| Workspaces, typecheck, tests | 98 tests, `tsc` clean |
+| Engine in a worker, no AI in movement | yes; flow fields, seeded RNG, snapshot/restore, frames every 15 s |
+| 20,000 dots at 10x or faster | **82-140x** measured in process |
+| Stadium map from OSM at kickoff minus 60 | yes, 800x800 cells from a committed extract |
+| Three incidents, 3 editable plans each | yes, all three run on the stadium map |
+| Same moment, same seed, three plans | yes, side by side |
+| Scorecard, checked against a hand count | yes, on the 3 gate test map |
+| Decisions grouped, cached, sim pauses, fallbacks counted | yes; **57,974 dot decisions to 135 model calls** |
+| DecisionTape replay gives identical scorecards | yes, proven by test |
+| Cold-cache lightning under 60 s | **39.8 s** against a stand-in, not the real model |
+| Briefing from `fm serve`, numbers checked | yes, verified live; 399-token prompt |
+| App screens | all built; **not seen rendering** |
+| Runs with Kev off, every decision a fallback | yes, tested |
+| Full demo in a fresh browser | **not verified** |
+
+Two things are genuinely unproven. The real **Kev-4B has never run here** — it is not installed on this machine, so the decision path is verified over real HTTP against a stand-in that answers in 150 ms. And the **app has not been seen rendering**: it builds, mounts with no console errors, and emits its worker chunk, but the in-app browser pane will not display and Playwright cannot reach DOMContentLoaded, so the browser demo needs a human to confirm. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
 ## Rules this project holds to
 
