@@ -4,6 +4,9 @@ import { DECISION_TIMEOUT_MS, decisionKey } from '../../contracts.ts';
 import { createApp } from './index.ts';
 import { openDb, type Db } from './db.ts';
 
+/** The stub answers this late; the server must give up long before it. */
+const SLOW_ANSWER_MS = DECISION_TIMEOUT_MS * 3;
+
 const context: DecisionContext = {
   crowdAtTarget: 'high',
   waitMinBucket: 10,
@@ -139,9 +142,13 @@ describe('POST /decide', () => {
       'fetch',
       vi.fn((_url: string | URL | Request, init?: RequestInit) =>
         new Promise<Response>((resolve, reject) => {
+          // Far slower than the contract allows, so "it gave up" and "it waited
+          // for the answer" are a long way apart. They used to be 100 ms apart,
+          // which a loaded machine's timer jitter could close, making this test
+          // fail for reasons that had nothing to do with the code.
           const timer = setTimeout(
             () => resolve(kevReply({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 })),
-            DECISION_TIMEOUT_MS + 500,
+            SLOW_ANSWER_MS,
           );
           init?.signal?.addEventListener('abort', () => {
             clearTimeout(timer);
@@ -153,9 +160,12 @@ describe('POST /decide', () => {
     const started = Date.now();
     const [answer] = await decide();
     expect(answer!.source).toBe('default');
-    // It gave up at the contract's timeout rather than waiting for the answer.
-    expect(Date.now() - started).toBeLessThan(DECISION_TIMEOUT_MS + 400);
-  }, 10_000);
+    // It gave up near the contract's timeout rather than waiting for the
+    // answer, with room for scheduling jitter in between.
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(SLOW_ANSWER_MS - 1000);
+    expect(elapsed).toBeGreaterThanOrEqual(DECISION_TIMEOUT_MS * 0.5);
+  }, 20_000);
 
   it('never caches a bad answer', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => kevReply({ hold_place: 2 })));

@@ -72,6 +72,7 @@ function lightningPlans(map: MapBundle): ResponsePlan[] {
   const gates = placesOfKind(map, 'gate');
   const gateDoors = gates.map((g) => doorFor(map, g)).filter((d): d is Id => !!d);
   const firstIndoor = shelters[0];
+  void firstIndoor;
   return [
     {
       id: 'plan-lightning-shelter-now',
@@ -84,15 +85,19 @@ function lightningPlans(map: MapBundle): ResponsePlan[] {
       ]),
     },
     {
+      // The crowd still outside is the one in the open. Posting officers on the
+      // gates sends them in; posting officers on the concourse only talks to
+      // people who are already under cover, which made this plan score the
+      // same as simply calling the shelter order.
       id: 'plan-lightning-open-gates',
-      name: 'Shelter order, open every gate, officers on the concourse',
+      name: 'Open every gate, officers on the gates, wave them inside',
       forIncident: 'lightning_delay',
       officersAvailable: OFFICERS_AVAILABLE,
       actions: compact([
-        { at: 0, type: 'alert', channel: 'pa', message: 'Lightning delay. Gates are open, move inside.', reachShare: 0.9 },
+        { at: 0, type: 'alert', channel: 'pa', message: 'Lightning delay. Every gate is open, get inside now.', reachShare: 0.9 },
         ...gateDoors.map((id): PlanAction => ({ at: 0, type: 'open', closableId: id })),
         shelters.length ? { at: 0, type: 'shelter_order', shelterPlaceIds: shelters } : null,
-        firstIndoor ? { at: 0, type: 'send_officers', count: 8, toPlaceId: firstIndoor } : null,
+        ...gates.slice(0, 4).map((g): PlanAction => ({ at: 0, type: 'send_officers', count: 2, toPlaceId: g.id })),
       ]),
     },
     {
