@@ -806,7 +806,9 @@ export class TrafficModel {
         const there = field.dist[n]!;
         if (there === UNREACHABLE || there > here || (turn !== 0 && there === here)) continue;
         if (density[n]! > crowdStop) continue;
-        if (!squeeze && this.heldByOther(n, i)) continue;
+        // Emergency vehicles pass traffic, but not each other once one is on
+        // scene: the cruiser used to park on top of the ambulance.
+        if (this.heldByOther(n, i) && (!squeeze || this.mode[this.occOwner[n]! - 1] === MODE_ON_SCENE)) continue;
         next = n;
         break;
       }
@@ -1031,6 +1033,17 @@ export class TrafficModel {
           if (i === this.ambulance) this.emergencyOnScene = true;
         }
         continue;
+      }
+
+      if (result === 'blocked' && ems) {
+        // Pulled up behind a unit already there: close enough, it is on scene too.
+        const here = this.cellAt(this.hx[i]!, this.hy[i]!);
+        if (here >= 0 && field.dist[here]! <= 8) {
+          this.speed[i] = 0;
+          this.mode[i] = MODE_ON_SCENE;
+          if (i === this.ambulance) this.emergencyOnScene = true;
+          continue;
+        }
       }
 
       if (result === 'blocked') {

@@ -113,7 +113,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
           w.kind === 'heavy_rain' ? `rgba(6,12,26,${0.12 + 0.18 * I})` :
           w.kind === 'rain' ? `rgba(8,14,28,${0.08 + 0.1 * I})` :
           w.kind === 'overcast' ? `rgba(12,16,24,${0.1 + 0.12 * I})` :
-          w.kind === 'snow' ? `rgba(225,235,250,${0.05 + 0.1 * I})` :
+          w.kind === 'snow' ? `rgba(225,235,250,${0.1 + 0.16 * I})` :
           w.kind === 'fog' ? `rgba(196,204,212,${0.14 + 0.26 * I})` :
           w.kind === 'heat' ? `rgba(255,120,30,${0.04 + 0.06 * I})` : null;
         if (tint) {
@@ -124,7 +124,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
         const wet = w.kind === 'rain' || w.kind === 'heavy_rain' || w.kind === 'thunderstorm';
         if (wet) {
           active = true;
-          const want = Math.round((pw * ph) / 2600 * (0.35 + I));
+          const want = Math.round(((pw * ph) / 1300) * (0.35 + I));
           while (fx.drops.length < want) {
             fx.drops.push({ x: Math.random() * pw, y: Math.random() * ph, len: (6 + Math.random() * 10) * k, speed: (500 + Math.random() * 500) * k });
           }
@@ -166,9 +166,9 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
 
         if (w.kind === 'snow') {
           active = true;
-          const want = Math.round((pw * ph) / 3200 * (0.3 + I));
+          const want = Math.round(((pw * ph) / 1000) * (0.4 + I));
           while (fx.flakes.length < want) {
-            fx.flakes.push({ x: Math.random() * pw, y: Math.random() * ph, r: (0.8 + Math.random() * 2.2) * k, drift: Math.random() * 2 - 1, phase: Math.random() * 6, speed: (25 + Math.random() * 45) * k });
+            fx.flakes.push({ x: Math.random() * pw, y: Math.random() * ph, r: (1.1 + Math.random() * 2.6) * k, drift: Math.random() * 2 - 1, phase: Math.random() * 6, speed: (25 + Math.random() * 45) * k });
           }
           fx.flakes.length = Math.min(fx.flakes.length, want);
           ctx.fillStyle = 'rgba(245,248,255,0.85)';
