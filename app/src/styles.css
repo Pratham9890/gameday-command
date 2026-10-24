@@ -183,3 +183,9 @@ input[type='number'] { width: 54px; }
   .runs { grid-template-columns: 1fr; }
   .bottom { grid-template-columns: 1fr; }
 }
+
+/* one canvas for all three runs, scorecards aligned underneath */
+.compare .canvas-wrap { border-radius: 8px; border: 1px solid var(--line); overflow: hidden; }
+.compare-canvas { display: block; width: 100%; height: auto; }
+.compare .runs { padding: 14px 0 0; }
+.compare .run h2 { border-bottom: 1px solid var(--line); }

@@ -72,7 +72,7 @@ Drive a headless browser with Chrome's own DevTools Protocol — Node has a buil
   --user-data-dir=/tmp/gd-chrome about:blank
 ```
 
-**PixiJS cannot start under software GL.** `Application.init` calls Pixi's own `checkMaxIfStatementsInShader`, which compiles shaders in a loop to find the GPU's `if` limit. On real hardware that is instant; under SwiftShader (and so in any headless browser here, including with `--use-angle=metal`, which falls back) it never finishes, and it pegs the renderer hard enough that Chrome stops answering DevTools requests. A stack dump via `Debugger.pause` shows exactly that frame. The app's DOM renders fine before it — a probe at 2.5 s finds every panel, all three plan names, the editor steps and the scrubber, with zero page errors — so the map canvas is the only part that cannot be checked this way.
+**PixiJS cannot start under software GL**, with one context or three. `Application.init` calls Pixi's own `checkMaxIfStatementsInShader`, which compiles shaders in a loop to find the GPU's `if` limit. On real hardware that is instant; under SwiftShader (and so in any headless browser here, including with `--use-angle=metal`, which falls back) it never finishes, and it pegs the renderer hard enough that Chrome stops answering DevTools requests. A stack dump via `Debugger.pause` shows exactly that frame. The app's DOM renders fine before it — a probe at 2.5 s finds every panel, all three plan names, the editor steps and the scrubber, with zero page errors — so the map canvas is the only part that cannot be checked this way.
 
 ## App screens
 
@@ -80,6 +80,7 @@ Drive a headless browser with Chrome's own DevTools Protocol — Node has a buil
 
 - `useRun` keeps frames and decision records in **refs**, not state. A frame carries five typed arrays and a lightning delay emits ~58,000 decision records in one step; re-rendering the tree per record would cost far more than drawing it. Counters are surfaced on the next frame instead.
 - `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
+- **All three runs draw into ONE PixiJS Application** (`ComparisonMaps.tsx`), as three panels of a single canvas with the base map texture shared between them. Three Applications meant three WebGL contexts and paying Pixi's GPU probe three times over. Dots are pixel bytes, the heatmap reuses one `ImageData`, the incident zone is drawn only when it changes, and the renderer is stopped and driven by hand — frames arrive every 15 sim seconds, so a running ticker redraws an unchanged scene sixty times a second.
 
 ## Commands
 

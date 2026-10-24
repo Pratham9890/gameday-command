@@ -6,7 +6,7 @@ import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { getBriefing, getDecisionDefaults, getMap } from './api.ts';
-import { MapView } from './MapView.tsx';
+import { ComparisonMaps } from './ComparisonMaps.tsx';
 import { applyDisabled, PlanEditor } from './PlanEditor.tsx';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
 
@@ -269,33 +269,40 @@ export function App() {
         </aside>
 
         <main>
-          <div className="runs">
-            {loaded &&
-              runs.map((run, i) => (
-                <section className="run" key={LABELS[i]}>
-                  <h2>
-                    <span className="label">{LABELS[i]}</span>
-                    <span className="plan-name">{planStates[i]?.plan.name ?? 'no plan'}</span>
-                  </h2>
-                  <div className="canvas-wrap">
-                    <MapView
-                      map={loaded.map}
-                      latest={run.latest}
-                      frames={run.frames}
-                      tick={run.tick}
-                      scrubIndex={scrub}
-                      dangerDensity={DEFAULT_DANGER_DENSITY}
-                      incidentCells={incident?.cells}
-                      onPickDot={(dot) => setPicked({ run: i, dot })}
-                    />
-                    {run.deciding !== null && <div className="deciding">deciding… {run.deciding} groups</div>}
-                    {scrub !== null && <div className="replaying">replay</div>}
+          {loaded && (
+            <div className="compare">
+              <div className="canvas-wrap">
+                {/* One PixiJS Application for all three runs: three WebGL
+                    contexts meant paying Pixi's GPU probe three times. */}
+                <ComparisonMaps
+                  map={loaded.map}
+                  runs={runs}
+                  scrubIndex={scrub}
+                  dangerDensity={DEFAULT_DANGER_DENSITY}
+                  incidentCells={incident?.cells}
+                  onPickDot={(run, dot) => setPicked({ run, dot })}
+                />
+                {runs.some((r) => r.deciding !== null) && (
+                  <div className="deciding">
+                    deciding… {runs.reduce((n, r) => n + (r.deciding ?? 0), 0)} groups
                   </div>
-                  <ScorecardView card={run.scorecard} live={run} />
-                  {run.error && <p className="error">{run.error}</p>}
-                </section>
-              ))}
-          </div>
+                )}
+                {scrub !== null && <div className="replaying">replay</div>}
+              </div>
+              <div className="runs">
+                {runs.map((run, i) => (
+                  <section className="run" key={LABELS[i]}>
+                    <h2>
+                      <span className="label">{LABELS[i]}</span>
+                      <span className="plan-name">{planStates[i]?.plan.name ?? 'no plan'}</span>
+                    </h2>
+                    <ScorecardView card={run.scorecard} live={run} />
+                    {run.error && <p className="error">{run.error}</p>}
+                  </section>
+                ))}
+              </div>
+            </div>
+          )}
 
           <section className="panel wide">
             <h2>Replay</h2>
