@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig } from '../../contracts.ts';
 import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S } from '../../contracts.ts';
 import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
@@ -341,12 +341,16 @@ export function App() {
   const order = allDone ? rankPlans(cards) : null;
   const rankOf = (i: number) => (order ? order.indexOf(i) : null);
 
-  // Start without a click when asked, once all three workers are ready.
+  // Start without a click when asked, once all three workers are ready. Only
+  // once: `playing` is not a dependency, so this effect never sees a pause,
+  // but without the ref the next ready flip after a restart would start play again.
+  const autoStarted = useRef(false);
   useEffect(() => {
-    if (!AUTORUN || playing || !loaded) return;
+    if (!AUTORUN || autoStarted.current || !loaded) return;
     if (!runs.every((r) => r.ready)) return;
+    autoStarted.current = true;
     setPlaying(true);
-  }, [loaded, playing, runA.ready, runB.ready, runC.ready]);
+  }, [loaded, runA.ready, runB.ready, runC.ready]);
 
   // Keep the finished comparison, which is what POST /comparisons is for.
   useEffect(() => {
