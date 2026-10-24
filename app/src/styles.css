@@ -71,6 +71,8 @@ header.top {
 .brand h1 { font-size: 16px; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; }
 .brand h1::before { content: ''; display: inline-block; width: 9px; height: 9px; background: var(--scarlet); border-radius: 2px; margin-right: 8px; vertical-align: 1px; }
 .brand .sub { color: var(--dim); font-size: 12.5px; }
+/* The dot scale: one permanent line of data, not part of the dismissible help. */
+.brand .scale { color: #b9c2cc; font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .clock { display: flex; flex-direction: column; gap: 4px; min-width: 240px; margin-left: auto; }
 .clock strong { font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -109,6 +111,10 @@ header.top {
 
 .banner { margin: 0; padding: 8px 20px; border-bottom: 1px solid var(--line); }
 .banner.error { background: #2b1214; }
+/* A standing note on the data: shown in the page flow, never over the map or cards. */
+.banner.notice { display: flex; align-items: center; gap: 12px; background: #1c1710; border-bottom-color: #44371a; color: #e6cf9a; }
+.banner.notice p { margin: 0; flex: 1; }
+.banner.notice button { flex: none; }
 
 /* ── Layout: map left, story right ──────────────────────────────── */
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px 20px; align-items: start; }

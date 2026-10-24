@@ -43,6 +43,8 @@ const CONCOURSE_RADIUS_CELLS = 2;
 const GATE_HALF_WIDTH_CELLS = 3;
 /** How deep the queue block outside a gate runs, in cells. */
 const GATE_DEPTH_CELLS = 4;
+/** Named lots this close to the bowl become reserved tailgate zones. */
+const TAILGATE_RADIUS_M = 200;
 /** Field plus sidelines and end zones, 160 ft by 360 ft with a margin. */
 const FIELD_WIDTH_M = 61;
 const FIELD_LENGTH_M = 122;
@@ -366,6 +368,36 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
     });
   }
   places.push(...lots);
+
+  // 7. Tailgates. OSM tags these areas as parking, not as tailgate zones, so the
+  // label is derived rather than mapped: a reserved zone over the same cells,
+  // one per named lot close enough to walk a cooler to the gates. Only lots
+  // within TAILGATE_RADIUS_M of the stands qualify; the far ones are not a
+  // tailgate anybody walks from, and two of them cannot reach a gate at all.
+  // The cells stay 'parking' in the grid, so they remain walkable, and the
+  // engine reads tailgates as neither a parking destination nor an exit.
+  const tailgates = lots
+    .map((lot) => {
+      let x = 0;
+      let y = 0;
+      for (const cell of lot.cells) {
+        x += cell % width;
+        y += (cell / width) | 0;
+      }
+      const distanceM = Math.hypot(x / lot.cells.length - bx, y / lot.cells.length - by) * CELL_SIZE_M;
+      return { lot, distanceM };
+    })
+    .filter(({ distanceM }) => distanceM <= TAILGATE_RADIUS_M)
+    .sort((a, b) => a.distanceM - b.distanceM);
+  for (const { lot } of tailgates) {
+    places.push({
+      id: `tailgate-${lot.id}`,
+      name: `Tailgate — ${lot.name}`,
+      kind: 'tailgate',
+      cells: [...lot.cells],
+      capacity: lot.cells.length * 4,
+    });
+  }
 
   return {
     version: CONTRACT_VERSION,

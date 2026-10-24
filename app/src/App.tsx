@@ -326,6 +326,8 @@ export function App() {
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingBusy, setBriefingBusy] = useState(false);
+  /** The synthetic-data note is shown on every load until dismissed; it is not remembered. */
+  const [showSynthetic, setShowSynthetic] = useState(true);
   const [showHelp, setShowHelp] = useState(() => {
     try {
       return localStorage.getItem('gd-help-hidden') !== '1';
@@ -557,6 +559,12 @@ export function App() {
     return scrub === null ? run.latest.current : (kept[Math.min(scrub, kept.length - 1)] ?? run.latest.current);
   };
   const ticks = runs.map((r) => r.tick).join(',');
+  // The dot scale on screen. The fan count comes from the map's crowd, the dot
+  // count from the live frame's arrays, and the ratio from the two of them, so
+  // the line can never drift from what the workers are actually drawing.
+  const liveFans = loaded ? fanCount(loaded.map) : 0;
+  const liveDots = runs[closeRun]!.latest.current?.frame.x.length ?? 0;
+  const fansPerDot = liveDots > 0 ? Math.round(liveFans / liveDots) : null;
   // People on their feet per run, which every colour and count below is built
   // from: seated fans are dense and safe, as in the scorecard's danger minutes.
   const standing = useMemo(
@@ -630,6 +638,11 @@ export function App() {
         <div className="brand">
           <h1>Gameday Command</h1>
           <span className="sub">Test crowd plans for Ohio Stadium before game day, not during it.</span>
+          {/* The dot scale, worked out from the crowd and the live frame, never typed. */}
+          <span className="sub scale" title="How the crowd on the map is drawn: one dot per group of fans.">
+            1 dot = {fansPerDot === null ? '…' : n(fansPerDot)} fans · {liveDots > 0 ? n(liveDots) : '…'} dots ·{' '}
+            {liveFans > 0 ? n(liveFans) : '…'} fans
+          </span>
         </div>
 
         <div className="clock">
@@ -680,6 +693,15 @@ export function App() {
         </div>
       </header>
 
+      {showSynthetic && (
+        <div className="banner notice">
+          <p>Crowd, traffic and sensors are synthetic. The forecast is a model output, not an observation.</p>
+          <button className="small ghost" onClick={() => setShowSynthetic(false)} title="Dismiss this note" aria-label="Dismiss the synthetic-data note">
+            ✕
+          </button>
+        </div>
+      )}
+
       {showHelp && (
         <div className="howto">
           {STEPS_HELP.map((step, i) => (
@@ -692,7 +714,7 @@ export function App() {
             </div>
           ))}
           <p className="howto-note">
-            Every plan gets the same {loaded ? fanCount(loaded.map).toLocaleString() : '100,000'} fans, arriving the same way. Only the
+            Every plan gets the same {loaded ? `${n(fanCount(loaded.map))} fans` : 'crowd'}, arriving the same way. Only the
             plan changes. Each fan's choices (follow the officer? head for cover?) come from an AI model of how people behave.
           </p>
           <button className="ghost" onClick={hideHelp} title="Hide">

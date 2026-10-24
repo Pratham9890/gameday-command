@@ -108,6 +108,63 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
     expect(starts).toEqual(new Set(stations.map((s) => s.cell)));
   });
 
+  it('turns the lots around the bowl into reserved tailgates', () => {
+    const tailgates = map.places.filter((p) => p.kind === 'tailgate');
+    // Four named lots sit within 200 m of the stands. The cut also excludes the
+    // two far lots that no fan can walk to a gate from.
+    expect(tailgates.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('gives every tailgate a unique lot id and walkable cells', () => {
+    const tailgates = map.places.filter((p) => p.kind === 'tailgate');
+    expect(new Set(tailgates.map((t) => t.id)).size).toBe(tailgates.length);
+    for (const tailgate of tailgates) {
+      expect(tailgate.id).toMatch(/^tailgate-lot-\d+$/);
+      expect(tailgate.cells.length).toBeGreaterThan(0);
+      // Every cell, not a sample: a tailgate reuses its lot's parking cells.
+      for (const cell of tailgate.cells) {
+        expect(map.cells[cell], `${tailgate.id} cell ${cell}`).not.toBe('blocked');
+      }
+      expect(tailgate.capacity).toBe(tailgate.cells.length * 4);
+    }
+  });
+
+  it('keeps every tailgate inside a kilometre of the bowl', () => {
+    // Measure: straight-line distance between the mean cell of the tailgate and
+    // the mean cell of the seating place, in metres (CELL_SIZE_M per cell).
+    const centroidOf = (cells: number[]) => {
+      let x = 0;
+      let y = 0;
+      for (const cell of cells) {
+        x += cell % map.width;
+        y += Math.floor(cell / map.width);
+      }
+      return { x: x / cells.length, y: y / cells.length };
+    };
+    const seating = map.places.find((p) => p.kind === 'seating')!;
+    const bowl = centroidOf(seating.cells);
+    const tailgates = map.places.filter((p) => p.kind === 'tailgate');
+    expect(tailgates.length).toBeGreaterThanOrEqual(4);
+    for (const tailgate of tailgates) {
+      const centre = centroidOf(tailgate.cells);
+      const distanceM = Math.hypot(centre.x - bowl.x, centre.y - bowl.y) * CELL_SIZE_M;
+      expect(distanceM, `${tailgate.name} is ${Math.round(distanceM)} m from the bowl`).toBeLessThanOrEqual(1000);
+    }
+  });
+
+  it('lets every tailgate reach a gate', () => {
+    const fields = new FlowFields(map);
+    fields.setClosed(new Set());
+    const gates = map.places.flatMap((place, index) => (place.kind === 'gate' ? [fields.field(index)] : []));
+    expect(gates.length).toBeGreaterThan(0);
+    for (const tailgate of map.places.filter((p) => p.kind === 'tailgate')) {
+      const open = gates.some((field) =>
+        tailgate.cells.every((cell) => field.dist[cell] !== UNREACHABLE),
+      );
+      expect(open, `${tailgate.name} cannot reach a gate`).toBe(true);
+    }
+  });
+
   it('lets fans in the stands reach the concourse to shelter', () => {
     const fields = new FlowFields(map);
     fields.setClosed(new Set());
