@@ -23,6 +23,7 @@ export function safeCountFor(cells: readonly number[]): number {
 }
 
 export const INCIDENT_LABELS: Record<IncidentKind, string> = {
+  game_end: 'Game ends',
   lightning_delay: 'Lightning delay',
   gate_surge: 'Gate surge',
   suspicious_package: 'Suspicious package',
@@ -143,12 +144,28 @@ export function suspiciousPackage(map: MapBundle, at = GAME_END_S): Incident {
   };
 }
 
-/** The three incidents the commander can trigger. */
-export function incidentsFor(map: MapBundle): Incident[] {
-  return [gateSurge(map, 0), lightningDelay(map), suspiciousPackage(map)];
+/** The final whistle: clearance measures the fans remaining in the stands. */
+export function gameEnd(map: MapBundle, at = GAME_END_S): Incident {
+  const stands = placesOfKind(map, 'seating')[0];
+  const cells = stands?.cells ?? [];
+  return {
+    id: 'inc-game-end',
+    kind: 'game_end',
+    at,
+    placeId: stands?.id,
+    cells,
+    safeCount: safeCountFor(cells),
+    note: 'The final whistle. Everyone heads back to the parking lots.',
+  };
 }
 
-/** The sim window to run an incident in: the crowd still builds from kickoff minus 60. */
+/** The incidents the commander can trigger. */
+export function incidentsFor(map: MapBundle): Incident[] {
+  return [gateSurge(map, 0), lightningDelay(map), suspiciousPackage(map), gameEnd(map)];
+}
+
+/** Arrival incidents build from kickoff minus 60; game end opens on the seated crowd. */
 export function windowFor(incident: Incident): { startAt: number; endAt: number } {
+  if (incident.kind === 'game_end') return { startAt: incident.at - 300, endAt: incident.at + 3600 };
   return { startAt: -3600, endAt: Math.max(900, incident.at + 1800) };
 }

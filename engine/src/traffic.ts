@@ -505,6 +505,20 @@ export class TrafficModel {
           this.mode[i] = MODE_PARKED;
           placed = true;
         }
+        // Late windows cannot replay an hours-old arrival just because the
+        // random probes missed a long vehicle's contiguous stalls.
+        const lastArrival = Math.max(...types.map((type) => -Math.min(...type.arrivalWindowMin) * 60));
+        if (!placed && init.startAt >= lastArrival + 3600) {
+          for (let s = 0; s < net.stallX.length; s++) {
+            const run = this.runFrom(s, i);
+            if (run === 0) continue;
+            this.occupyStalls(i, s, run);
+            this.placeAtStall(i);
+            this.mode[i] = MODE_PARKED;
+            placed = true;
+            break;
+          }
+        }
         if (placed) {
           this.scheduleExodus(i);
           continue;

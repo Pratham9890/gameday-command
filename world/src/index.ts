@@ -5,6 +5,7 @@ export {
   INCIDENT_LABELS,
   biggestStreet,
   expandCells,
+  gameEnd,
   gateSurge,
   incidentsFor,
   lightningDelay,
