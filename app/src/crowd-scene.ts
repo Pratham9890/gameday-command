@@ -9,6 +9,7 @@ import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from 
 import { paintFor } from './vehicleArt.ts';
 import { diagonalZ, heightAt, personZ, vehicleDiagonal } from './depth.ts';
 import { DiagonalPool } from './diagonal-pool.ts';
+import { barricadePlacements, buildBarricades, closedAreas, closureKey, streetCellAt, type BarricadeGroup } from './barricadeArt.ts';
 import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
@@ -123,6 +124,8 @@ export interface CrowdSceneInit {
   onFollowChange: (following: boolean) => void;
   /** A vehicle was clicked. Checked before fans, since a car sits on top of them. */
   onPickVehicle?: (vehicle: number) => void;
+  /** Empty road or roadside walk cell, after clearing the fan selection. */
+  onPickStreet?: (cell: number) => void;
 }
 
 interface Layer {
@@ -403,6 +406,7 @@ export class CrowdScene {
   private scene: SceneInfo | null = null;
   private prevScene: SceneInfo | null = null;
   private closedKey = '';
+  private barricades: BarricadeGroup[] = [];
   private closedTags: { el: HTMLElement; sx: number; sy: number }[] = [];
   private selectedOfficer: string | null = null;
   /** Who the last alert reached, and when it went out (wall clock). */
@@ -594,10 +598,12 @@ export class CrowdScene {
   setScene(info: SceneInfo | null, live: boolean): void {
     this.prevScene = live && this.scene && info && info.t > this.scene.t ? this.scene : null;
     this.scene = info;
-    const key = info ? [...info.closed].sort().join(',') : '';
+    const key = closureKey(info);
     if (key !== this.closedKey) {
       this.closedKey = key;
-      void this.ready.then(() => this.drawClosed(info?.closed ?? []));
+      void this.ready.then(() => {
+        if (!this.destroyed && key === this.closedKey) this.drawClosed(info);
+      });
     }
   }
 
@@ -644,33 +650,38 @@ export class CrowdScene {
     this.selectedOfficer = id;
   }
 
-  private drawClosed(ids: string[]): void {
+  private clearBarricades(): void {
+    for (const { body, lights } of this.barricades) {
+      body.destroy();
+      lights.destroy();
+    }
+    this.barricades = [];
+  }
+
+  private drawClosed(info: SceneInfo | null): void {
     const { map, overlay } = this.init;
     const { width } = map;
     this.closedCells.clear();
+    this.clearBarricades();
     for (const tag of this.closedTags) tag.el.remove();
     this.closedTags = [];
-    for (const id of ids) {
-      const closable = map.closables.find((c) => c.id === id);
-      if (!closable || closable.cells.length === 0) continue;
-      let u = 0;
-      let v = 0;
-      for (const cell of closable.cells) {
-        this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
-        u += (cell % width) + 0.5;
-        v += Math.floor(cell / width) + 0.5;
-      }
-      // A gate's own label already says it is closed; streets need a tag of their own.
-      if (map.places.some((p) => p.kind === 'gate' && closable.cells.some((c) => p.cells.includes(c)))) continue;
-      const n = closable.cells.length;
-      const p = isoProject((u / n) * CELL_SIZE_M, (v / n) * CELL_SIZE_M, 4);
+    const areas = closedAreas(map, info);
+    this.barricades = buildBarricades(areas.flatMap((area) =>
+      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate)));
+    for (const { body, lights } of this.barricades) this.people.addChild(body, lights);
+    for (const area of areas) {
+      for (const cell of area.cells) this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
+      // Map gates already have a status label; live barricades keep their supplied names.
+      const fromMap = map.closables.some((c) => c.id === area.id);
+      if (area.isGate && fromMap) continue;
+      const p = isoProject(area.x, area.y, 4);
       const el = document.createElement('div');
       el.className = 'crowd-label closed';
-      el.textContent = `⛔ ${closable.name.replace(/ door$/, '')} closed`;
+      el.textContent = `⛔ ${fromMap ? area.name.replace(/ door$/, '') : area.name} closed`;
       overlay.appendChild(el);
       this.closedTags.push({ el, sx: p.sx, sy: p.sy });
     }
-    this.closedCells.fill({ color: CLOSED, alpha: 0.7 });
+    this.closedCells.fill({ color: CLOSED, alpha: 0.3 });
   }
 
   private bindInput(canvas: HTMLCanvasElement): void {
@@ -702,7 +713,20 @@ export class CrowdScene {
         const vehicle = officer === null ? this.pickVehicleAt(p.x, p.y) : null;
         if (officer !== null) this.init.onPickOfficer(officer);
         else if (vehicle !== null && this.init.onPickVehicle) this.init.onPickVehicle(vehicle);
-        else this.init.onPick(this.pickAt(p.x, p.y));
+        else {
+          const fan = this.pickAt(p.x, p.y);
+          this.init.onPick(fan);
+          if (fan === null && vehicle === null && this.init.onPickStreet) {
+            const { mx, my } = this.groundAt(p.x, p.y);
+            const { map } = this.init;
+            const u = Math.floor(mx / CELL_SIZE_M), v = Math.floor(my / CELL_SIZE_M);
+            // Check coordinates before flattening, so off-map clicks cannot wrap rows.
+            if (u >= 0 && u < map.width && v >= 0 && v < map.height) {
+              const cell = v * map.width + u;
+              if (streetCellAt(map, cell)) this.init.onPickStreet(cell);
+            }
+          }
+        }
       }
       down = null;
     };
@@ -1478,6 +1502,7 @@ export class CrowdScene {
     const app = this.app;
     if (!app) return;
     const now = performance.now();
+    for (const { d, lights } of this.barricades) lights.alpha = (Math.floor(now / 500) + d) % 2 ? 0.2 : 1;
     const { w, h } = this.viewSize();
 
     if (this.follow && this.selected !== null) {
@@ -1687,6 +1712,7 @@ export class CrowdScene {
 
   destroy(): void {
     this.destroyed = true;
+    this.clearBarricades();
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
     for (const tag of [...this.stationTags, ...this.closedTags]) tag.el.remove();
