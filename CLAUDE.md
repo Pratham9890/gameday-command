@@ -2,12 +2,6 @@
 
 Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`contracts.ts` is frozen** — ask Nipun before changing it, then bump `CONTRACT_VERSION`.
 
-> **v3 handoff (2026-10-24).** Work happens on `feat/command-v3`. Before starting, read
-> `CONTEXT.md` (state, gaps, environment, constraints) and `TODO.md` (ordered work with
-> acceptance tests). If you are the supervisor, `PROMPT.md` is your role prompt. To direct the
-> active chat session, append an order to `ORDERS.md`. This file remains authoritative for the
-> engine and its traps.
-
 ## Layout
 
 | Path | Owns |
@@ -16,7 +10,7 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 | `engine/` | Sim loop, seeded RNG, typed-array dots, density grid, Web Worker entry. No AI. |
 | `world/` | Maps, incidents, playbook plans, officers, scoring. Changes the world only through `WorldActions`. |
 | `brain/` | Fan types, situations, decision defaults, decision client, odds sampling, tape. |
-| `server/` | Hono + better-sqlite3. Decision cache, plans, comparisons, Kev and briefing clients. |
+| `server/` | Hono + built-in `node:sqlite`. Decision cache, plans, comparisons, Kev and briefing clients. |
 | `app/` | Vite + React + PixiJS 8. Three runs side by side. |
 
 ## Where the key logic lives
@@ -63,7 +57,7 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **No TypeScript parameter properties anywhere.** Node's type stripping rejects them, and `/server` imports `/brain` directly. Use explicit field declarations in classes.
 - **One root `tsconfig.json`, DOM lib.** TypeScript errors if the `DOM` and `WebWorker` libs are both loaded, so `engine/src/worker.ts` types its own worker globals locally instead.
 - **Vite is pinned once at the root** with `overrides: { "vite": "$vite" }`. Two Vite copies (one from vitest, one from the app) make `vite.config.ts` fail to typecheck with unassignable `Plugin` types.
-- **better-sqlite3 is on 13.x.** 11.x cannot build against Node 26's V8 headers.
+- **SQLite is the built-in `node:sqlite`** (`DatabaseSync`), not better-sqlite3, so `npm install` needs no native toolchain (better-sqlite3 had no Node 24 prebuilt on Windows). It has no `.pragma()` or `.transaction()`: read pragmas with `prepare('PRAGMA …').get()`, write them with `exec`, and wrap batches in `BEGIN`/`COMMIT`.
 - **Sim time is relative to kickoff.** `SimSeconds` is negative before kickoff, so `startAt: -3600` is kickoff minus 60 minutes and an incident `at: 0` is kickoff.
 - **Incident zones are expanded with `expandCells()`.** A gate surge zone is the crowd on the approach, not the one 2 m doorway cell — with a single cell almost no dots are ever inside it and no decisions fire.
 - **Decision records are emitted one per dot.** The contract's `DecisionRecord` carries a single dot, and the dot detail panel must explain any dot the commander clicks. Measured: a lightning delay emits 57,974 records and the run still holds 103x real time, so this stays.
