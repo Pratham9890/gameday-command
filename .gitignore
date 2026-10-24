@@ -12,3 +12,4 @@ data/*.db-shm
 
 # Local MCP config (machine-specific; tools/orders-mcp.ps1 is committed)
 .mcp.json
+.claude/settings.local.json
