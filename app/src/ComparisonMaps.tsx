@@ -111,13 +111,15 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
     let disposed = false;
     const app = new Application();
 
-    void app
+    // React 18 StrictMode mounts effects twice in development. Destroying the
+    // first Application from inside its own init promise tore down WebGL state
+    // the second one was still setting up, and the second init never resolved —
+    // the page simply stopped, mid-setup, before drawing anything. So the
+    // promise is kept and the teardown waits for it to settle instead.
+    const ready = app
       .init({ canvas, width: totalW, height: panelH, background: 0x05070a, antialias: false })
       .then(() => {
-        if (disposed) {
-          app.destroy(true);
-          return;
-        }
+        if (disposed) return;
         // One base texture, shared by all three panels.
         const baseTexture = Texture.from(paintBase(map));
         baseTexture.source.scaleMode = 'nearest';
@@ -155,9 +157,11 @@ export function ComparisonMaps({ map, runs, scrubIndex, dangerDensity, incidentC
 
     return () => {
       disposed = true;
-      appRef.current?.destroy(true);
-      appRef.current = null;
       panelsRef.current = [];
+      appRef.current = null;
+      void ready.catch(() => {}).then(() => {
+        app.destroy(true);
+      });
     };
   }, [map, panelW, panelH, totalW, PX]);
 

@@ -104,9 +104,9 @@ The commander view has the live map with a density heatmap, the incident panel, 
 | DecisionTape replay gives identical scorecards | yes, proven by test |
 | Cold-cache lightning under 60 s | **39.8 s** against a stand-in, not the real model |
 | Briefing from `fm serve`, numbers checked | yes, verified live; 399-token prompt |
-| App screens | all built; **not seen rendering** |
+| App screens | all built and **seen rendering in Chrome** |
 | Runs with Kev off, every decision a fallback | yes, tested |
-| Full demo in a fresh browser | **not verified** |
+| Full demo in a fresh browser | loads and renders; a full timed run-through is still yours to do |
 
 Two things are genuinely unproven. The real **Kev-4B has never run here** — it is not installed on this machine, so the decision path is verified over real HTTP against a stand-in that answers in 150 ms. And the **app has not been seen rendering**: it builds, mounts with no console errors, and emits its worker chunk, but the in-app browser pane will not display and Playwright cannot reach DOMContentLoaded, so the browser demo needs a human to confirm. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
