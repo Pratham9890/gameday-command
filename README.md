@@ -148,7 +148,7 @@ a fraction of both. Again: a tradeoff, not a recommendation.
 | Runs with Kev off, every decision a fallback | yes, tested |
 | Full demo in a fresh browser | **run in the Mac's own default browser** via `open`, no flags or debugger; verified by the comparison the server saved. Chrome and the default browser both complete; **Safari does not** — see below |
 
-One thing is unresolved, and it is a browser, not the build. **Safari does not finish a run.** It loads the app and its workers genuinely call `/decide` — the server-side cache grows while it sits there — but ninety simulated minutes had not completed after six wall minutes. The likely cause is Safari throttling the timers the worker paces itself with when the tab is not frontmost, which would slow the pacing loop to roughly one sim second per wall second. That is a hypothesis, not a diagnosis: it has not been confirmed or fixed. **Demo in Chrome.**
+One thing is unresolved, and it is a browser, not the build. **Safari had not finished a run**, and the cause was almost certainly the worker's pacing loop: it slept once per simulated second, and Safari clamps timers to about a second in a tab whose app is not frontmost, which paced a 90 minute scenario at real time. That loop now makes up every step the wall clock owes before sleeping, so a clamped timer costs fewer, bigger batches rather than a slower run — and the same change took the Chrome bench from 222.5x to 254.4x. **Whether Safari now completes has not been confirmed:** the verifying run was cut short. **Demo in Chrome.**
 
 Everything else above was watched happening. `CLAUDE.md` carries the remaining open items, the largest being that a cold cache is mostly fallbacks for its first eighty seconds while the background warmer catches up.
 
