@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DecisionDefaults,
+  Snapshot,
   DecisionRecord,
   DensityGrid,
   MapBundle,
@@ -27,6 +28,9 @@ export interface RunState {
   kevCount: number;
   frameCount: number;
   scorecard: Scorecard | null;
+  /** The worker's own restart point, requested when its run ends. */
+  snapshotAt: number | null;
+  snapshotDots: number | null;
   error: string | null;
   /** Bumps on every frame so the canvas redraws without putting frames in state. */
   tick: number;
@@ -73,6 +77,8 @@ export function useRun(init: RunInit | null): RunHandle {
     kevCount: 0,
     frameCount: 0,
     scorecard: null,
+    snapshotAt: null,
+    snapshotDots: null,
     error: null,
     tick: 0,
   });
@@ -125,7 +131,16 @@ export function useRun(init: RunInit | null): RunHandle {
           }
           return;
         }
+        case 'snapshot': {
+          const snap = out.snapshot as Snapshot;
+          setState((s) => ({ ...s, snapshotAt: snap.t, snapshotDots: snap.dots.x.length }));
+          return;
+        }
         case 'done':
+          // Each plan's own worker hands back a restart point as it finishes,
+          // so the contract's snapshot is exercised per plan and not only in
+          // the bench harness.
+          worker.postMessage({ type: 'snapshot' } satisfies WorkerIn);
           setState((s) => ({
             ...s,
             scorecard: out.scorecard,

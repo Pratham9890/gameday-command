@@ -100,7 +100,7 @@ Last run in a fresh Chrome profile with Kev-4B and `fm serve` both live, on the 
 | peak density | 5.00 /m² | 5.00 /m² | 5.00 /m² |
 | officer minutes | 180 | 60 | 120 |
 | fans not reached | 100,000 | 99,205 | 49,935 |
-| fallback decisions | **0** | **0** | **1** |
+| fallback decisions | **0** | **0** | **0** |
 
 Three workers, 20,000 dots each, ran those 90 simulated minutes in 95 seconds — **56.8x real time per plan** against a 10x bar, and that is the UI's speed setting rather than the engine's limit; unpaced in one worker it reaches 222x.
 

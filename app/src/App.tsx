@@ -5,7 +5,7 @@ import { makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
-import { getBriefing, getDecisionDefaults, getMap } from './api.ts';
+import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
 import { ComparisonMaps } from './ComparisonMaps.tsx';
 import { applyDisabled, PlanEditor } from './PlanEditor.tsx';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
@@ -13,7 +13,14 @@ import { useRun, type RunHandle, type RunInit } from './useRun.ts';
 /** One seed for every plan in a comparison: the whole point is the same crowd. */
 const SEED = 20251023;
 const LABELS = ['A', 'B', 'C'] as const;
-const MAP_ID = 'default';
+const params = new URLSearchParams(window.location.search);
+/**
+ * The server serves the stadium map when it has been fetched, else the test
+ * map. `?map=test-3gate` forces the small one, which is handy for a quick look.
+ */
+const MAP_ID = params.get('map') ?? 'default';
+/** `?autorun=1` starts the three runs without a click, for an unattended demo. */
+const AUTORUN = params.get('autorun') === '1';
 const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
 const OFFICERS = 24;
@@ -86,6 +93,7 @@ export function App() {
   const [planStates, setPlanStates] = useState<PlanState[]>([]);
   const [generation, setGeneration] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [savedComparison, setSavedComparison] = useState<string | null>(null);
   const [speed, setSpeed] = useState(20);
   const [scrub, setScrub] = useState<number | null>(null);
   const [picked, setPicked] = useState<{ run: number; dot: number } | null>(null);
@@ -166,6 +174,22 @@ export function App() {
 
   const cards = runs.map((r) => r.scorecard);
   const allDone = cards.every((c) => c !== null);
+
+  // Start without a click when asked, once all three workers are ready.
+  useEffect(() => {
+    if (!AUTORUN || playing || !loaded) return;
+    if (!runs.every((r) => r.ready)) return;
+    setPlaying(true);
+  }, [loaded, playing, runA.ready, runB.ready, runC.ready]);
+
+  // Keep the finished comparison, which is what POST /comparisons is for.
+  useEffect(() => {
+    if (!allDone || !incident || savedComparison) return;
+    const scorecards = cards.filter((c): c is Scorecard => c !== null);
+    void saveComparison(incident, scorecards)
+      .then((r) => setSavedComparison(r.id))
+      .catch(() => {});
+  }, [allDone, incident, savedComparison, cards]);
   const maxFrames = Math.max(...runs.map((r) => r.frameCount), 0);
 
   // The briefing is only worth asking for once every plan has a scorecard.
@@ -180,6 +204,26 @@ export function App() {
   }, [allDone, incident, briefing, briefingBusy, cards, planStates]);
 
   const pickedRecord = picked ? runs[picked.run]?.decisionsByDot.current?.get(picked.dot) : undefined;
+
+  // Published for an unattended run: a browser with no debugger attached can
+  // still be checked, because the server sees the saved comparison.
+  useEffect(() => {
+    (window as unknown as { gameday?: unknown }).gameday = {
+      mapId: loaded?.map.id ?? null,
+      incident: incident?.kind ?? null,
+      allDone,
+      savedComparison,
+      briefing: briefing ? { canned: briefing.canned, model: briefing.model } : null,
+      runs: runs.map((r, i) => ({
+        label: LABELS[i],
+        ready: r.ready,
+        scorecard: r.scorecard,
+        snapshotAt: r.snapshotAt,
+        snapshotDots: r.snapshotDots,
+        fallbacksSoFar: r.fallbackCount,
+      })),
+    };
+  });
 
   return (
     <>
