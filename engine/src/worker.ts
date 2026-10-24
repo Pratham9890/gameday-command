@@ -43,13 +43,16 @@ function maybeCheckpoint(): void {
 }
 
 function sendFrame(frame: TickFrame, density: DensityGrid): void {
-  send({ type: 'frame', frame, density }, [
+  const transfer: Transferable[] = [
     frame.x.buffer,
     frame.y.buffer,
     frame.state.buffer,
     frame.officerCells.buffer,
     density.peoplePerM2.buffer,
-  ]);
+  ];
+  const v = frame.vehicles;
+  if (v) transfer.push(v.x.buffer, v.y.buffer, v.heading.buffer, v.speed.buffer, v.kind.buffer, v.state.buffer, v.waitedS.buffer);
+  send({ type: 'frame', frame, density }, transfer);
 }
 
 function emitFrame(): void {

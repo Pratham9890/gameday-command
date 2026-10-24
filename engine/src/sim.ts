@@ -13,6 +13,7 @@ import type {
   SituationId,
   Snapshot,
   TickFrame,
+  WeatherState,
   WorkerOut,
   WorldActions,
   WorldView,
@@ -22,6 +23,9 @@ import { DecisionClient } from '../../brain/src/client.ts';
 import { sampleOdds } from '../../brain/src/sample.ts';
 import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
+import { GAME_END_S } from '../../world/src/incidents.ts';
+import { CLEAR_SKY, decisionWeather, walkFactor, weatherAt } from '../../world/src/weather.ts';
+import { TrafficModel } from './traffic.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
 import { Rng } from './rng.ts';
@@ -42,6 +46,10 @@ export interface SimContext {
   /** Where each dispatched officer has been posted: officer id -> place index. */
   readonly officerPost: Map<Id, number>;
   t: SimSeconds;
+  /** The sky this second. Absent means clear, which is how v1 contexts were built. */
+  weather?: WeatherState;
+  /** Walking speed multiplier for the weather; exactly 1 when clear. */
+  walkFactor?: number;
 }
 
 export interface MovementModel {
@@ -65,6 +73,7 @@ export interface Checkpoint {
   snapshot: Snapshot;
   movement: unknown;
   scorer: ScorerState;
+  traffic?: unknown;
 }
 
 interface RaisedSituation {
@@ -98,6 +107,8 @@ export class Simulation {
   private readonly alerted: Uint8Array;
   private raised: RaisedSituation[] = [];
   private finished = false;
+  /** Vehicles, when the run asked for them. Reads the crowd, never moves it. */
+  readonly traffic: TrafficModel | null;
 
   private readonly opts: SimulationOptions;
 
@@ -117,7 +128,10 @@ export class Simulation {
       redirects: new Map<number, number>(),
       officerPost: new Map<Id, number>(),
       t: config.startAt,
+      weather: CLEAR_SKY,
+      walkFactor: 1,
     };
+    this.applyWeather();
     this.alerted = new Uint8Array(population.dots);
     for (const officer of this.ctx.officers) {
       this.officerPos.set(officer.id, this.cellCenter(officer.cell));
@@ -146,6 +160,25 @@ export class Simulation {
 
     opts.movement.spawn(this.ctx);
     this.ctx.density.update(dots);
+
+    this.traffic = config.traffic
+      ? new TrafficModel({
+          map,
+          config: config.traffic,
+          population,
+          incident: config.incident,
+          startAt: config.startAt,
+          endAt: config.endAt,
+          gameEndAt: config.incident.kind === 'suspicious_package' ? config.incident.at : config.endAt > GAME_END_S ? GAME_END_S : undefined,
+        })
+      : null;
+  }
+
+  /** Same timeline, same seconds, for every plan: the sky is not part of the plan. */
+  private applyWeather(): void {
+    const weather = weatherAt(this.opts.config.weather, this.ctx.t, this.opts.config.incident);
+    this.ctx.weather = weather;
+    this.ctx.walkFactor = walkFactor(weather);
   }
 
   private cellCenter(cell: number): { x: number; y: number } {
@@ -260,8 +293,10 @@ export class Simulation {
     const people = cell >= 0 ? density.peoplePerM2[cell]! : 0;
     const crowdAtTarget = people < 1.5 ? 'low' : people < 3 ? 'medium' : 'high';
     const minToKickoff = -t / 60;
-    const lightning =
-      config.incident.kind === 'lightning_delay' && t >= config.incident.at ? 'lightning' : 'clear';
+    // A lightning delay reads as lightning from the moment it fires, as it did
+    // in v1; otherwise the weather timeline says what the sky is doing.
+    const sky = this.ctx.weather ?? weatherAt(config.weather, t, config.incident);
+    const lightning = decisionWeather(sky);
     void map;
     return {
       crowdAtTarget,
@@ -354,6 +389,8 @@ export class Simulation {
       y: dots.y.slice(),
       state: dots.state.slice(),
       officerCells: Int32Array.from(officers.map((o) => o.cell)),
+      vehicles: this.traffic?.frame(),
+      weather: this.ctx.weather,
     };
   }
 
@@ -388,12 +425,22 @@ export class Simulation {
     if (this.finished) return;
     const { config } = this.opts;
     this.ctx.t += SIM_DT;
+    this.applyWeather();
 
     this.hooks.onStep(this.ctx.t, this.worldView(), this.worldActions());
     await this.resolveDecisions();
     this.stepOfficers(SIM_DT);
     this.opts.movement.step(this.ctx, SIM_DT);
     this.ctx.density.update(this.ctx.dots);
+    this.traffic?.step({
+      t: this.ctx.t,
+      dt: SIM_DT,
+      weather: this.ctx.weather ?? CLEAR_SKY,
+      density: this.ctx.density,
+      dots: this.ctx.dots,
+      closed: this.ctx.closed,
+    });
+    const traffic = this.traffic?.metrics();
 
     const zone = config.incident.cells ?? [];
     this.scorer.observe({
@@ -403,6 +450,7 @@ export class Simulation {
       dotsInZone: this.ctx.density.dotsInCells(zone),
       officerInZone: zone.some((cell) => this.ctx.officers.some((o) => o.cell === cell)),
       officersCommitted: this.hooks.committedOfficers(),
+      traffic,
     });
 
     if (this.ctx.t >= config.endAt) this.finished = true;
@@ -427,6 +475,7 @@ export class Simulation {
       snapshot: this.snapshot(),
       movement: this.opts.movement.capture?.() ?? null,
       scorer: this.scorer.capture(),
+      traffic: this.traffic?.capture(),
     };
   }
 
@@ -435,6 +484,8 @@ export class Simulation {
     this.restore(point.snapshot);
     this.opts.movement.restore?.(point.movement);
     this.scorer.restore(point.scorer);
+    if (point.traffic !== undefined) this.traffic?.restore(point.traffic);
+    this.applyWeather();
     this.finished = false;
   }
 }
