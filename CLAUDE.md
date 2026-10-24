@@ -119,6 +119,19 @@ A checkpoint is **not** just the contract's `Snapshot`. `Snapshot` is frozen and
 
 The app's replay scrubber draws kept frames while you drag, because that is instant. **Rewind runs to here** then sends `seek` to all three workers, so the simulations themselves go back and play resumes from that moment — measured in a browser: three workers at t=-3000 went to t=-3330 together, with the frames after it dropped.
 
+## Live police orders
+
+`PoliceOrder` (`engine/src/edits.ts`) is the commander improvising while a run plays: dispatch, recall, gate, barricade, redirect, alert, release.
+
+- **Orders go to the plan on the map only** (`closeRun` in `App.tsx`). The other two runs keep to their written plan, which is the comparison the tool exists for: improvising against the plan as written. Never broadcast an order to all three.
+- **An order lands on the worker's next sim second, after the world hooks and before decisions** (`applyOrders()` in `sim.ts`). After the hooks means a live order beats a plan step on the same second; before decisions means an alert or release is answered in that same pause. Every order goes through `worldActions()` so the step order above stays true.
+- **Orders are kept for the life of the run and replayed after a rewind**, exactly like dot edits: `seek` drops the ones after the target (`dropOrdersAfter`) and the rest fire again at their own second. `SceneInfo.orders` is the log the app shows.
+- **A checkpoint carries the Simulation's own officer bookkeeping** (targets, exact positions, posts, recalls, told/followed, redirects, who heard an alert, situations raised but not yet decided). Without it a rewind to before a dispatch left the officer already walking there. The world hooks' own state (which plan steps fired) is still not rewound — that lives in `world/`.
+- **A rewind forces `FlowMovement` to re-apply closures** by handing `restore()` a `closedKey` that matches nothing. Its restored key names the checkpoint's closures while its cached routes still held the abandoned future's, so a gate shut after the checkpoint stayed shut in every route. Calling `spawn()` again also fixed it but cost ~2.5 s per worker per seek on the stadium map; this costs 4 ms.
+- **A live barricade is a new closable on that worker's own copy of the map** (`ctx.map.closables`). Each worker gets a structured-clone copy, so this cannot leak into the other plans, and `FlowFields.setClosed` reads `map.closables` every time, so routes, admission and everything else treat it like a named street with no special case. Registration is idempotent (a replayed order does not add it twice) and survives a rewind; whether it is *up* comes back from the snapshot's `closed`. `app/src/barricade.ts` picks the cells: a named street closable if the click is on one, otherwise the road cells within ~40 m along the road.
+- **Recalled officers go back to standby, not on scene**: their post is kept only to route them home and cleared on arrival, and arriving home does not raise `officer_instruction` — they are not instructing anyone there.
+- **A live redirect raises `officer_instruction` around officers on station directly** in `sim.ts`, because the plan's standing order lives privately in `world/src/hooks.ts`.
+
 ## App screens
 
 `app/src/App.tsx` holds the whole commander view: incident panel, playbook with a per-step plan editor, three runs side by side, scorecards, replay scrubber, briefing, and dot detail. Two things worth knowing:

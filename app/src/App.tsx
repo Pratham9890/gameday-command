@@ -7,6 +7,7 @@ import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incide
 import { playbookFor } from '../../world/src/playbook.ts';
 import { DEFAULT_VEHICLES, VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
 import { WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
+import type { PoliceOrder } from '../../engine/src/edits.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
 import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.tsx';
 import { CrowdView } from './CrowdView.tsx';
@@ -14,6 +15,8 @@ import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
 import { OfficerPanel } from './OfficerPanel.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
+import { PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
+import { barricadeAt } from './barricade.ts';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
@@ -231,11 +234,13 @@ function AlertBanner({ run, plan, incidentAt }: { run: RunHandle; plan: Response
   const step = plan.actions
     .filter((a): a is Extract<ResponsePlan['actions'][number], { type: 'alert' }> => a.type === 'alert' && incidentAt + a.at <= last.t)
     .sort((a, b) => b.at - a.at)[0];
-  const how = step?.channel === 'phone' ? '📱 Phone alert' : '📣 PA announcement';
+  const live = run.scene.current?.orders?.findLast((entry) => entry.t === last.t && entry.order.type === 'alert')?.order;
+  const alert = live?.type === 'alert' ? live : step;
+  const how = alert?.channel === 'phone' ? '📱 Phone alert' : '📣 PA announcement';
   return (
     <div className="alert-banner">
       <strong>{how}</strong> reached {(last.dots.length * DOT_GROUP_SIZE).toLocaleString()} fans
-      {step?.message && <span className="muted"> · “{step.message}”</span>}
+      {alert?.message && <span className="muted"> · “{alert.message}”</span>}
     </div>
   );
 }
@@ -322,6 +327,8 @@ export function App() {
   );
   const [showFlow, setShowFlow] = useState(true);
   const [closeRun, setCloseRun] = useState(0);
+  const [pickMode, setPickMode] = useState<PolicePickMode>(null);
+  const [pickHint, setPickHint] = useState<string | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
@@ -545,6 +552,58 @@ export function App() {
   const progress = Math.min(1, Math.max(0, (t - window_.startAt) / (window_.endAt - window_.startAt)));
   const status = incident ? incidentStatus(incident, t) : null;
   const started = runs.some((r) => r.frameCount > 1);
+  const ordersDisabled = scrub !== null || !started;
+
+  // A pending click must not follow the commander into a different plan or replay.
+  useEffect(() => {
+    setPickMode(null);
+    setPickHint(null);
+  }, [closeRun, generation, ordersDisabled]);
+
+  useEffect(() => {
+    if (!pickMode) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPickMode(null);
+    };
+    window.addEventListener('keydown', cancel);
+    return () => window.removeEventListener('keydown', cancel);
+  }, [pickMode]);
+
+  const sendOrder = (order: PoliceOrder) => {
+    if (ordersDisabled) return;
+    runs[closeRun]!.send({ type: 'order', order });
+  };
+
+  const armPick = (mode: PolicePickMode) => {
+    if (mode && ordersDisabled) return;
+    setPickMode(mode);
+    setPickHint(null);
+    if (mode) {
+      setPicked(null);
+      setPickedOfficer(null);
+      setPickedVehicle(null);
+      setPickedCell(null);
+    }
+  };
+
+  const orderAt = (cell: number) => {
+    if (!pickMode) return;
+    setPickMode(null);
+    if (ordersDisabled || !loaded) return;
+    if (pickMode.kind === 'dispatch') {
+      sendOrder({ type: 'dispatch', officerIds: pickMode.officerIds, toCell: cell });
+      return;
+    }
+    const barricade = barricadeAt(loaded.map, cell);
+    if (!barricade) {
+      setPickHint('That is not a street — click a road');
+      return;
+    }
+    sendOrder({
+      type: 'barricade', closableId: barricade.closableId, closed: true,
+      name: barricade.name, cells: barricade.existing ? undefined : barricade.cells,
+    });
+  };
   const deciding = runs.reduce((sum, r) => sum + (r.deciding ?? 0), 0);
   const scrubT = scrub !== null ? runs.map((r) => r.frames.current?.[scrub]?.frame.t).find((x) => x !== undefined) : undefined;
   const kev = runs.reduce((sum, r) => sum + r.kevCount, 0);
@@ -734,6 +793,10 @@ export function App() {
                     onPick={(raw) => {
                       // The 2D plan has one panel; its index 0 is the plan on show.
                       const pick = raw && view === 'plan' ? { ...raw, run: closeRun } : raw;
+                      if (pickMode && pick?.type === 'cell') {
+                        orderAt(pick.cell);
+                        return;
+                      }
                       setPicked(pick?.type === 'dot' ? { run: pick.run, dot: pick.dot } : null);
                       setPickedVehicle(pick?.type === 'vehicle' ? { run: pick.run, vehicle: pick.vehicle } : null);
                       setPickedCell(pick?.type === 'cell' ? pick : null);
@@ -775,6 +838,7 @@ export function App() {
                     showFlow={showFlow}
                     onShowFlow={setShowFlow}
                     hotspots={police[closeRun] ?? []}
+                    onPickStreet={pickMode ? orderAt : undefined}
                   />
                 )}
                 <div className="map-title">
@@ -801,6 +865,14 @@ export function App() {
                   <div className="deciding">AI is deciding what {deciding.toLocaleString()} groups of fans do… the clock waits</div>
                 )}
                 {scrub !== null && <div className="replaying">Replay</div>}
+                {pickMode && !ordersDisabled && (
+                  <div className="police-pick" role="status">
+                    {pickMode.kind === 'barricade'
+                      ? 'Click a street to barricade it — Esc to cancel'
+                      : `Click where to send ${pickMode.officerIds.length} ${pickMode.officerIds.length === 1 ? 'officer' : 'officers'} — Esc to cancel`}
+                    <span>Plan {LABELS[closeRun]} only</span>
+                  </div>
+                )}
                 {view === 'close' && <Legend />}
                 {view === 'close' && runs[closeRun] && planStates[closeRun] && (
                   <AlertBanner run={runs[closeRun]!} plan={applyDisabled(planStates[closeRun]!.plan, planStates[closeRun]!.disabled)} incidentAt={incident?.at ?? 0} />
@@ -812,6 +884,9 @@ export function App() {
                     label={LABELS[pickedOfficer.run]!}
                     officerId={pickedOfficer.id}
                     onClose={() => setPickedOfficer(null)}
+                    onSendTo={pickedOfficer.run === closeRun ? () => armPick({ kind: 'dispatch', officerIds: [pickedOfficer.id] }) : undefined}
+                    onRecall={pickedOfficer.run === closeRun ? () => sendOrder({ type: 'recall', officerIds: [pickedOfficer.id] }) : undefined}
+                    disabled={ordersDisabled}
                   />
                 )}
                 {picked && pickedRun && (
@@ -1129,9 +1204,30 @@ export function App() {
           {loaded && runs[closeRun] && (
             <section className="panel">
               <h2>
+                Police orders <Info>Give a live order to the plan on the map. It takes effect on the next simulated second; the other two plans continue as written.</Info>
+              </h2>
+              <PolicePanel
+                key={`${closeRun}-${generation}`}
+                map={loaded.map}
+                run={runs[closeRun]!}
+                label={LABELS[closeRun]!}
+                disabled={ordersDisabled}
+                started={started}
+                onOrder={sendOrder}
+                armPick={armPick}
+                pickMode={pickMode}
+                hint={pickHint}
+              />
+            </section>
+          )}
+
+          {loaded && runs[closeRun] && (
+            <section className="panel">
+              <h2>
                 Gates <Info>Every gate's door and flow for the plan on the map: people through it per minute in and out, the queue waiting, and how much of what it can pass it is passing. A closed gate passes nobody and turns its queue away to the next open gate.</Info>
               </h2>
-              <GatesPanel map={loaded.map} run={runs[closeRun]!} label={LABELS[closeRun]!} />
+              <GatesPanel map={loaded.map} run={runs[closeRun]!} label={LABELS[closeRun]!}
+                onToggle={(closableId, closed) => sendOrder({ type: 'gate', closableId, closed })} disabled={ordersDisabled} />
             </section>
           )}
 
