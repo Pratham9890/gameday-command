@@ -57,23 +57,51 @@ function emitFrame(): void {
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));
 }
 
+/**
+ * Steps run between yields while catching up. Bounds how long the worker can go
+ * without reading its inbox, so pause, speed and seek stay responsive.
+ */
+const MAX_CATCHUP_STEPS = 240;
+
+/**
+ * Pacing debt we are willing to make up. A tab the browser suspends outright
+ * comes back owing the whole gap; past this we give up on it rather than run
+ * flat out for minutes to settle a debt nobody watched accrue.
+ */
+const MAX_DEBT_MS = 2000;
+
 async function loop(): Promise<void> {
   if (looping || !sim) return;
   looping = true;
   try {
+    // `due` is the wall clock the next sim second is owed at. We step until the
+    // clock has caught up, then sleep once -- NOT once per sim second, which is
+    // what this used to do. A browser that clamps timers (Safari holds
+    // setTimeout to ~1 s in a tab that is not frontmost, workers included) made
+    // each of those per-step sleeps a full second, pacing a 90 minute run at
+    // roughly real time however high `speed` was set. Sleeping once per batch
+    // and then making up every step the clock owes is immune to the clamp: a
+    // coarser timer means fewer, bigger batches, not a slower run.
     let due = performance.now();
-    let steps = 0;
     while (playing && sim && !sim.done) {
-      await sim.step();
-      if (sim.isFrameTime()) {
-        maybeCheckpoint();
-        emitFrame();
-      }
       // speed is sim seconds per wall second; it caps the run, never rushes it.
-      due += 1000 / Math.max(speed, 0.01);
+      const perStep = 1000 / Math.max(speed, 0.01);
+      if (performance.now() - due > MAX_DEBT_MS) due = performance.now();
+
+      let ran = 0;
+      while (playing && sim && !sim.done && ran < MAX_CATCHUP_STEPS && performance.now() >= due) {
+        await sim.step();
+        if (sim.isFrameTime()) {
+          maybeCheckpoint();
+          emitFrame();
+        }
+        due += perStep;
+        ran++;
+      }
+      if (!playing || !sim || sim.done) break;
+
       const wait = due - performance.now();
-      if (wait > 2) await sleep(wait);
-      else if (++steps % 64 === 0) await sleep(0);
+      await sleep(wait > 2 ? wait : 0);
     }
     if (sim?.done) {
       emitFrame();
