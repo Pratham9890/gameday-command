@@ -96,10 +96,13 @@ Last run in a fresh Chrome profile with Kev-4B and `fm serve` both live, on the 
 | | Plan A, six officers | Plan B, open Gate 2 + PA | Plan C, close Gate 1 |
 | --- | --- | --- | --- |
 | time to clear | **6 min** | 9 min | **never** |
+| decisions | 121 | 10,254 | 11,250 |
 | peak density | 5.00 /m² | 5.00 /m² | 5.00 /m² |
 | officer minutes | 180 | 60 | 120 |
 | fans not reached | 100,000 | 99,205 | 49,935 |
-| fallback decisions | **0** | 358 | 401 |
+| fallback decisions | **0** | **0** | **1** |
+
+Three workers, 20,000 dots each, ran those 90 simulated minutes in 95 seconds — **56.8x real time per plan** against a 10x bar, and that is the UI's speed setting rather than the engine's limit; unpaced in one worker it reaches 222x.
 
 Closing the hot gate never clears it — the crowd piles up outside. Opening a relief gate reaches almost everyone but takes longer. Six officers clears fastest and reaches nobody. That is the tradeoff the commander is being shown, and the briefing underneath it is written by the on-device model from those numbers alone.
 
@@ -108,8 +111,8 @@ Closing the hot gate never clears it — the crowd piles up outside. Opening a r
 | Requirement | State |
 | --- | --- |
 | Workspaces, typecheck, tests | 98 tests, `tsc` clean |
-| Engine in a worker, no AI in movement | yes; flow fields, seeded RNG, snapshot/restore, frames every 15 s |
-| 20,000 dots at 10x or faster | **82-140x** measured in process |
+| Engine in a worker, no AI in movement | yes; flow fields, seeded RNG, frames every 15 s, snapshot **and** seek-to-rewind exercised through the worker |
+| 20,000 dots at 10x or faster | **222x** in one browser worker, **56.8x** per plan with three running in the app |
 | Stadium map from OSM at kickoff minus 60 | yes, 800x800 cells from a committed extract |
 | Three incidents, 3 editable plans each | yes, all three run on the stadium map |
 | Same moment, same seed, three plans | yes, side by side |
