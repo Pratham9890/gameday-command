@@ -70,6 +70,17 @@ function makeBigMap(size = 800, gateCount = 12): MapBundle {
   };
 }
 
+/**
+ * Hand control back to the event loop now and then.
+ *
+ * With an empty tape every step resolves on the microtask queue, so a long run
+ * never yields and Vitest's reporter RPC times out mid-test ("Timeout calling
+ * onTaskUpdate"). The real worker yields between steps anyway, so this also
+ * measures something closer to how it actually runs.
+ */
+const breathe = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const YIELD_EVERY = 250;
+
 describe('engine throughput', () => {
   it('runs 20,000 dots at better than 10x real time in one worker', async () => {
     const bundle = makeBigMap();
@@ -107,7 +118,10 @@ describe('engine throughput', () => {
 
     const steps = 300;
     const start = performance.now();
-    for (let i = 0; i < steps; i++) await sim.step();
+    for (let i = 0; i < steps; i++) {
+      await sim.step();
+      if (i % YIELD_EVERY === YIELD_EVERY - 1) await breathe();
+    }
     const wallSeconds = (performance.now() - start) / 1000;
     const ratio = steps / wallSeconds;
 
@@ -164,12 +178,17 @@ describe('engine throughput', () => {
     });
 
     // Walk the crowd to the stadium first; that part is already measured above.
-    while (sim.ctx.t < incidentAt - 1) await sim.step();
+    let warmed = 0;
+    while (sim.ctx.t < incidentAt - 1) {
+      await sim.step();
+      if (++warmed % YIELD_EVERY === 0) await breathe();
+    }
 
     const steps = 60;
     const start = performance.now();
     for (let i = 0; i < steps; i++) await sim.step();
     const wallSeconds = (performance.now() - start) / 1000;
+    await breathe();
 
     console.log(
       `burst: ${records} decision records from ${keysAsked} distinct keys over ${pauses} pauses, ` +
