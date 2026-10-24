@@ -2,6 +2,11 @@
 
 Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`contracts.ts` is frozen** — ask Nipun before changing it, then bump `CONTRACT_VERSION`.
 
+> **v3 handoff (2026-10-24).** Work happens on `feat/command-v3`. Before starting, read
+> `CONTEXT.md` (state, gaps, environment, constraints) and `TODO.md` (ordered work with
+> acceptance tests). To direct the active chat session, append an order to `ORDERS.md`.
+> This file remains authoritative for the engine and its traps.
+
 ## Layout
 
 | Path | Owns |
