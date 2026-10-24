@@ -4,7 +4,13 @@ import type { CellKind, MapBundle } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES } from '../../contracts.ts';
 import type { RunSnapshotView } from './useRun.ts';
 
-const PX_PER_CELL = 18;
+/**
+ * Canvas pixels per 2 m cell, aimed at an ~800 px canvas whatever the map size:
+ * 40 for the tiny test map, 1 for the stadium's 800 cell grid. CSS scales the
+ * canvas down to the panel, so three runs fit side by side either way.
+ */
+const TARGET_CANVAS_PX = 800;
+const pxPerCell = (map: MapBundle) => Math.max(1, Math.round(TARGET_CANVAS_PX / map.width));
 
 const CELL_COLORS: Record<CellKind, string> = {
   blocked: '#1b222b',
@@ -44,6 +50,7 @@ export interface MapViewProps {
  * the whole redraw is one texture upload plus a handful of batched fills.
  */
 export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
+  const PX_PER_CELL = pxPerCell(map);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<Application | null>(null);
   const heatRef = useRef<{ canvas: HTMLCanvasElement; texture: Texture } | null>(null);
@@ -102,7 +109,7 @@ export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
       dotsRef.current = null;
       officersRef.current = null;
     };
-  }, [map]);
+  }, [map, PX_PER_CELL]);
 
   useEffect(() => {
     const app = appRef.current;
@@ -130,27 +137,29 @@ export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
     }
 
     const scale = PX_PER_CELL / CELL_SIZE_M;
+    const dotSize = Math.max(1.5, PX_PER_CELL * 0.8);
     dots.clear();
     const { x, y, state } = view.frame;
     for (let s = 0; s < DOT_STATES.length - 1; s++) {
       let drew = false;
       for (let i = 0; i < x.length; i++) {
         if (state[i] !== s) continue;
-        dots.rect(x[i]! * scale - 1, y[i]! * scale - 1, 2.5, 2.5);
+        dots.rect(x[i]! * scale - dotSize / 2, y[i]! * scale - dotSize / 2, dotSize, dotSize);
         drew = true;
       }
       if (drew) dots.fill({ color: STATE_COLORS[s]!, alpha: 0.95 });
     }
 
     officers.clear();
+    const badge = Math.max(4, PX_PER_CELL);
     for (const cell of view.frame.officerCells) {
       if (cell < 0) continue;
       const cx = (cell % map.width) * PX_PER_CELL;
       const cy = Math.floor(cell / map.width) * PX_PER_CELL;
-      officers.rect(cx + 3, cy + 3, PX_PER_CELL - 6, PX_PER_CELL - 6);
+      officers.rect(cx - badge / 2, cy - badge / 2, badge, badge);
     }
     officers.stroke({ color: 0x58a6ff, width: 1.5 });
-  }, [tick, latest, map, dangerDensity]);
+  }, [tick, latest, map, dangerDensity, PX_PER_CELL]);
 
   return <canvas ref={canvasRef} />;
 }

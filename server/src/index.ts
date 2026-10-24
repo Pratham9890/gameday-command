@@ -1,12 +1,13 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import type { DecisionAnswer, DecisionAsk, Incident, ResponsePlan, Scorecard } from '../../contracts.ts';
+import type { DecisionAnswer, DecisionAsk, Incident, MapBundle, ResponsePlan, Scorecard } from '../../contracts.ts';
 import { DECISION_TIMEOUT_MS } from '../../contracts.ts';
 import { DECISION_DEFAULTS } from '../../brain/src/defaults.ts';
 import { SITUATIONS } from '../../brain/src/situations.ts';
 import { oddsAreValid } from '../../brain/src/sample.ts';
 import { makeTestMap } from '../../world/src/test-map.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
+import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from '../../world/src/osm/stadium.ts';
 import { openDb, type Db } from './db.ts';
 import { askKev } from './kev.ts';
 import { templateBriefing } from './briefing.ts';
@@ -15,15 +16,40 @@ const KEV_URL = process.env.KEV_URL ?? 'http://127.0.0.1:8009';
 const KEV_MODEL = process.env.KEV_MODEL ?? 'jaredpalmer/kev-4b';
 const PORT = Number(process.env.PORT ?? 8787);
 
-const MAPS = { 'test-3gate': makeTestMap() };
+const TEST_MAP_ID = 'test-3gate';
+
+/**
+ * Maps are built once on first request and kept. The stadium map is only
+ * available when the OSM extract has been fetched (npm run fetch-map); without
+ * it the app still runs on the test map rather than failing to start.
+ */
+const built = new Map<string, MapBundle>();
+
+function mapById(id: string): MapBundle | undefined {
+  const cached = built.get(id);
+  if (cached) return cached;
+  let map: MapBundle | undefined;
+  if (id === TEST_MAP_ID) map = makeTestMap();
+  else if (id === STADIUM_MAP_ID && extractExists()) map = buildStadiumMap(loadExtract());
+  if (map) built.set(id, map);
+  return map;
+}
+
+/** The stadium map if it has been fetched, otherwise the test map. */
+function defaultMap(): MapBundle {
+  return mapById(STADIUM_MAP_ID) ?? mapById(TEST_MAP_ID)!;
+}
 
 export function createApp(db: Db): Hono {
   const app = new Hono();
 
-  app.get('/api/health', (c) => c.json({ ok: true, kev: KEV_URL }));
+  app.get('/api/health', (c) =>
+    c.json({ ok: true, kev: KEV_URL, stadiumMap: extractExists(), defaultMapId: defaultMap().id }),
+  );
 
   app.get('/api/maps/:id', (c) => {
-    const map = MAPS[c.req.param('id') as keyof typeof MAPS];
+    const id = c.req.param('id');
+    const map = id === 'default' ? defaultMap() : mapById(id);
     return map ? c.json(map) : c.json({ error: 'no such map' }, 404);
   });
 
@@ -77,7 +103,7 @@ export function createApp(db: Db): Hono {
       .prepare<[string], { json: string }>('select json from plans where incident = ?')
       .all(kind ?? '')
       .map((row) => JSON.parse(row.json) as ResponsePlan);
-    const builtIn = kind ? playbookFor(kind as ResponsePlan['forIncident'], MAPS['test-3gate']) : [];
+    const builtIn = kind ? playbookFor(kind as ResponsePlan['forIncident'], defaultMap()) : [];
     return c.json([...builtIn, ...saved]);
   });
 

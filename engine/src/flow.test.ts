@@ -8,7 +8,7 @@ import { playbookFor } from '../../world/src/playbook.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { FlowFields, UNREACHABLE } from './flowfield.ts';
-import { densityFactor, FlowMovement, RHO_JAM } from './movement-flow.ts';
+import { densityFactor, FlowMovement, MAX_DOTS_PER_CELL, RHO_JAM } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
 const map = makeTestMap();
@@ -209,5 +209,39 @@ describe('FlowMovement on the test map', () => {
     await runToEnd(c);
     // plan C closes the hot gate, so the crowd cannot end up in the same place
     expect(Array.from(a.ctx.dots.state)).not.toEqual(Array.from(c.ctx.dots.state));
+  });
+
+  it('never lets more dots into a cell than physically fit', async () => {
+    // The guard on a whole class of bug: positions live in a Float32Array, so a
+    // move computed in float64 can be stored a hair back across a cell
+    // boundary. The dot then releases a cell it is still standing in, the cell
+    // accepts another dot, and a 2 m square quietly reports 13 people per
+    // square meter. Math.fround at the point of decision is what prevents it.
+    const sim = makeSim({ fans: 6000, startAt: -600, endAt: 240 });
+    const width = map.width;
+
+    while (!sim.done) {
+      await sim.step();
+      const counts = new Int32Array(map.cells.length);
+      const { x, y, state, count } = sim.ctx.dots;
+      for (let i = 0; i < count; i++) {
+        if (sim.ctx.dots.stateOf(i) === 'gone') continue;
+        if (x[i]! < 0 || y[i]! < 0) continue;
+        counts[((y[i]! / CELL_SIZE_M) | 0) * width + ((x[i]! / CELL_SIZE_M) | 0)]!++;
+      }
+      void state;
+      let worst = 0;
+      for (let c = 0; c < counts.length; c++) if (counts[c]! > worst) worst = counts[c]!;
+      expect(worst, `t=${sim.ctx.t} packed ${worst} dots into one cell`).toBeLessThanOrEqual(MAX_DOTS_PER_CELL);
+    }
+  });
+
+  it('keeps peak density at a physically possible number', async () => {
+    const sim = makeSim({ fans: 6000, startAt: -600, endAt: 240 });
+    await runToEnd(sim);
+    // MAX_DOTS_PER_CELL dots x 5 fans / 4 square meters
+    const ceiling = (MAX_DOTS_PER_CELL * DOT_GROUP_SIZE) / (CELL_SIZE_M * CELL_SIZE_M);
+    expect(sim.scorecard().peakDensity).toBeLessThanOrEqual(ceiling);
+    expect(sim.scorecard().peakDensity).toBeGreaterThan(0);
   });
 });

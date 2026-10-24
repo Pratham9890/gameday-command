@@ -81,7 +81,11 @@ Measured on an 800x800 grid (the stadium plus half a mile at 2 m cells) with 20,
 - **107x real time** through a lightning delay that asks every dot at once
 - **57,974 dot decisions collapse to 121 distinct model calls**
 
-Still to come: the real OpenStreetMap stadium map, live Kev decisions end to end, all three incidents, the briefing through Apple's on-device model, and the replay scrubber.
+The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153498) covering the stadium plus half a mile: an 800x800 grid of 2 m cells with 12 gates, the bowl and its concourse, 140 parking lots, and closable real streets — Woody Hayes Drive, Lane Avenue, Cannon Drive. Three plans run on it with 100,000 fans at about 300x real time.
+
+Refetch the map with `npm run fetch-map` (it is committed, so you only need this to update it).
+
+Still to come: live Kev decisions end to end, the other two incidents, the briefing through Apple's on-device model, and the replay scrubber. Gate load is still uneven — see the open items in `CLAUDE.md`.
 
 ## Rules this project holds to
 

@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "dev": "npm run dev --workspace @gameday/app",
-    "serve": "node --watch server/src/index.ts"
+    "serve": "node --watch server/src/index.ts",
+    "fetch-map": "node world/scripts/fetch-map.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

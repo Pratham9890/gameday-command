@@ -134,6 +134,7 @@ export class Simulation {
 
   private cellOfDot(i: number): number {
     const { dots, map } = this.ctx;
+    if (dots.x[i]! < 0 || dots.y[i]! < 0) return -1; // parked off-map, not arrived
     const cx = (dots.x[i]! / CELL_SIZE_M) | 0;
     const cy = (dots.y[i]! / CELL_SIZE_M) | 0;
     if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) return -1;

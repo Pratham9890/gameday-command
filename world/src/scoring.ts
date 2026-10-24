@@ -32,6 +32,7 @@ export class Scorer {
   private dangerCellMinutes = 0;
   private officerSeconds = 0;
   private clearedAt: SimSeconds | null = null;
+  private everOccupied = false;
   private firstOfficerAt: SimSeconds | null = null;
   private fallbacks = 0;
   private reachedDots = new Set<number>();
@@ -56,10 +57,13 @@ export class Scorer {
 
     if (this.firstOfficerAt === null && s.officerInZone) this.firstOfficerAt = s.t;
 
+    // Time to clear only means something once there was a crowd to clear. An
+    // incident zone is empty the instant it is declared, and calling that
+    // "cleared in 0 minutes" would flatter every plan equally.
     const safeCount = this.init.incident.safeCount ?? 0;
-    if (this.clearedAt === null && s.dotsInZone * DOT_GROUP_SIZE <= safeCount) {
-      this.clearedAt = s.t;
-    }
+    const people = s.dotsInZone * DOT_GROUP_SIZE;
+    if (people > safeCount) this.everOccupied = true;
+    else if (this.everOccupied && this.clearedAt === null) this.clearedAt = s.t;
   }
 
   /** Called once per decision answer the run consumed. */

@@ -35,6 +35,10 @@ export class DensityField {
     const { x, y, state, count } = dots;
     for (let i = 0; i < count; i++) {
       if (state[i] === GONE) continue;
+      // Off-map dots are parked at (-1, -1). Truncation rounds toward zero, so
+      // (-1 / 2) | 0 is 0, not -1 — testing the cell index instead of the
+      // coordinate put every unarrived fan in cell 0.
+      if (x[i]! < 0 || y[i]! < 0) continue;
       const cx = (x[i]! / CELL_SIZE_M) | 0;
       const cy = (y[i]! / CELL_SIZE_M) | 0;
       if (cx < 0 || cy < 0 || cx >= this.width || cy >= this.height) continue;

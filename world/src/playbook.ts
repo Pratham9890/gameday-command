@@ -1,5 +1,5 @@
 import type { Id, IncidentKind, MapBundle, PlanAction, Place, ResponsePlan } from '../../contracts.ts';
-import { placesOfKind } from './incidents.ts';
+import { expandCells, placesOfKind } from './incidents.ts';
 
 const OFFICERS_AVAILABLE = 12;
 
@@ -44,7 +44,9 @@ function gateSurgePlans(map: MapBundle): ResponsePlan[] {
       forIncident: 'gate_surge',
       officersAvailable: OFFICERS_AVAILABLE,
       actions: compact([
-        { at: 0, type: 'alert', channel: 'pa', message: `${hot.name} is backed up. Use ${relief.name}.`, reachShare: 0.7, zoneCells: hot.cells },
+        // The zone is the crowd on the approach: a PA aimed at the three cells
+        // of the doorway itself reaches almost nobody.
+        { at: 0, type: 'alert', channel: 'pa', message: `${hot.name} is backed up. Use ${relief.name}.`, reachShare: 0.7, zoneCells: expandCells(map, hot.cells, 8) },
         reliefDoor ? { at: 30, type: 'open', closableId: reliefDoor } : null,
         { at: 60, type: 'redirect', fromPlaceId: hot.id, toPlaceId: relief.id },
         { at: 0, type: 'send_officers', count: 2, toPlaceId: relief.id },

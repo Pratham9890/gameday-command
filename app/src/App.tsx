@@ -3,7 +3,7 @@ import type { DecisionDefaults, Incident, MapBundle, ResponsePlan, SimConfig } f
 import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE } from '../../contracts.ts';
 import { makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
-import { testGateSurge } from '../../world/src/incidents.ts';
+import { gateSurge, northGate } from '../../world/src/incidents.ts';
 import { getDecisionDefaults, getMap, getPlans } from './api.ts';
 import { MapView } from './MapView.tsx';
 import { useRun, type RunInit } from './useRun.ts';
@@ -11,10 +11,15 @@ import { useRun, type RunInit } from './useRun.ts';
 /** One seed for every plan in a comparison: the whole point is the same crowd. */
 const SEED = 20251023;
 const LABELS = ['A', 'B', 'C'] as const;
-const TEST_MAP_ID = 'test-3gate';
+/** The server serves the stadium map when it has been fetched, else the test map. */
+const MAP_ID = 'default';
+const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
-const START_AT = -600;
-const END_AT = 600;
+/** Kickoff minus 60 minutes, per the demo script, through to kickoff plus 15. */
+const START_AT = -3600;
+const END_AT = 900;
+
+const fanCount = (map: MapBundle) => (map.width > 200 ? STADIUM_FANS : TEST_FANS);
 
 interface Loaded {
   map: MapBundle;
@@ -96,9 +101,9 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const map = await getMap(TEST_MAP_ID);
+        const map = await getMap(MAP_ID);
         const [defaults, plans] = await Promise.all([getDecisionDefaults(), getPlans('gate_surge')]);
-        setLoaded({ map, defaults, plans, incident: testGateSurge(map, 0) });
+        setLoaded({ map, defaults, plans, incident: gateSurge(map, 0) });
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : String(error));
       }
@@ -107,8 +112,9 @@ export function App() {
 
   const inits = useMemo<(RunInit | null)[]>(() => {
     if (!loaded) return [null, null, null];
-    const population = makePopulation(TEST_FANS, SEED);
-    const officers = makeOfficers(loaded.map, 12);
+    const fans = loaded.map.width > 200 ? STADIUM_FANS : TEST_FANS;
+    const population = makePopulation(fans, SEED);
+    const officers = makeOfficers(loaded.map, 24);
     return LABELS.map((label, i) => {
       const plan = loaded.plans[i];
       if (!plan) return null;
@@ -134,9 +140,11 @@ export function App() {
       <header className="top">
         <h1>Gameday Command</h1>
         <span className="sub">
-          {loaded ? `${loaded.map.name} · ${TEST_FANS.toLocaleString()} fans · ${TEST_FANS / DOT_GROUP_SIZE} dots · seed ${SEED}` : 'loading map…'}
+          {loaded ? `${loaded.map.name} · ${fanCount(loaded.map).toLocaleString()} fans · ${(fanCount(loaded.map) / DOT_GROUP_SIZE).toLocaleString()} dots · seed ${SEED}` : 'loading map…'}
         </span>
-        <span className="sub">· incident: gate surge at kickoff</span>
+        <span className="sub">
+          · {loaded ? `gate surge at ${northGate(loaded.map)?.name ?? 'the north gate'}, kickoff` : 'gate surge'}
+        </span>
         <button onClick={() => setPlaying((p) => !p)} disabled={!loaded} style={{ marginLeft: 'auto' }}>
           {playing ? 'Pause all three' : 'Run all three'}
         </button>

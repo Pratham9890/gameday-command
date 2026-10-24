@@ -23,6 +23,14 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - `world/src/scoring.ts` — a plain accumulator. Same samples in, same scorecard out, which is what makes replay-from-tape scoring match a live run.
 - `server/src/briefing.ts` — `briefingIsSupported()` is the guard on the briefing: any number the model writes must already be on a scorecard (or in a name the request supplied). One invented figure throws the whole briefing away for the template.
 
+## The OSM map
+
+`world/data/ohio-stadium.osm.json` is a committed 2.5 MB Overpass extract (6,291 elements) around Ohio Stadium, OSM way 119153498. Refetch with `npm run fetch-map`.
+
+**That script must run in a normal terminal, not through the Claude Code sandbox.** Overpass answers 406 to the sandbox's egress proxy — plain `curl`, Node `fetch` and every host tried behave the same, while the same URL works fine outside it. Use the Terminal panel.
+
+`world/src/osm/stadium.ts` rasterizes the extract onto the 2 m grid. Open ground is the *default* and buildings and walls are subtracted, rather than the reverse: a game-day crowd walks across lawns and plazas OSM never tagged, so starting from `walk` models the real space far better than starting from `blocked`.
+
 ## Non-obvious decisions, and why
 
 - **Imports use explicit relative `.ts` paths** (`../../contracts.ts`), not aliases. That one choice means `tsc`, Vite, Vitest *and* bare `node` all resolve the same imports with zero alias config, so `/server` runs with `node server/src/index.ts` and no build step.
@@ -37,6 +45,15 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **A gate's field is built even when its door is shut.** Queued dots still need to know which way the gate is; `passable()` blocks admission and through-traffic instead. Closing a gate therefore makes fans pile up at it rather than teleporting away — which is the tradeoff the tool exists to show.
 - **Never `push(...bigArray)`.** A stadium-sized parking place is ~190,000 cells and spreading that many arguments overflows the call stack. Found by the perf test, not the unit tests.
 - **The speed curve is linear:** `v = v_free · max(0.05, 1 − ρ/5.4)`. One line, and it puts a visible crawl right at the 4 people/m² danger line.
+- **`Math.fround` before deciding which cell a dot moves into.** Positions live in a `Float32Array` but moves are computed in float64. A position a hair past a cell boundary rounds *back* across it when stored, so the dot released a cell it was still standing in, the cell accepted another dot, and a 2 m square reported 13 people/m². Peak density is now exactly the physical cap. The invariant test in `flow.test.ts` guards this.
+- **Occupancy is rebuilt from dot positions every movement pass**, not carried forward. Hand-maintained counts drift, and one stale decrement is invisible until a density number goes absurd. Rebuilding is O(dots) and makes any slip self-correct within one step.
+- **A cell holds at most `MAX_DOTS_PER_CELL` (4 dots = 5 people/m²).** Slowing dots down is not enough on its own: at 5% speed they still creep into the cell ahead and end up stacked on one square. Refusing entry is what makes a queue back up along the approach, which every scorecard number depends on.
+- **Dots sidestep.** A crowd on one flow field walks single file, and the first dot to stop blocks everyone behind it. Trying the two half-steps either side of the best direction is what lets a queue spread and flow around a jam.
+- **A gate is a wide arc on the *outside* of its corridor.** A 3-cell gate in the middle of the corridor got permanently plugged by fans walking past to the next gate and by fans already admitted walking inward, so nobody who wanted *that* gate could reach the turnstile and gates sat idle with thousands queued.
+- **Gate throughput is a rate, not a bank** (`GATE_BURST_S`). Uncapped, a gate that stood idle for an hour waved 2,600 fans through the instant a queue reached it.
+- **Your gate is the one by your seat**, as a ticket assigns it — not the one nearest your car. Picking by car funnelled the whole crowd through the two or three gates facing the big lots.
+- **Everyone is assigned a seat before they arrive**, and walks to it in a straight line once inside the bowl. Without it they stopped at whichever stands cell sat just inside their gate. Settling early is also wrong: fans sat down in the gate mouth and corked the gate behind them.
+- **`safeCountFor()` sets "clear" at 2 people/m², not zero.** A zone never empties while fans are still arriving, so `safeCount: 0` read as "never cleared" for every plan alike and the scorecard could not tell them apart.
 
 ## Commands
 
@@ -55,6 +72,8 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 
 ## Current state
 
+Milestone 3 in progress: the real Ohio Stadium map from OpenStreetMap loads and all three plans run on it at kickoff minus 60. See the open items at the end.
+
 Milestone 2: the real engine runs. Flow fields, density-limited walking speed, gate queues against real throughput, and closures that reroute the crowd. `movement-circle.ts` is kept only as the reference `MovementModel` stub.
 
 Measured on an 800x800 map (stadium plus half a mile at 2 m cells), 20,000 dots / 100,000 fans, in process:
@@ -65,4 +84,11 @@ Measured on an 800x800 map (stadium plus half a mile at 2 m cells), 20,000 dots 
 | lightning delay asking every dot | 107x real time |
 | decision grouping | 57,974 dot decisions to 121 distinct keys |
 
-Still to do: the real OpenStreetMap stadium map, live Kev decisions end to end, all three incidents, the briefing through `fm serve`, and the replay scrubber. `pick_gate` is currently assigned by nearest walking distance rather than asked of Kev; that becomes a live decision when the stadium map lands.
+On the real stadium map (800x800 cells, 100,000 fans as 20,000 dots), three plans run at about 300x real time with peak density at exactly the physical cap.
+
+**Open items, in order:**
+1. **Gate load is uneven and entry is slow.** About 7,500 dots are still queued at kickoff plus 15, and one gate draws 4,195 fans while others idle — seats are uniform over the bowl but the horseshoe's geometry skews which gate is nearest. Needs either per-gate capacity balancing or seat sections tied to gates.
+2. Live Kev decisions end to end (the client, server, cache, tape and fallback all work; it has not yet been run against a live Kev).
+3. The other two incidents (lightning delay, suspicious package) wired to the stadium map.
+4. The briefing through `fm serve`, and the replay scrubber.
+5. `pick_gate` is assigned by seat rather than asked of Kev; it should become a live decision.
