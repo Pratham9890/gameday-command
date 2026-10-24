@@ -11,6 +11,7 @@ import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
 import { OfficerPanel } from './OfficerPanel.tsx';
+import { GatesPanel } from './GatesPanel.tsx';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
@@ -754,6 +755,15 @@ export function App() {
               </button>
             )}
           </section>
+
+          {loaded && runs[closeRun] && (
+            <section className="panel">
+              <h2>
+                Gates <Info>Every gate's door and flow for the plan on the map: people through it per minute in and out, the queue waiting, and how much of what it can pass it is passing. A closed gate passes nobody and turns its queue away to the next open gate.</Info>
+              </h2>
+              <GatesPanel map={loaded.map} run={runs[closeRun]!} label={LABELS[closeRun]!} />
+            </section>
+          )}
 
           <section className="panel verdict">
             <h2>3 · Verdict</h2>

@@ -367,7 +367,9 @@ export class CrowdScene {
   private dots!: Layer;
   private parts!: Parts;
   private pool: Person[] = [];
-  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean }[] = [];
+  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean; place: number }[] = [];
+  /** Last text shown on each gate label, so the DOM is touched only when it changes. */
+  private gateText = new Map<number, string>();
   private stationTags: { el: HTMLElement; sx: number; sy: number }[] = [];
   private nameTag: HTMLElement;
   private zoneTag: HTMLElement;
@@ -462,7 +464,7 @@ export class CrowdScene {
 
   private makeLabels(): void {
     const { map, overlay } = this.init;
-    for (const place of map.places) {
+    for (const [index, place] of map.places.entries()) {
       const gate = place.kind === 'gate';
       if (!gate && place.kind !== 'seating') continue;
       let sx = 0;
@@ -477,7 +479,7 @@ export class CrowdScene {
       el.className = `crowd-label${gate ? ' gate' : ''}`;
       el.textContent = gate ? place.name.replace(/\s*\(.*\)/, '') : place.kind === 'seating' ? 'Ohio Stadium' : place.name;
       overlay.appendChild(el);
-      this.labels.push({ el, sx: p.sx, sy: p.sy, gate });
+      this.labels.push({ el, sx: p.sx, sy: p.sy, gate, place: index });
     }
     for (const station of policeStations(map)) {
       const p = isoProject(((station.cell % map.width) + 0.5) * CELL_SIZE_M, (Math.floor(station.cell / map.width) + 0.5) * CELL_SIZE_M, 5);
@@ -502,6 +504,18 @@ export class CrowdScene {
       this.closedKey = key;
       void this.ready.then(() => this.drawClosed(info?.closed ?? []));
     }
+  }
+
+  /** A gate's label says whether it is open and how fast it is passing people. */
+  private updateGateLabel(label: { el: HTMLElement; place: number }): void {
+    const stat = this.scene?.gates.find((g) => g.place === label.place);
+    const name = (this.init.map.places[label.place]?.name ?? '').replace(/\s*\(.*\)/, '');
+    const text = !stat ? name : stat.open ? `● ${name} · ${Math.round(stat.inPerMin)}/min` : `⛔ ${name} closed`;
+    if (this.gateText.get(label.place) === text) return;
+    this.gateText.set(label.place, text);
+    label.el.textContent = text;
+    label.el.classList.toggle('open', !!stat?.open);
+    label.el.classList.toggle('shut', !!stat && !stat.open);
   }
 
   /** Light up the people an alert just reached, and send a ring out over them. */
@@ -551,6 +565,8 @@ export class CrowdScene {
         u += (cell % width) + 0.5;
         v += Math.floor(cell / width) + 0.5;
       }
+      // A gate's own label already says it is closed; streets need a tag of their own.
+      if (map.places.some((p) => p.kind === 'gate' && closable.cells.some((c) => p.cells.includes(c)))) continue;
       const n = closable.cells.length;
       const p = isoProject((u / n) * CELL_SIZE_M, (v / n) * CELL_SIZE_M, 4);
       const el = document.createElement('div');
@@ -972,7 +988,11 @@ export class CrowdScene {
     for (const label of this.labels) {
       const x = label.sx * s + this.cam.x;
       const y = label.sy * s + this.cam.y;
-      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && (!label.gate || s > this.fitScale * 1.6);
+      if (label.gate) this.updateGateLabel(label);
+      // Zoomed out, the twelve gate labels pile up over the bowl, so only shut
+      // gates stay labelled there; the gates panel lists every one regardless.
+      const shut = label.gate && this.scene?.gates.some((g) => g.place === label.place && !g.open);
+      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && (!label.gate || shut || s > this.fitScale * 1.6);
       label.el.style.display = visible ? '' : 'none';
       if (visible) label.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }

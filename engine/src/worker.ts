@@ -67,7 +67,7 @@ function emitFrame(): void {
   // Scene first, so the frame's redraw already has the officers it shows.
   const alerts = sim.takeAlerts();
   send(
-    { type: 'scene', scene: { t: sim.ctx.t, officers: sim.officerStatus(), closed: [...sim.ctx.closed], alerts } },
+    { type: 'scene', scene: { t: sim.ctx.t, officers: sim.officerStatus(), gates: sim.gateStats(), closed: [...sim.ctx.closed], alerts } },
     alerts.map((a) => a.dots.buffer),
   );
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));

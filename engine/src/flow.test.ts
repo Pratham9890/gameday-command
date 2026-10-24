@@ -337,4 +337,28 @@ describe('FlowMovement on the test map', () => {
     expect(posted.every((o) => map.places[o.place]?.kind === 'gate')).toBe(true);
     expect(posted.reduce((n, o) => n + o.told, 0)).toBeGreaterThan(0);
   });
+
+  it('enforces the gates: a shut gate passes nobody, and nobody gets in unscreened', async () => {
+    // Plan C closes the surging gate at the incident, here while fans are still arriving.
+    const sim = makeSim({ fans: 1200, endAt: 0, planIndex: 2, incidentAt: -1800 });
+    const inBowl = (c: number) => map.cells[c] === 'stands' || map.cells[c] === 'concourse';
+    const { dots } = sim.ctx;
+    let openFlow = 0;
+    while (!sim.done) {
+      await sim.step();
+      if (sim.ctx.t > -1800) openFlow = Math.max(openFlow, sim.gateStats().filter((g) => g.open).reduce((n, g) => n + g.inPerMin, 0));
+      for (let i = 0; i < dots.count; i++) {
+        if (dots.x[i]! < 0 || dots.stateOf(i) === 'gone') continue;
+        const cell = Math.floor(dots.y[i]! / CELL_SIZE_M) * map.width + Math.floor(dots.x[i]! / CELL_SIZE_M);
+        if (inBowl(cell)) expect(sim['opts'].movement.describe!(i).admitted).toBe(true);
+      }
+    }
+    const stats = sim.gateStats();
+    const shut = stats.filter((g) => !g.open);
+    expect(shut.length).toBe(1);
+    expect(shut[0]!.inPerMin).toBe(0);
+    expect(shut[0]!.capacityPerMin).toBe(0);
+    // The open gates kept passing people after it shut.
+    expect(openFlow).toBeGreaterThan(0);
+  });
 });

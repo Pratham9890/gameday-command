@@ -25,7 +25,7 @@ import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
-import type { DotEdit, DotInfo, OfficerStatus } from './edits.ts';
+import type { DotEdit, DotInfo, GateStat, OfficerStatus } from './edits.ts';
 import { FlowFields, WALK_STEP } from './flowfield.ts';
 import { Rng } from './rng.ts';
 
@@ -63,6 +63,8 @@ export interface MovementModel {
   restore?(state: unknown): void;
   /** The commander sent this dot somewhere by hand. */
   sendTo?(ctx: SimContext, dot: number, place: number): void;
+  /** Every gate's door and flow, for the app. */
+  gateStats?(ctx: SimContext): GateStat[];
   /** Movement state the inspector shows. */
   describe?(dot: number): Pick<DotInfo, 'homeGate' | 'seatCell' | 'admitted' | 'arriveAt'>;
 }
@@ -319,6 +321,11 @@ export class Simulation {
         etaS: cost === undefined || cost >= 0xffff ? null : ((cost / WALK_STEP) * CELL_SIZE_M) / officer.speedMps,
       };
     });
+  }
+
+  /** Every gate's door, flow and queue right now. */
+  gateStats(): GateStat[] {
+    return this.opts.movement.gateStats?.(this.ctx) ?? [];
   }
 
   /** Alerts raised since the last call, each with the dots it reached. */

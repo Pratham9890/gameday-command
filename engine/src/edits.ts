@@ -52,10 +52,25 @@ export interface OfficerStatus {
   etaS: number | null;
 }
 
+/** One gate's door and flow, for the gates panel and the map labels. */
+export interface GateStat {
+  place: number;
+  open: boolean;
+  /** People through the turnstile, and out through the gate, over the last minute. */
+  inPerMin: number;
+  outPerMin: number;
+  /** People standing in its queue, not yet through. */
+  waiting: number;
+  /** What it can pass per minute right now: 0 when shut, more with officers on it. */
+  capacityPerMin: number;
+  officers: number;
+}
+
 /** What the close-up needs to make a plan visible, beyond a TickFrame. */
 export interface SceneInfo {
   t: SimSeconds;
   officers: OfficerStatus[];
+  gates: GateStat[];
   /** Closable ids shut right now: gate doors and streets. */
   closed: Id[];
   /** Alerts that went out since the last scene, with the dots each reached. */

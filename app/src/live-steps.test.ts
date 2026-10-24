@@ -8,7 +8,7 @@ const gate = map.places.findIndex((p) => p.kind === 'gate');
 const officer = (state: OfficerStatus['state'], etaS: number | null, told = 0): OfficerStatus => ({
   id: 'o', unit: 'OSU PD', cell: 0, x: 0, y: 0, state, targetCell: 0, place: gate, homeCell: 0, told, followed: 0, etaS,
 });
-const scene = (officers: OfficerStatus[], closed: string[] = []): SceneInfo => ({ t: 0, officers, closed, alerts: [] });
+const scene = (officers: OfficerStatus[], closed: string[] = []): SceneInfo => ({ t: 0, officers, gates: [], closed, alerts: [] });
 const send = { at: 0, type: 'send_officers' as const, count: 3, toPlaceId: map.places[gate]!.id };
 
 describe('plan step status', () => {

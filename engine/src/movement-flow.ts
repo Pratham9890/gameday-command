@@ -2,6 +2,7 @@ import type { Id, MapBundle, SituationId } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_GROUP_SIZE } from '../../contracts.ts';
 import { FlowFields, DIR_DX, DIR_DY, UNREACHABLE, WALK_STEP } from './flowfield.ts';
 import type { MovementModel, SimContext } from './sim.ts';
+import type { GateStat } from './edits.ts';
 
 /**
  * Jam density in people per square meter. Above this nobody moves; the curve
@@ -33,6 +34,12 @@ const GATE_QUOTA_SLACK = 1.15;
 /** Extra throughput per officer on station at a gate, and the most officers can add. */
 const OFFICER_GATE_BOOST = 0.1;
 const OFFICER_GATE_BOOST_MAX = 0.4;
+
+/** How far along the route from a gate its queue reaches, in open-ground steps: the line a commander sees, and who its staff turn away when it shuts. */
+const QUEUE_REACH_STEPS = GATE_REACH_CELLS * 2;
+
+/** Seconds of history behind a gate's in/out rate: a rolling minute. */
+const FLOW_WINDOW_S = 60;
 
 /** Seconds of unused throughput a gate may hold over, so a lull is not banked. */
 const GATE_BURST_S = 5;
@@ -67,6 +74,12 @@ export class FlowMovement implements MovementModel {
 
   private spawnT!: Float32Array;
   private seatCell!: Int32Array;
+  /** Where a fan goes once through the turnstile: their seat, or shelter if that is what they came in for. */
+  private afterGate!: Int32Array;
+  /** Fans through each gate per second, in and out, over the last FLOW_WINDOW_S steps. */
+  private flowIn!: Int32Array;
+  private flowOut!: Int32Array;
+  private flowSlot = 0;
   private lotCell!: Int32Array;
   private homeGate!: Int32Array;
   private admitted!: Uint8Array;
@@ -172,6 +185,10 @@ export class FlowMovement implements MovementModel {
     const n = dots.count;
     this.spawnT = new Float32Array(n);
     this.seatCell = new Int32Array(n).fill(-1);
+    this.afterGate = new Int32Array(n).fill(this.seatingIndex);
+    this.flowIn = new Int32Array(map.places.length * FLOW_WINDOW_S);
+    this.flowOut = new Int32Array(map.places.length * FLOW_WINDOW_S);
+    this.flowSlot = 0;
     this.lotCell = new Int32Array(n);
     this.homeGate = new Int32Array(n).fill(-1);
     this.admitted = new Uint8Array(n);
@@ -249,6 +266,13 @@ export class FlowMovement implements MovementModel {
       this.fields.setClosed(ctx.closed);
     }
 
+    // A new second of flow history: clear the slot this step will fill.
+    this.flowSlot = (this.flowSlot + 1) % FLOW_WINDOW_S;
+    for (const gate of this.gateIndexes) {
+      this.flowIn[gate * FLOW_WINDOW_S + this.flowSlot] = 0;
+      this.flowOut[gate * FLOW_WINDOW_S + this.flowSlot] = 0;
+    }
+
     for (const gate of this.gateIndexes) {
       const perMin = map.places[gate]!.throughputPerMin ?? 0;
       // Officers on station at a gate help screen and wave people through.
@@ -279,7 +303,7 @@ export class FlowMovement implements MovementModel {
       const state = dots.stateOf(i);
       if (state === 'seated' && this.leaveAt[i]! > 0 && ctx.t >= this.leaveAt[i]!) {
         this.leaveAt[i] = 0;
-        this.retarget(ctx, i, this.nearest(ctx, i, this.exitIndexes));
+        this.retarget(ctx, i, this.nearestExit(ctx, i));
         continue;
       }
       if (state === 'gone' || state === 'seated' || state === 'sheltering') continue;
@@ -299,6 +323,14 @@ export class FlowMovement implements MovementModel {
       const target = dots.targetPlace[i]!;
       if (target < 0) continue;
 
+      // Caught on a gate as it shut: walk off it. Closing a door stops people
+      // stepping onto it, not the ones already standing there — they were left
+      // with nowhere to step and no route, and stood on the shut door all run.
+      if (this.fields.isClosed(cell)) {
+        this.clearDoor(ctx, i, cell, dt, occupancy);
+        continue;
+      }
+
       // Inside the bowl, head for your own seat rather than the nearest row.
       // The deck is open, so a straight line needs no flow field.
       if (target === this.seatingIndex && this.seatCell[i]! >= 0 && this.maskOf(ctx, target)[cell] === 1) {
@@ -311,11 +343,26 @@ export class FlowMovement implements MovementModel {
         continue;
       }
 
+      // In the queue for a shut gate: its staff send the whole queue on to the
+      // next open gate, not just whoever reaches the door. Turning away only
+      // the front left ~1,300 people waiting minutes after Gate 1 closed.
+      if (this.admitted[i] !== 1 && map.places[target]?.kind === 'gate' && !this.isOpen(ctx, target)) {
+        const reach = this.fields.field(target, true).dist[cell]!;
+        if (reach <= QUEUE_REACH_STEPS * WALK_STEP) {
+          const other = this.nearestOpenGate(ctx, i, target);
+          if (other >= 0) {
+            this.retarget(ctx, i, other);
+            continue;
+          }
+        }
+      }
+
       // Leaving, and already out through some gate: that gate did its job. A
       // fan whose chosen gate was on the far side otherwise walked out the
       // nearest opening and round the outside of the stadium to reach it first —
       // 1,406 fans more than 120 m from their gate, half an hour after the game.
       if (this.admitted[i] === 1 && map.places[target]?.kind === 'gate' && !this.insideBowl(ctx, cell) && this.parkingIndex >= 0) {
+        this.flowOut[target * FLOW_WINDOW_S + this.flowSlot]!++;
         this.retarget(ctx, i, this.parkingIndex);
         continue;
       }
@@ -383,6 +430,7 @@ export class FlowMovement implements MovementModel {
             break;
           }
           if (!this.fields.passable(nCell)) continue;
+          if (this.unscreenedEntry(ctx, i, cell, nCell)) continue;
           const there = field.dist[nCell]!;
           if (there === UNREACHABLE || there > here + slack) continue;
           if (occupancy[nCell]! >= MAX_DOTS_PER_CELL) continue;
@@ -435,7 +483,9 @@ export class FlowMovement implements MovementModel {
         if (field.dist[cell]! > GATE_REACH_CELLS * WALK_STEP) continue;
 
         this.admitted[i] = 1;
-        dots.targetPlace[i] = this.seatingIndex >= 0 ? this.seatingIndex : -1;
+        dots.targetPlace[i] = this.afterGate[i]! >= 0 ? this.afterGate[i]! : this.seatingIndex;
+        this.afterGate[i] = this.seatingIndex;
+        this.flowIn[gate * FLOW_WINDOW_S + this.flowSlot]!++;
         dots.setState(i, 'walking');
         budget--;
         this.gateBudget[gate]!--;
@@ -506,8 +556,22 @@ export class FlowMovement implements MovementModel {
     // walking to the lots. Queueing here too meant nobody ever left — every fan
     // who chose "nearest exit" stood at the gate for the rest of the run.
     if (kind === 'gate') {
-      if (this.admitted[i] === 1 && this.parkingIndex >= 0) this.retarget(ctx, i, this.parkingIndex);
-      else dots.setState(i, 'queued');
+      if (this.admitted[i] === 1 && this.parkingIndex >= 0) {
+        this.flowOut[target * FLOW_WINDOW_S + this.flowSlot]!++;
+        this.retarget(ctx, i, this.parkingIndex);
+        return;
+      }
+      // A shut gate turns people away, as its staff would. Before, fans who
+      // reached a closed gate stood on it for the rest of the run — 28,816
+      // dot-steps on Gate 1's closed door in one gate-surge run.
+      if (!this.isOpen(ctx, target)) {
+        const other = this.nearestOpenGate(ctx, i, target);
+        if (other >= 0) {
+          this.retarget(ctx, i, other);
+          return;
+        }
+      }
+      dots.setState(i, 'queued');
       return;
     }
     if (kind === 'seating') {
@@ -534,6 +598,10 @@ export class FlowMovement implements MovementModel {
       homeGate: this.homeGate.slice(),
       admitted: this.admitted.slice(),
       leaveAt: this.leaveAt.slice(),
+      afterGate: this.afterGate.slice(),
+      flowIn: this.flowIn.slice(),
+      flowOut: this.flowOut.slice(),
+      flowSlot: this.flowSlot,
       gateBudget: this.gateBudget.slice(),
       gateAssigned: this.gateAssigned.slice(),
       closedKey: this.closedKey,
@@ -552,6 +620,10 @@ export class FlowMovement implements MovementModel {
     take(this.homeGate, (s as Record<string, unknown>).homeGate);
     take(this.admitted, (s as Record<string, unknown>).admitted);
     take(this.leaveAt, (s as Record<string, unknown>).leaveAt);
+    take(this.afterGate, (s as Record<string, unknown>).afterGate);
+    take(this.flowIn, (s as Record<string, unknown>).flowIn);
+    take(this.flowOut, (s as Record<string, unknown>).flowOut);
+    this.flowSlot = Number((s as Record<string, unknown>).flowSlot ?? 0);
     take(this.gateBudget, (s as Record<string, unknown>).gateBudget);
     take(this.gateAssigned, (s as Record<string, unknown>).gateAssigned);
     this.closedKey = String((s as Record<string, unknown>).closedKey ?? '');
@@ -587,6 +659,109 @@ export class FlowMovement implements MovementModel {
   private insideBowl(ctx: SimContext, cell: number): boolean {
     const kind = ctx.map.cells[cell];
     return kind === 'stands' || kind === 'concourse';
+  }
+
+  /**
+   * One step off a closed door: through the turnstile means inward to their
+   * seat, otherwise outward to where they parked. Closed cells may be crossed
+   * on the way off; walls and full cells may not.
+   */
+  private clearDoor(ctx: SimContext, i: number, cell: number, dt: number, occupancy: Int32Array): void {
+    const { dots, map, population } = ctx;
+    const goal = this.admitted[i] === 1 ? this.seatCell[i]! : this.lotCell[i]!;
+    if (goal < 0) return;
+    const gx = ((goal % map.width) + 0.5) * CELL_SIZE_M;
+    const gy = (((goal / map.width) | 0) + 0.5) * CELL_SIZE_M;
+    const step = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * dt;
+    let best = -1;
+    let bestD = Math.hypot(gx - dots.x[i]!, gy - dots.y[i]!);
+    let bx = 0;
+    let by = 0;
+    for (let d = 1; d <= 8; d++) {
+      const norm = DIR_DX[d] !== 0 && DIR_DY[d] !== 0 ? Math.SQRT1_2 : 1;
+      const nx = Math.fround(dots.x[i]! + DIR_DX[d]! * norm * step);
+      const ny = Math.fround(dots.y[i]! + DIR_DY[d]! * norm * step);
+      if (nx < 0 || ny < 0 || nx >= map.width * CELL_SIZE_M || ny >= map.height * CELL_SIZE_M) continue;
+      const nCell = ((ny / CELL_SIZE_M) | 0) * map.width + ((nx / CELL_SIZE_M) | 0);
+      if (map.cells[nCell] === 'blocked') continue;
+      if (nCell !== cell && occupancy[nCell]! >= MAX_DOTS_PER_CELL) continue;
+      const dist = Math.hypot(gx - nx, gy - ny);
+      if (dist < bestD) {
+        bestD = dist;
+        best = nCell;
+        bx = nx;
+        by = ny;
+      }
+    }
+    if (best < 0) {
+      dots.setState(i, 'queued');
+      return;
+    }
+    if (best !== cell) {
+      occupancy[cell]!--;
+      occupancy[best]!++;
+    }
+    dots.x[i] = bx;
+    dots.y[i] = by;
+    dots.setState(i, 'walking');
+  }
+
+  /** True when this gate's door is open (a place with no door is always open). */
+  private isOpen(ctx: SimContext, place: number): boolean {
+    const door = this.gateDoor.get(place);
+    return door === undefined || !ctx.closed.has(door);
+  }
+
+  /** The nearest open gate to leave by; any gate if every one is shut. */
+  private nearestExit(ctx: SimContext, dot: number): number {
+    const open = this.exitIndexes.filter((g) => this.isOpen(ctx, g));
+    return this.nearest(ctx, dot, open.length > 0 ? open : this.exitIndexes);
+  }
+
+  /**
+   * The gate rule: nobody steps into the bowl from outside without going
+   * through a turnstile. Routes already lead through the gates; this is what
+   * holds when some other choice sends an unscreened fan toward the inside.
+   */
+  private unscreenedEntry(ctx: SimContext, dot: number, from: number, to: number): boolean {
+    return this.admitted[dot] !== 1 && !this.insideBowl(ctx, from) && this.insideBowl(ctx, to);
+  }
+
+  /** In and out per minute, who is waiting, and the door, for every gate. */
+  gateStats(ctx: SimContext): GateStat[] {
+    const { map, dots } = ctx;
+    // The queue is who is standing in line near the gate. Counting everyone
+    // headed there put 1,280 people "waiting" at a shut gate who were still
+    // hundreds of metres away and had not reached it to be turned away.
+    const waiting = new Int32Array(map.places.length);
+    for (let i = 0; i < dots.count; i++) {
+      if (this.admitted[i] === 1 || dots.stateOf(i) !== 'queued') continue;
+      const target = dots.targetPlace[i]!;
+      if (target < 0 || map.places[target]?.kind !== 'gate') continue;
+      const cell = this.cellOf(ctx, i);
+      if (cell < 0 || this.fields.field(target, true).dist[cell]! > QUEUE_REACH_STEPS * WALK_STEP) continue;
+      waiting[target]!++;
+    }
+    const sum = (ring: Int32Array, gate: number) => {
+      let n = 0;
+      for (let k = 0; k < FLOW_WINDOW_S; k++) n += ring[gate * FLOW_WINDOW_S + k]!;
+      return n;
+    };
+    return this.gateIndexes.map((gate) => {
+      const open = this.isOpen(ctx, gate);
+      const officers = this.officersAt(ctx, gate);
+      const boost = Math.min(OFFICER_GATE_BOOST_MAX, OFFICER_GATE_BOOST * officers);
+      return {
+        place: gate,
+        open,
+        // The window is FLOW_WINDOW_S seconds, so the sum is already per minute.
+        inPerMin: sum(this.flowIn, gate) * DOT_GROUP_SIZE,
+        outPerMin: sum(this.flowOut, gate) * DOT_GROUP_SIZE,
+        waiting: waiting[gate]! * DOT_GROUP_SIZE,
+        capacityPerMin: open ? Math.round((map.places[gate]!.throughputPerMin ?? 0) * (1 + boost)) : 0,
+        officers,
+      };
+    });
   }
 
   /** Officers who were sent to this place and are standing on it. */
@@ -675,7 +850,17 @@ export class FlowMovement implements MovementModel {
 
     switch (situation) {
       case 'lightning_shelter':
-        if (option === 'go_concourse') this.retarget(ctx, dot, this.shelterIndex);
+        if (option === 'go_concourse') {
+          // Shelter is inside the bowl, and the way in is through a turnstile.
+          // Before, fans caught outside walked straight in unscreened.
+          if (this.admitted[dot] !== 1 && this.shelterIndex >= 0 && !this.outsideBowl(ctx.map, this.shelterIndex)) {
+            this.afterGate[dot] = this.shelterIndex;
+            const gate = this.isOpen(ctx, this.homeGate[dot]!) ? this.homeGate[dot]! : this.nearestOpenGate(ctx, dot, -1);
+            if (gate >= 0) this.retarget(ctx, dot, gate);
+          } else {
+            this.retarget(ctx, dot, this.shelterIndex);
+          }
+        }
         else if (option === 'go_car') this.retarget(ctx, dot, this.parkingIndex);
         return;
 
@@ -711,9 +896,12 @@ export class FlowMovement implements MovementModel {
           // through the turnstile is not part of that queue, and sending them
           // back out to the gate would walk them out of the stadium.
           if (post >= 0 && this.admitted[dot] === 1 && this.outsideBowl(ctx.map, post)) return;
-          // Posted at the very gate this fan is queueing for: the help an
+          // Posted at the very gate this fan is queueing for, the help an
           // officer gives a jammed gate is spreading its queue to the next one.
-          if (post >= 0 && post === dots.targetPlace[dot] && ctx.map.places[post]?.kind === 'gate' && !ctx.redirects.has(post)) {
+          // Posted at a shut gate, they send everyone on: "go where I stand"
+          // was calling the crowd back to a door that admits nobody.
+          const atGate = post >= 0 && ctx.map.places[post]?.kind === 'gate';
+          if (atGate && (!this.isOpen(ctx, post) || (post === dots.targetPlace[dot] && !ctx.redirects.has(post)))) {
             const other = this.nearestOpenGate(ctx, dot, post);
             if (other >= 0) this.retarget(ctx, dot, other);
             return;
@@ -735,8 +923,8 @@ export class FlowMovement implements MovementModel {
         // On the way out a gate is a door, not a turnstile: mark them admitted
         // so reaching it does not put them back in the entry queue.
         this.admitted[dot] = 1;
-        if (option === 'nearest_exit') this.retarget(ctx, dot, this.nearest(ctx, dot, this.exitIndexes));
-        else if (option === 'my_gate') this.retarget(ctx, dot, this.homeGate[dot]!);
+        if (option === 'nearest_exit') this.retarget(ctx, dot, this.nearestExit(ctx, dot));
+        else if (option === 'my_gate') this.retarget(ctx, dot, this.isOpen(ctx, this.homeGate[dot]!) ? this.homeGate[dot]! : this.nearestExit(ctx, dot));
         else if (option === 'wait_in_seat' && dots.stateOf(dot) === 'seated') {
           // Letting it thin out is not staying for good.
           const [lo, hi] = WAIT_IN_SEAT_S;
