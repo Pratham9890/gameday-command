@@ -138,11 +138,16 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
       // does not reach. Until this existed, sending officers cost officer
       // minutes and changed nothing at all, so two plans that differed only in
       // how many officers they sent scored identically.
-      if (standingOrder && t - lastRepeat >= OFFICER_REPEAT_S) {
+      //
+      // With no plan order to pass on they still direct the crowd in front of
+      // them (officer_instruction): at a jammed gate that spreads the queue to
+      // the next gate. Before, an officer-only plan spoke once on arrival and
+      // then stood there for the rest of the run.
+      if (t - lastRepeat >= OFFICER_REPEAT_S) {
         const cells = officerReach(world);
         if (cells.length > 0) {
           lastRepeat = t;
-          act.raiseSituation(standingOrder, cells);
+          act.raiseSituation(standingOrder ?? 'officer_instruction', cells);
         }
       }
     },

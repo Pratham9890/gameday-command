@@ -304,3 +304,27 @@ main { min-width: 0; }
   .inspector { right: 8px; left: 8px; width: auto; top: auto; height: 55%; }
   .map-legend { display: none; }
 }
+
+/* ── Plans made visible: officers, closures, alerts ─────────────── */
+.plan-steps .live {
+  margin-left: auto; padding-left: 8px; font-size: 11px; white-space: nowrap; color: #79b8ff;
+}
+.plan-steps .live.close { color: #ff8589; }
+.plan-steps .live.alert { color: #5ce1ff; }
+.alert-banner {
+  position: absolute; top: 52px; left: 50%; transform: translateX(-50%); z-index: 4;
+  background: rgba(8, 40, 52, 0.94); border: 1px solid #2b8fae; color: #d8f6ff;
+  padding: 7px 14px; border-radius: 8px; font-size: 12.5px; white-space: nowrap; pointer-events: none;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); animation: alert-in 0.35s ease-out;
+}
+.alert-banner .muted { color: #9cc9d6; }
+@keyframes alert-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translateX(-50%); } }
+.crowd-label.station { background: rgba(14, 33, 66, 0.92); color: #a5c8ff; border-color: #2c66c2; text-transform: none; letter-spacing: 0.02em; }
+.crowd-label.closed { background: rgba(70, 14, 16, 0.94); color: #ffb3b5; border-color: #e5484d; }
+.officer-panel .swatch.officer { display: grid; place-items: center; font-size: 16px; background: #1f4f9a; }
+.officer-panel .state i.dot { background: #8b949e; }
+.officer-panel .state.en_route i.dot { background: #58a6ff; }
+.officer-panel .state.on_scene i.dot { background: #3fb950; }
+.map-legend i.route { width: 14px; height: 0; border-top: 2px dotted #58a6ff; display: inline-block; }
+.map-legend i.shut { width: 10px; height: 10px; background: #e5484d; border-radius: 2px; display: inline-block; }
+.map-legend i.alerted { width: 9px; height: 9px; background: #ff4fd8; border-radius: 50%; display: inline-block; }

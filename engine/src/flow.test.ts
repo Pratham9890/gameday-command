@@ -7,7 +7,7 @@ import { makeTestMap, TEST_GATE_THROUGHPUT_PER_MIN } from '../../world/src/test-
 import { playbookFor } from '../../world/src/playbook.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
-import { FlowFields, UNREACHABLE } from './flowfield.ts';
+import { DIR_DX, DIR_DY, FlowFields, stepCost, UNREACHABLE } from './flowfield.ts';
 import { densityFactor, FlowMovement, MAX_DOTS_PER_CELL, RHO_JAM } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
@@ -22,9 +22,10 @@ describe('FlowFields', () => {
     const field = fields.field(gateIndex);
     const gateCell = map.places[gateIndex]!.cells[0]!;
     expect(field.dist[gateCell]).toBe(0);
-    // one row south of the gate is one step away
-    expect(field.dist[gateCell + map.width]).toBe(1);
-    expect(field.dist[gateCell + map.width * 2]).toBe(2);
+    // one row south of the gate is one step away, priced by what that step is onto
+    const one = stepCost(map.cells[gateCell + map.width]!);
+    expect(field.dist[gateCell + map.width]).toBe(one);
+    expect(field.dist[gateCell + map.width * 2]).toBe(one + stepCost(map.cells[gateCell + map.width * 2]!));
   });
 
   it('reaches every walkable cell on an open map', () => {
@@ -74,6 +75,39 @@ describe('FlowFields', () => {
   });
 });
 
+describe('routes prefer roads', () => {
+  // Open ground with a road two rows off the straight line between start and
+  // destination: walking down to it and along is a little longer, but a crowd
+  // takes the street.
+  const W = 31;
+  const H = 12;
+  const ROAD_ROW = 6;
+  const cells = Array.from({ length: W * H }, (_, i) => (Math.floor(i / W) === ROAD_ROW ? 'road' : 'walk')) as MapBundle['cells'];
+  const streetMap: MapBundle = {
+    ...map,
+    id: 'street',
+    width: W,
+    height: H,
+    cells,
+    places: [{ id: 'dest', name: 'Dest', kind: 'gate', cells: [4 * W + 30], capacity: 1 }],
+    closables: [],
+  };
+
+  it('walks down the street rather than straight across open ground', () => {
+    const field = new FlowFields(streetMap).field(0);
+    let cell = 4 * W;
+    let onRoad = 0;
+    for (let steps = 0; steps < 100 && field.dist[cell] !== 0; steps++) {
+      const dir = field.dir[cell]!;
+      expect(dir).not.toBe(0);
+      cell += DIR_DY[dir]! * W + DIR_DX[dir]!;
+      if (cells[cell] === 'road') onRoad++;
+    }
+    expect(field.dist[cell]).toBe(0);
+    expect(onRoad).toBeGreaterThan(20);
+  });
+});
+
 describe('density slows walking', () => {
   it('is full speed on an empty cell and a crawl at jam density', () => {
     expect(densityFactor(0)).toBe(1);
@@ -101,6 +135,7 @@ function makeSim(opts: {
   endAt?: number;
   bundle?: MapBundle;
   incidentAt?: number;
+  movement?: FlowMovement;
 } = {}) {
   const bundle = opts.bundle ?? map;
   const seed = opts.seed ?? 20251023;
@@ -125,7 +160,7 @@ function makeSim(opts: {
     population,
     defaults: DECISION_DEFAULTS,
     serverUrl: '',
-    movement: new FlowMovement(),
+    movement: opts.movement ?? new FlowMovement(),
     replay: { runId: config.runId, answers: [] },
   });
 }
@@ -243,5 +278,63 @@ describe('FlowMovement on the test map', () => {
     const ceiling = (MAX_DOTS_PER_CELL * DOT_GROUP_SIZE) / (CELL_SIZE_M * CELL_SIZE_M);
     expect(sim.scorecard().peakDensity).toBeLessThanOrEqual(ceiling);
     expect(sim.scorecard().peakDensity).toBeGreaterThan(0);
+  });
+
+  it('empties the stands after the game, including fans who waited in their seats', async () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 400, endAt: 5400, movement });
+    // The whistle goes once the entry queues have emptied, as at a real game end.
+    while (sim.ctx.t < 1800) await sim.step();
+    const { dots } = sim.ctx;
+    const seated: number[] = [];
+    for (let i = 0; i < dots.count; i++) if (dots.stateOf(i) === 'seated') seated.push(i);
+    expect(seated.length).toBeGreaterThan(40);
+
+    // The final whistle: half head straight out, half sit and let it thin out.
+    seated.forEach((dot, k) => movement.onChoice(sim.ctx, dot, 'exit_route', k % 2 ? 'wait_in_seat' : 'nearest_exit'));
+    await runToEnd(sim);
+
+    const left = (dot: number) => dots.stateOf(dot) === 'gone';
+    const goers = seated.filter((_, k) => k % 2 === 0);
+    const waiters = seated.filter((_, k) => k % 2 === 1);
+    // Reaching a gate on the way out is a door, not the entry queue.
+    expect(goers.filter(left).length / goers.length).toBeGreaterThan(0.9);
+    // Waiting is not staying: they get up once it thins out.
+    expect(waiters.filter(left).length / waiters.length).toBeGreaterThan(0.9);
+  });
+
+  it('leaves fans already through the turnstile out of a gate jam', async () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 400, endAt: 600, movement });
+    while (sim.ctx.t < 0) await sim.step();
+    const { dots } = sim.ctx;
+    const inside: number[] = [];
+    for (let i = 0; i < dots.count; i++) if (movement.describe(i).admitted) inside.push(i);
+    expect(inside.length).toBeGreaterThan(0);
+    const before = inside.map((dot) => dots.targetPlace[dot]);
+    for (const dot of inside) movement.onChoice(sim.ctx, dot, 'gate_jammed', 'try_other_gate');
+    expect(inside.map((dot) => dots.targetPlace[dot])).toEqual(before);
+  });
+
+  it('walks officers to their post, then counts the people they help', async () => {
+    const sim = makeSim({ fans: 400, endAt: 900 });
+    const before = sim.officerStatus();
+    expect(new Set(before.map((o) => o.state))).toEqual(new Set(['standby']));
+
+    let sawEnRoute = false;
+    while (!sim.done) {
+      await sim.step();
+      for (const o of sim.officerStatus()) {
+        if (o.state === 'en_route') sawEnRoute = true;
+        expect(map.cells[o.cell]).not.toBe('blocked');
+      }
+    }
+    const after = sim.officerStatus();
+    // Plan A sends six officers to the surging gate at the incident.
+    expect(sawEnRoute).toBe(true);
+    const posted = after.filter((o) => o.state === 'on_scene');
+    expect(posted.length).toBe(6);
+    expect(posted.every((o) => map.places[o.place]?.kind === 'gate')).toBe(true);
+    expect(posted.reduce((n, o) => n + o.told, 0)).toBeGreaterThan(0);
   });
 });

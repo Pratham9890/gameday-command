@@ -12,7 +12,7 @@ import type {
   WorkerIn,
   WorkerOut,
 } from '../../contracts.ts';
-import type { DotInfo, EditIn, EditOut } from '../../engine/src/edits.ts';
+import type { DotInfo, EditIn, EditOut, SceneInfo } from '../../engine/src/edits.ts';
 
 export interface RunSnapshotView {
   frame: TickFrame;
@@ -45,6 +45,10 @@ export interface RunHandle extends RunState {
   recent: React.RefObject<DecisionRecord[]>;
   /** Every dot's fan type, as the worker last reported it. */
   typeIndex: React.RefObject<Uint16Array | null>;
+  /** Officers and closures as of the latest frame. */
+  scene: React.RefObject<SceneInfo | null>;
+  /** Every alert this run has sent, in order, with the dots each reached. */
+  alerts: React.RefObject<{ t: number; dots: Int32Array }[]>;
   /** The worker's answer to the last `inspect`. */
   inspected: DotInfo | null;
   send: (message: WorkerIn | EditIn) => void;
@@ -75,6 +79,8 @@ export function useRun(init: RunInit | null): RunHandle {
   const recent = useRef<DecisionRecord[]>([]);
   const counts = useRef({ decisions: 0, fallbacks: 0, kev: 0 });
   const typeIndex = useRef<Uint16Array | null>(null);
+  const scene = useRef<SceneInfo | null>(null);
+  const alerts = useRef<{ t: number; dots: Int32Array }[]>([]);
   const [inspected, setInspected] = useState<DotInfo | null>(null);
 
   const [state, setState] = useState<RunState>({
@@ -102,6 +108,8 @@ export function useRun(init: RunInit | null): RunHandle {
     recent.current = [];
     counts.current = { decisions: 0, fallbacks: 0, kev: 0 };
     typeIndex.current = null;
+    scene.current = null;
+    alerts.current = [];
     setInspected(null);
     // A new run starts from nothing. Without this the last run's scorecard
     // survived a restart or a new situation, so the screen read "Finished"
@@ -126,6 +134,10 @@ export function useRun(init: RunInit | null): RunHandle {
       switch (out.type) {
         case 'types':
           typeIndex.current = out.typeIndex;
+          return;
+        case 'scene':
+          scene.current = out.scene;
+          if (out.scene.alerts.length > 0) alerts.current = [...alerts.current, ...out.scene.alerts];
           return;
         case 'inspect':
           setInspected(out.info);
@@ -217,9 +229,10 @@ export function useRun(init: RunInit | null): RunHandle {
    */
   const seekTo = useCallback((target: number) => {
     frames.current = frames.current.filter((f) => f.frame.t <= target);
+    alerts.current = alerts.current.filter((a) => a.t <= target);
     workerRef.current?.postMessage({ type: 'seek', t: target } satisfies WorkerIn);
     setState((s) => ({ ...s, scorecard: null, frameCount: frames.current.length }));
   }, []);
 
-  return { ...state, latest, frames, decisionsByDot, recent, typeIndex, inspected, send, seekTo };
+  return { ...state, latest, frames, decisionsByDot, recent, typeIndex, scene, alerts, inspected, send, seekTo };
 }

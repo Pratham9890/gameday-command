@@ -162,6 +162,29 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
   fillPolygon(stadiumRing, width, height, set('stands'));
   strokePolyline(stadiumRing, CONCOURSE_RADIUS_CELLS, width, height, set('concourse'));
 
+  // The shell: every outside cell touching the concourse becomes wall, and the
+  // gates below punch the only openings through it. Without it the rim was
+  // open all the way round, so a fan admitted ten steps short of their gate
+  // walked to their seat by whatever bit of rim was nearest — measured at
+  // 318,299 steps into the bowl more than 30 m from any gate in one game.
+  // Touching includes diagonals, so no diagonal step can slip through either.
+  const shell: number[] = [];
+  for (let cell = 0; cell < cells.length; cell++) {
+    if (cells[cell] !== 'concourse') continue;
+    const cx = cell % width;
+    const cy = (cell / width) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        const kind = cells[y * width + x];
+        if (kind !== 'stands' && kind !== 'concourse') shell.push(y * width + x);
+      }
+    }
+  }
+  for (const cell of shell) cells[cell] = 'blocked';
+
   // 6. Gates: corridors punched through the concourse at even bearings.
   const centroid = stadiumRing.reduce(
     (acc, p) => ({ x: acc.x + p.x / stadiumRing.length, y: acc.y + p.y / stadiumRing.length }),

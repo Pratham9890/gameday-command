@@ -10,6 +10,8 @@ import { ComparisonMaps } from './ComparisonMaps.tsx';
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
+import { OfficerPanel } from './OfficerPanel.tsx';
+import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
@@ -118,11 +120,13 @@ function PlanCard({
         {steps.length === 0 && <li className="muted">Does nothing. A baseline to compare against.</li>}
         {steps.map(({ action, i }) => {
           const done = run.t >= incident.at + action.at;
+          const status = stepStatus(action, incident.at + action.at, run.t, run.scene.current, run.alerts.current ?? [], map);
           return (
             <li key={i} className={done ? 'done' : undefined}>
               <span className="tick">{done ? '✓' : '·'}</span>
               {describeAction(action, map)}
               {action.at > 0 && <span className="muted"> after {Math.round(action.at / 60) || '<1'} min</span>}
+              {status && <span className={`live ${action.type}`}>{status}</span>}
             </li>
           );
         })}
@@ -190,6 +194,27 @@ function PlanCard({
   );
 }
 
+/** How long an alert's banner stays up, in sim seconds. */
+const ALERT_BANNER_S = 120;
+
+/** A banner over the map while an alert is going out: what was said, how, and to how many. */
+function AlertBanner({ run, plan, incidentAt }: { run: RunHandle; plan: ResponsePlan; incidentAt: number }) {
+  const alerts = run.alerts.current ?? [];
+  const last = alerts[alerts.length - 1];
+  if (!last || run.t - last.t > ALERT_BANNER_S || run.t < last.t) return null;
+  // The plan step that sent it: the latest alert step to fire at or before it.
+  const step = plan.actions
+    .filter((a): a is Extract<ResponsePlan['actions'][number], { type: 'alert' }> => a.type === 'alert' && incidentAt + a.at <= last.t)
+    .sort((a, b) => b.at - a.at)[0];
+  const how = step?.channel === 'phone' ? '📱 Phone alert' : '📣 PA announcement';
+  return (
+    <div className="alert-banner">
+      <strong>{how}</strong> reached {(last.dots.length * DOT_GROUP_SIZE).toLocaleString()} fans
+      {step?.message && <span className="muted"> · “{step.message}”</span>}
+    </div>
+  );
+}
+
 function Legend() {
   const rings: [string, number][] = [
     ['walking in', 3],
@@ -216,7 +241,13 @@ function Legend() {
           <i className="zone" /> incident zone
         </span>
         <span>
-          <i className="cop" /> officer
+          <i className="cop" /> officer (click one) · <i className="route" /> on the way
+        </span>
+        <span>
+          <i className="shut" /> closed
+        </span>
+        <span>
+          <i className="alerted" /> got the alert
         </span>
         <span className="shirts" title={FAN_TYPES.map((t) => t.label).join(', ')}>
           {FAN_TYPES.slice(0, 5).map((t, i) => (
@@ -241,6 +272,8 @@ export function App() {
   const [speed, setSpeed] = useState(20);
   const [scrub, setScrub] = useState<number | null>(null);
   const [picked, setPicked] = useState<{ run: number; dot: number } | null>(null);
+  /** An officer clicked on the close-up. One inspector at a time: picking either clears the other. */
+  const [pickedOfficer, setPickedOfficer] = useState<{ run: number; id: string } | null>(null);
   /** The 3D close-up of one plan (the default) or all three maps side by side. */
   const [view, setView] = useState<'close' | 'compare'>(params.get('view') === 'compare' ? 'compare' : 'close');
   const [closeRun, setCloseRun] = useState(0);
@@ -277,6 +310,7 @@ export function App() {
     setScrub(null);
     setBriefing(null);
     setPicked(null);
+    setPickedOfficer(null);
     setSavedComparison(null);
     setPlansDirty(false);
     setGeneration((g) => g + 1);
@@ -549,7 +583,15 @@ export function App() {
                     incidentCells={incident?.cells}
                     incidentLabel={incident ? `${INCIDENT_LABELS[incident.kind]} here` : undefined}
                     selected={picked?.run === closeRun ? picked.dot : null}
-                    onPick={(dot) => setPicked(dot === null ? null : { run: closeRun, dot })}
+                    onPick={(dot) => {
+                      setPickedOfficer(null);
+                      setPicked(dot === null ? null : { run: closeRun, dot });
+                    }}
+                    selectedOfficer={pickedOfficer?.run === closeRun ? pickedOfficer.id : null}
+                    onPickOfficer={(id) => {
+                      setPicked(null);
+                      setPickedOfficer({ run: closeRun, id });
+                    }}
                     focusToken={focusToken}
                   />
                 )}
@@ -575,6 +617,18 @@ export function App() {
                 )}
                 {scrub !== null && <div className="replaying">Replay</div>}
                 {view === 'close' && <Legend />}
+                {view === 'close' && runs[closeRun] && planStates[closeRun] && (
+                  <AlertBanner run={runs[closeRun]!} plan={applyDisabled(planStates[closeRun]!.plan, planStates[closeRun]!.disabled)} incidentAt={incident?.at ?? 0} />
+                )}
+                {pickedOfficer && runs[pickedOfficer.run] && (
+                  <OfficerPanel
+                    map={loaded.map}
+                    run={runs[pickedOfficer.run]!}
+                    label={LABELS[pickedOfficer.run]!}
+                    officerId={pickedOfficer.id}
+                    onClose={() => setPickedOfficer(null)}
+                  />
+                )}
                 {picked && pickedRun && (
                   <Inspector
                     map={loaded.map}

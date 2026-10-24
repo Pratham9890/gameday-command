@@ -1,6 +1,8 @@
 import { Application, Container, Graphics, Matrix, Sprite, Texture } from 'pixi.js';
 import type { CellKind, FanType, MapBundle } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES } from '../../contracts.ts';
+import type { OfficerStatus, SceneInfo } from '../../engine/src/edits.ts';
+import { policeStations } from '../../world/src/officers.ts';
 import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from './people.ts';
 
 /**
@@ -45,6 +47,11 @@ const GROUND: Record<CellKind, [number, number, number]> = {
 const ROOFS = [0x8c939c, 0x9a8f86, 0x7d8a94, 0xa39a8c, 0x88827a, 0x947f74];
 const LEGS = 0x2b3a55;
 const OFFICER = 0x58a6ff;
+/** Reached by an alert: their dot when zoomed out, and the ring. Magenta because seated fans are already light blue. */
+const ALERTED = 0xff4fd8;
+/** How long an alert stays lit on the map, in wall milliseconds. */
+const ALERT_MS = 6000;
+const CLOSED = 0xe5484d;
 
 const hash = (n: number) => {
   let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
@@ -75,6 +82,8 @@ export interface CrowdSceneInit {
   types: FanType[];
   dangerDensity: number;
   onPick: (dot: number | null) => void;
+  /** An officer was clicked. Checked before fans: officers are few and easy to miss. */
+  onPickOfficer: (id: string) => void;
   onFollowChange: (following: boolean) => void;
 }
 
@@ -92,6 +101,7 @@ interface Person {
   legs: Sprite;
   torso: Sprite;
   head: Sprite;
+  bubble: Sprite;
 }
 
 interface Parts {
@@ -100,6 +110,7 @@ interface Parts {
   legs: Texture[];
   torso: Texture;
   head: Texture;
+  bubble: Texture;
 }
 
 function makeLayer(width: number, height: number): Layer {
@@ -171,7 +182,50 @@ function makeParts(): Parts {
     g.ellipse(ringW / 2, ringH / 2, ringW / 2 - 8, ringH / 2 - 6, 0, 0, Math.PI * 2);
     g.fill();
   });
-  return { shadow, ring, legs, torso, head };
+  // A speech bubble with a megaphone: "this person just got the alert".
+  const bubbleW = Math.round(1.3 * RES);
+  const bubbleH = Math.round(1.15 * RES);
+  const bubble = canvasTexture(bubbleW, bubbleH, (g) => {
+    g.fillStyle = '#fff';
+    g.beginPath();
+    g.roundRect(2, 2, bubbleW - 4, bubbleH * 0.78, 10);
+    g.moveTo(bubbleW * 0.42, bubbleH * 0.78);
+    g.lineTo(bubbleW * 0.5, bubbleH - 2);
+    g.lineTo(bubbleW * 0.6, bubbleH * 0.78);
+    g.fill();
+    g.font = `${Math.round(bubbleH * 0.55)}px sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('📣', bubbleW / 2, bubbleH * 0.41);
+  });
+  return { shadow, ring, legs, torso, head, bubble };
+}
+
+/** A police post: a small blue booth with a light bar, in the depth-sorted layer with everyone else. */
+function buildStation(cell: number, width: number): Graphics {
+  const C = CELL_SIZE_M;
+  const u = cell % width;
+  const v = Math.floor(cell / width);
+  const x0 = u * C - 1;
+  const x1 = (u + 1) * C + 1;
+  const y0 = v * C - 1;
+  const y1 = (v + 1) * C + 1;
+  const h = 3.2;
+  const quad = (pts: [number, number, number][]) =>
+    pts.flatMap(([mx, my, z]) => {
+      const p = isoProject(mx, my, z);
+      return [p.sx, p.sy];
+    });
+  const g = new Graphics();
+  g.poly(quad([[x0 - 2, y1 + 2, 0], [x1 + 2, y1 + 2, 0], [x1 + 2, y0 - 2, 0], [x0 - 2, y0 - 2, 0]]), true).fill({ color: OFFICER, alpha: 0.28 });
+  g.poly(quad([[x0, y1, 0], [x1, y1, 0], [x1, y1, h], [x0, y1, h]]), true).fill(0x1f4f9a);
+  g.poly(quad([[x1, y0, 0], [x1, y1, 0], [x1, y1, h], [x1, y0, h]]), true).fill(0x2c66c2);
+  g.poly(quad([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]), true).fill(0xe6edf3);
+  const mid = (x0 + x1) / 2;
+  g.poly(quad([[mid - 1.2, y0 + 1, h], [mid, y0 + 1, h], [mid, y1 - 1, h], [mid - 1.2, y1 - 1, h]]), true).fill(0xe5484d);
+  g.poly(quad([[mid, y0 + 1, h], [mid + 1.2, y0 + 1, h], [mid + 1.2, y1 - 1, h], [mid, y1 - 1, h]]), true).fill(OFFICER);
+  g.zIndex = ((u + v + 2) * C) / 2;
+  return g;
 }
 
 /** The static ground as pixel bytes, with a little per-cell grain so open ground does not read as flat paint. */
@@ -195,22 +249,32 @@ function paintGround(map: MapBundle): HTMLCanvasElement {
   return canvas;
 }
 
+/** The stadium's outer wall: tall enough to read as the Horseshoe, low enough not to hide the stands. */
+const SHELL_H = 9;
+const SHELL_COLOR = 0xb9b2a4;
+
 /**
- * Buildings as extruded polygons: a roof per short run of blocked cells and a
- * wall wherever a blocked cell faces open ground to the south or east, which
- * are the two faces this viewpoint can see. Height and roof colour come from
- * the connected building, so neighbouring blocks read as separate buildings;
- * thin pieces (walls, fences) stay low.
+ * Buildings as extruded cells: a roof per blocked cell and a wall wherever it
+ * faces open ground to the south or east, the two faces this viewpoint sees.
+ * Height and roof colour come from the connected building, so neighbouring
+ * blocks read as separate buildings; thin pieces (fences) stay low, and the
+ * ring touching the concourse is the stadium's own shell.
  *
- * Drawn painter's-order by depth (x + y). Runs are kept short because a long
- * run sorted by one key would paint over a building standing in front of it.
+ * Returned as one Graphics per diagonal (u + v), each with a zIndex, to be
+ * sorted in with the people. In this projection every ground point on the
+ * line u + v = d has the same screen depth, so a whole diagonal of building
+ * sorts exactly against a figure: anyone standing behind it is drawn first and
+ * hidden, anyone in front is drawn after. As one layer under the crowd, a fan
+ * walking behind a building was painted over its roof, which read as people
+ * walking on top of buildings or stuck inside them.
  */
-function buildBuildings(map: MapBundle): Graphics {
+function buildBuildings(map: MapBundle): Graphics[] {
   const { width, height, cells } = map;
   const blocked = (u: number, v: number) => u >= 0 && v >= 0 && u < width && v < height && cells[v * width + u] === 'blocked';
 
   const label = new Int32Array(width * height).fill(-1);
   const sizes: number[] = [];
+  const shells = new Set<number>();
   const stack: number[] = [];
   for (let start = 0; start < cells.length; start++) {
     if (cells[start] !== 'blocked' || label[start]! >= 0) continue;
@@ -224,8 +288,11 @@ function buildBuildings(map: MapBundle): Graphics {
       const u = cell % width;
       const v = (cell / width) | 0;
       for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        if (!blocked(u + du, v + dv)) continue;
-        const next = (v + dv) * width + u + du;
+        const nu = u + du;
+        const nv = v + dv;
+        if (nu >= 0 && nv >= 0 && nu < width && nv < height && cells[nv * width + nu] === 'concourse') shells.add(id);
+        if (!blocked(nu, nv)) continue;
+        const next = nv * width + nu;
         if (label[next]! >= 0) continue;
         label[next] = id;
         stack.push(next);
@@ -233,11 +300,9 @@ function buildBuildings(map: MapBundle): Graphics {
     }
     sizes.push(size);
   }
-  const heightOf = (id: number) => (sizes[id]! < 40 ? 2.5 : 7 + (hash(id) % 5) * 3);
-  const roofOf = (id: number) => ROOFS[hash(id + 101) % ROOFS.length]!;
+  const heightOf = (id: number) => (shells.has(id) ? SHELL_H : sizes[id]! < 40 ? 2.5 : 7 + (hash(id) % 5) * 3);
+  const roofOf = (id: number) => (shells.has(id) ? SHELL_COLOR : ROOFS[hash(id + 101) % ROOFS.length]!);
 
-  type Item = { key: number; points: number[]; color: number };
-  const items: Item[] = [];
   const C = CELL_SIZE_M;
   const quad = (pts: [number, number, number][]) =>
     pts.flatMap(([mx, my, h]) => {
@@ -245,57 +310,35 @@ function buildBuildings(map: MapBundle): Graphics {
       return [p.sx, p.sy];
     });
 
-  const MAX_RUN = 6;
-  for (let v = 0; v < height; v++) {
-    let u = 0;
-    while (u < width) {
+  const diagonals = new Map<number, Graphics>();
+  for (let d = 0; d <= width + height - 2; d++) {
+    // Walls first, then roofs, west to east along the diagonal.
+    let g: Graphics | null = null;
+    const roofs: [number, number, number][][] = [];
+    const colors: number[] = [];
+    for (let u = Math.max(0, d - height + 1); u <= Math.min(d, width - 1); u++) {
+      const v = d - u;
       const id = label[v * width + u]!;
-      if (id < 0) {
-        u++;
-        continue;
-      }
-      let end = u;
-      while (end + 1 < width && end - u + 1 < MAX_RUN && label[v * width + end + 1] === id) end++;
+      if (id < 0) continue;
+      g ??= new Graphics();
       const h = heightOf(id);
       const roof = roofOf(id);
       const x0 = u * C;
-      const x1 = (end + 1) * C;
+      const x1 = (u + 1) * C;
       const y0 = v * C;
       const y1 = (v + 1) * C;
-
-      // South wall, split where open ground below starts and stops.
-      let s = u;
-      while (s <= end) {
-        if (blocked(s, v + 1)) {
-          s++;
-          continue;
-        }
-        let e = s;
-        while (e + 1 <= end && !blocked(e + 1, v + 1)) e++;
-        items.push({
-          key: (e + v) * 4,
-          color: shade(roof, 0.58),
-          points: quad([[s * C, y1, 0], [(e + 1) * C, y1, 0], [(e + 1) * C, y1, h], [s * C, y1, h]]),
-        });
-        s = e + 1;
-      }
-      // East wall at the run's end.
-      if (!blocked(end + 1, v)) {
-        items.push({
-          key: (end + v) * 4 + 1,
-          color: shade(roof, 0.76),
-          points: quad([[x1, y0, 0], [x1, y1, 0], [x1, y1, h], [x1, y0, h]]),
-        });
-      }
-      items.push({ key: (end + v) * 4 + 2, color: roof, points: quad([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]) });
-      u = end + 1;
+      if (!blocked(u, v + 1)) g.poly(quad([[x0, y1, 0], [x1, y1, 0], [x1, y1, h], [x0, y1, h]]), true).fill(shade(roof, 0.58));
+      if (!blocked(u + 1, v)) g.poly(quad([[x1, y0, 0], [x1, y1, 0], [x1, y1, h], [x1, y0, h]]), true).fill(shade(roof, 0.76));
+      roofs.push([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]);
+      colors.push(roof);
     }
+    if (!g) continue;
+    roofs.forEach((r, k) => g!.poly(quad(r), true).fill(colors[k]!));
+    // Just before a figure standing on the line in front of this diagonal.
+    g.zIndex = ((d + 1) * C) / 2 - 0.001;
+    diagonals.set(d, g);
   }
-  items.sort((a, b) => a.key - b.key);
-
-  const g = new Graphics();
-  for (const item of items) g.poly(item.points, true).fill(item.color);
-  return g;
+  return [...diagonals.values()];
 }
 
 export class CrowdScene {
@@ -310,11 +353,22 @@ export class CrowdScene {
   private officers = new Graphics();
   private marker = new Graphics();
   private zone = new Graphics();
+  private closedCells = new Graphics();
+  private routes = new Graphics();
+  private ripple = new Graphics();
+  private scene: SceneInfo | null = null;
+  private prevScene: SceneInfo | null = null;
+  private closedKey = '';
+  private closedTags: { el: HTMLElement; sx: number; sy: number }[] = [];
+  private selectedOfficer: string | null = null;
+  /** Who the last alert reached, and when it went out (wall clock). */
+  private alert: { mask: Uint8Array; start: number; mx: number; my: number; radius: number } | null = null;
   private heat!: Layer;
   private dots!: Layer;
   private parts!: Parts;
   private pool: Person[] = [];
   private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean }[] = [];
+  private stationTags: { el: HTMLElement; sx: number; sy: number }[] = [];
   private nameTag: HTMLElement;
   private zoneTag: HTMLElement;
   private zoneAt: { sx: number; sy: number } | null = null;
@@ -388,10 +442,12 @@ export class CrowdScene {
     this.heat = makeLayer(map.width, map.height);
     this.heat.sprite.alpha = 0.8;
     this.dots = makeLayer(map.width, map.height);
-    this.ground.addChild(new Sprite(baseTexture), this.heat.sprite, this.zone, this.dots.sprite);
+    this.ground.addChild(new Sprite(baseTexture), this.heat.sprite, this.zone, this.closedCells, this.dots.sprite);
 
     this.people.sortableChildren = true;
-    this.world.addChild(slab, this.ground, buildBuildings(map), this.people, this.officers, this.marker);
+    this.people.addChild(...buildBuildings(map));
+    for (const station of policeStations(map)) this.people.addChild(buildStation(station.cell, map.width));
+    this.world.addChild(slab, this.ground, this.routes, this.people, this.ripple, this.officers, this.marker);
     app.stage.addChild(this.world);
 
     this.makeLabels();
@@ -423,6 +479,87 @@ export class CrowdScene {
       overlay.appendChild(el);
       this.labels.push({ el, sx: p.sx, sy: p.sy, gate });
     }
+    for (const station of policeStations(map)) {
+      const p = isoProject(((station.cell % map.width) + 0.5) * CELL_SIZE_M, (Math.floor(station.cell / map.width) + 0.5) * CELL_SIZE_M, 5);
+      const el = document.createElement('div');
+      el.className = 'crowd-label station';
+      el.textContent = `🚓 ${station.name}`;
+      overlay.appendChild(el);
+      this.stationTags.push({ el, sx: p.sx, sy: p.sy });
+    }
+  }
+
+  /**
+   * Officers, closures and alerts from the worker, so a plan's steps can be
+   * seen happening: officers walking in from their post, a gate door shut, the
+   * people an alert reached.
+   */
+  setScene(info: SceneInfo | null, live: boolean): void {
+    this.prevScene = live && this.scene && info && info.t > this.scene.t ? this.scene : null;
+    this.scene = info;
+    const key = info ? [...info.closed].sort().join(',') : '';
+    if (key !== this.closedKey) {
+      this.closedKey = key;
+      void this.ready.then(() => this.drawClosed(info?.closed ?? []));
+    }
+  }
+
+  /** Light up the people an alert just reached, and send a ring out over them. */
+  flashAlert(dots: Int32Array): void {
+    const cur = this.cur;
+    if (!cur) return;
+    const mask = new Uint8Array(cur.x.length);
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const dot of dots) {
+      if (dot < 0 || dot >= mask.length || cur.x[dot]! < 0) continue;
+      mask[dot] = 1;
+      sx += cur.x[dot]!;
+      sy += cur.y[dot]!;
+      n++;
+    }
+    if (n === 0) return;
+    const mx = sx / n;
+    const my = sy / n;
+    let far = 0;
+    for (const dot of dots) {
+      if (mask[dot] !== 1) continue;
+      far = Math.max(far, Math.hypot(cur.x[dot]! - mx, cur.y[dot]! - my));
+    }
+    this.alert = { mask, start: performance.now(), mx, my, radius: Math.max(40, Math.min(far, 900)) };
+    this.paintFrame(cur);
+  }
+
+  setSelectedOfficer(id: string | null): void {
+    this.selectedOfficer = id;
+  }
+
+  private drawClosed(ids: string[]): void {
+    const { map, overlay } = this.init;
+    const { width } = map;
+    this.closedCells.clear();
+    for (const tag of this.closedTags) tag.el.remove();
+    this.closedTags = [];
+    for (const id of ids) {
+      const closable = map.closables.find((c) => c.id === id);
+      if (!closable || closable.cells.length === 0) continue;
+      let u = 0;
+      let v = 0;
+      for (const cell of closable.cells) {
+        this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
+        u += (cell % width) + 0.5;
+        v += Math.floor(cell / width) + 0.5;
+      }
+      const n = closable.cells.length;
+      const p = isoProject((u / n) * CELL_SIZE_M, (v / n) * CELL_SIZE_M, 4);
+      const el = document.createElement('div');
+      el.className = 'crowd-label closed';
+      el.textContent = `⛔ ${closable.name.replace(/ door$/, '')} closed`;
+      overlay.appendChild(el);
+      this.closedTags.push({ el, sx: p.sx, sy: p.sy });
+    }
+    this.closedCells.fill({ color: CLOSED, alpha: 0.7 });
   }
 
   private bindInput(canvas: HTMLCanvasElement): void {
@@ -450,7 +587,9 @@ export class CrowdScene {
     const onUp = (e: PointerEvent) => {
       if (down && !down.moved) {
         const p = local(e);
-        this.init.onPick(this.pickAt(p.x, p.y));
+        const officer = this.officerAt(p.x, p.y);
+        if (officer !== null) this.init.onPickOfficer(officer);
+        else this.init.onPick(this.pickAt(p.x, p.y));
       }
       down = null;
     };
@@ -631,7 +770,8 @@ export class CrowdScene {
       const cx = (frame.x[i]! * scale) | 0;
       const cy = (frame.y[i]! * scale) | 0;
       if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) continue;
-      const [r, g, b] = STATE_RGB[s] ?? STATE_RGB[3]!;
+      const lit = this.alert?.mask[i] === 1;
+      const [r, g, b] = lit ? [(ALERTED >> 16) & 255, (ALERTED >> 8) & 255, ALERTED & 255] : (STATE_RGB[s] ?? STATE_RGB[3]!);
       const o = (cy * map.width + cx) * 4;
       data[o] = r;
       data[o + 1] = g;
@@ -660,6 +800,39 @@ export class CrowdScene {
     if (dist > MAX_TWEEN_M) return { x: x1, y: y1, moving: false };
     const a = Math.min(1, (now - this.arrivedAt) / this.interval);
     return { x: x0 + dx * a, y: y0 + dy * a, moving: dist > 0.4 && a < 1 };
+  }
+
+  /** The officer under a screen point, if any. */
+  private officerAt(px: number, py: number): string | null {
+    const s = this.cam.scale;
+    const k = Math.max(1, PEOPLE_MIN_SCALE / s) * 1.1;
+    const reach = Math.max(12, 2 * k * s);
+    let best: string | null = null;
+    let bestSq = reach * reach;
+    for (const o of this.officerPositions(performance.now())) {
+      const p = isoProject(o.x, o.y, 1.2 * k);
+      const dx = p.sx * s + this.cam.x - px;
+      const dy = p.sy * s + this.cam.y - py;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = o.id;
+      }
+    }
+    return best;
+  }
+
+  /** Officers where they stand right now, tweened like the crowd. */
+  private officerPositions(now: number): (OfficerStatus & { x: number; y: number })[] {
+    const scene = this.scene;
+    if (!scene) return [];
+    const prev = this.prevScene;
+    const a = this.tween ? Math.min(1, (now - this.arrivedAt) / this.interval) : 1;
+    return scene.officers.map((o) => {
+      const before = prev?.officers.find((p) => p.id === o.id);
+      if (!before || Math.hypot(o.x - before.x, o.y - before.y) > MAX_TWEEN_M * 3) return o;
+      return { ...o, x: before.x + (o.x - before.x) * a, y: before.y + (o.y - before.y) * a };
+    });
   }
 
   private pickAt(px: number, py: number): number | null {
@@ -697,6 +870,11 @@ export class CrowdScene {
     const legs = new Sprite(parts.legs[0]);
     const torso = new Sprite(parts.torso);
     const head = new Sprite(parts.head);
+    const bubble = new Sprite(parts.bubble);
+    bubble.anchor.set(0.5, 1);
+    bubble.scale.set(1 / RES);
+    bubble.y = -FIG_H - 0.15;
+    bubble.visible = false;
     for (const sprite of [shadow, ring]) {
       sprite.anchor.set(0.5);
       sprite.scale.set(1 / RES);
@@ -709,9 +887,9 @@ export class CrowdScene {
     torso.y = -LEG_H + 0.05;
     head.y = -LEG_H - TORSO_H + 0.08;
     ring.alpha = 0.9;
-    c.addChild(shadow, ring, legs, torso, head);
+    c.addChild(shadow, ring, legs, torso, head, bubble);
     this.people.addChild(c);
-    p = { c, ring, legs, torso, head };
+    p = { c, ring, legs, torso, head, bubble };
     this.pool[index] = p;
     return p;
   }
@@ -739,6 +917,14 @@ export class CrowdScene {
 
     const asPeople = s >= PEOPLE_MIN_SCALE;
     this.dots.sprite.alpha = asPeople ? 0.22 : 1;
+
+    // An alert stays lit for a few seconds, then the dots go back to their state colours.
+    const alertLive = this.alert !== null && now - this.alert.start < ALERT_MS;
+    if (this.alert && !alertLive) {
+      this.alert = null;
+      if (this.cur) this.paintFrame(this.cur);
+    }
+    this.drawRipple(now);
 
     let used = 0;
     const cur = this.cur;
@@ -770,6 +956,8 @@ export class CrowdScene {
         const drop = seated ? LEG_H * 0.55 : 0;
         person.torso.y = -LEG_H + 0.05 + drop + bob;
         person.head.y = -LEG_H - TORSO_H + 0.08 + drop + bob;
+        person.bubble.visible = alertLive && this.alert!.mask[i] === 1;
+        person.bubble.y = -FIG_H - 0.15 + drop;
       };
       if (this.selected !== null) show(this.selected);
       for (let i = 0; i < cur.x.length && used < MAX_PEOPLE; i++) {
@@ -788,6 +976,13 @@ export class CrowdScene {
       label.el.style.display = visible ? '' : 'none';
       if (visible) label.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
+    for (const tag of [...this.stationTags, ...this.closedTags]) {
+      const x = tag.sx * s + this.cam.x;
+      const y = tag.sy * s + this.cam.y;
+      const visible = x > -120 && x < w + 120 && y > -20 && y < h + 40;
+      tag.el.style.display = visible ? '' : 'none';
+      if (visible) tag.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
+    }
     const zone = this.zoneAt;
     if (zone && this.zoneTag.textContent) {
       const x = zone.sx * s + this.cam.x;
@@ -803,17 +998,62 @@ export class CrowdScene {
   private drawOfficers(s: number): void {
     const cur = this.cur;
     this.officers.clear();
+    this.routes.clear();
     if (!cur) return;
     const { width } = this.init.map;
     // Kept a readable size on screen however far out you are.
     const k = Math.max(1, PEOPLE_MIN_SCALE / s) * 1.1;
-    for (const cell of cur.officerCells) {
-      if (cell < 0) continue;
-      const p = isoProject(((cell % width) + 0.5) * CELL_SIZE_M, (Math.floor(cell / width) + 0.5) * CELL_SIZE_M);
-      this.officers.ellipse(p.sx, p.sy, 1.1 * k, 0.55 * k).fill({ color: OFFICER, alpha: 0.35 });
+    const centre = (cell: number) => isoProject(((cell % width) + 0.5) * CELL_SIZE_M, (Math.floor(cell / width) + 0.5) * CELL_SIZE_M);
+    const officers = this.scene
+      ? this.officerPositions(performance.now())
+      : Array.from(cur.officerCells, (cell, i) => ({
+          id: `off-${i + 1}`,
+          x: ((cell % width) + 0.5) * CELL_SIZE_M,
+          y: (Math.floor(cell / width) + 0.5) * CELL_SIZE_M,
+          state: 'standby' as OfficerStatus['state'],
+          targetCell: -1,
+        }));
+
+    for (const o of officers) {
+      const p = isoProject(o.x, o.y);
+      // Where they are headed: a dotted line to the post, so a dispatch is visible.
+      if (o.state === 'en_route' && o.targetCell >= 0) {
+        const t = centre(o.targetCell);
+        const len = Math.hypot(t.sx - p.sx, t.sy - p.sy);
+        const dash = Math.max(1.5, 6 / s);
+        for (let d = 0; d < len; d += dash * 2) {
+          const a = d / len;
+          const b = Math.min(1, (d + dash) / len);
+          this.routes.moveTo(p.sx + (t.sx - p.sx) * a, p.sy + (t.sy - p.sy) * a).lineTo(p.sx + (t.sx - p.sx) * b, p.sy + (t.sy - p.sy) * b);
+        }
+        this.routes.stroke({ color: OFFICER, width: Math.max(0.25, 2 / s), alpha: 0.85 });
+        this.routes.circle(t.sx, t.sy, 1.4 * k).stroke({ color: OFFICER, width: Math.max(0.2, 1.5 / s) });
+      }
+      if (o.id === this.selectedOfficer) {
+        this.officers.ellipse(p.sx, p.sy, 2.1 * k, 1.05 * k).stroke({ color: 0xffd166, width: Math.max(0.15, 2.5 / s) });
+      }
+      this.officers.ellipse(p.sx, p.sy, 1.1 * k, 0.55 * k).fill({ color: OFFICER, alpha: o.state === 'on_scene' ? 0.55 : 0.35 });
       this.officers.roundRect(p.sx - 0.42 * k, p.sy - 1.9 * k, 0.84 * k, 1.9 * k, 0.2 * k).fill(0x1f4f9a);
-      this.officers.circle(p.sx, p.sy - 2.25 * k, 0.36 * k).fill(skinOf(cell));
+      this.officers.circle(p.sx, p.sy - 2.25 * k, 0.36 * k).fill(skinOf(Number(o.id.replace(/\D/g, '')) * 7919));
       this.officers.rect(p.sx - 0.42 * k, p.sy - 2.62 * k, 0.84 * k, 0.22 * k).fill(0x0d2650);
+    }
+  }
+
+  /** Rings spreading over the people an alert reached, for its first couple of seconds. */
+  private drawRipple(now: number): void {
+    this.ripple.clear();
+    const alert = this.alert;
+    if (!alert) return;
+    const age = (now - alert.start) / 2400;
+    if (age > 1.4) return;
+    const s = this.cam.scale;
+    const p = isoProject(alert.mx, alert.my);
+    for (let ring = 0; ring < 3; ring++) {
+      const f = age - ring * 0.2;
+      if (f <= 0 || f > 1) continue;
+      const r = alert.radius * f;
+      // A circle on the ground is an ellipse twice as wide as it is tall here.
+      this.ripple.ellipse(p.sx, p.sy, r * Math.SQRT2, r / Math.SQRT2).stroke({ color: ALERTED, width: Math.max(0.6, 3 / s), alpha: 1 - f });
     }
   }
 
@@ -854,6 +1094,7 @@ export class CrowdScene {
     this.destroyed = true;
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
+    for (const tag of [...this.stationTags, ...this.closedTags]) tag.el.remove();
     this.nameTag.remove();
     this.zoneTag.remove();
     const app = this.app;

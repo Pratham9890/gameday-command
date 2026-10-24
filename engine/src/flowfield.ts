@@ -1,20 +1,48 @@
-import type { Id, MapBundle } from '../../contracts.ts';
+import type { CellKind, Id, MapBundle } from '../../contracts.ts';
 
 /** Direction codes 1..8 clockwise from east; 0 means "nowhere to go". */
 export const DIR_DX = [0, 1, 1, 0, -1, -1, -1, 0, 1] as const;
 export const DIR_DY = [0, 0, 1, 1, 1, 0, -1, -1, -1] as const;
 export const UNREACHABLE = 0xffff;
 
+/**
+ * What one step onto a cell of this kind costs a route, in whole units.
+ * Must be at least 1 and at most MAX_STEP_COST. Only the ratios matter: a
+ * cheaper kind draws routes onto it, at the price of a longer walk.
+ */
+export function stepCost(kind: CellKind): number {
+  // A street is two thirds the price of open ground: enough to pull a crowd
+  // onto it when it runs the right way, not so much that everyone walks a long
+  // way round to stay on asphalt. Lots are open ground for this purpose.
+  switch (kind) {
+    case 'road':
+      return 2;
+    case 'blocked':
+      return MAX_STEP_COST;
+    default:
+      return 3;
+  }
+}
+
+/** The ceiling on `stepCost`, which sizes the bucket queue below. */
+export const MAX_STEP_COST = 4;
+
+/** Distance units of one step on open ground, for thresholds written in steps. */
+export const WALK_STEP = stepCost('walk');
+
 export interface FlowField {
-  /** Steps to the destination, UNREACHABLE where there is no route. */
+  /** Route cost to the destination (see `stepCost`), UNREACHABLE where there is no route. */
   dist: Uint16Array;
   /** Which way to walk from this cell, as a DIR_* index. */
   dir: Uint8Array;
 }
 
 /**
- * One distance field per destination, built by multi-source BFS from the
- * destination's own cells outward, then frozen into a direction byte per cell.
+ * One distance field per destination, built outward from the destination's
+ * own cells, then frozen into a direction byte per cell. Steps are weighted by
+ * `stepCost`, so a route prefers roads over open ground the way a game-day
+ * crowd does — with plain BFS every route was the straight line across lawns
+ * and lots, and nobody walked down a street.
  *
  * Precomputing the direction is what keeps the step loop cheap: moving a dot is
  * one array read, not eight comparisons. Fields are built lazily and thrown away
@@ -23,12 +51,10 @@ export interface FlowField {
 export class FlowFields {
   private readonly map: MapBundle;
   private readonly cache = new Map<number, FlowField>();
-  private readonly queue: Int32Array;
   private closedCells: Set<number> = new Set();
 
   constructor(map: MapBundle) {
     this.map = map;
-    this.queue = new Int32Array(map.width * map.height);
   }
 
   /** Recompute which cells are shut, and drop every cached field if it changed. */
@@ -89,32 +115,41 @@ export class FlowFields {
     if (!place) return { dist, dir };
     const seeds = new Set(place.cells);
 
-    // Multi-source BFS: every cell of the destination starts at distance 0.
-    let head = 0;
-    let tail = 0;
+    // Dial's algorithm: Dijkstra with a bucket per distance mod (max cost + 1).
+    // Costs are small integers, so this stays a flat queue walk like the BFS
+    // it replaced, with no heap.
+    const buckets: number[][] = Array.from({ length: MAX_STEP_COST + 1 }, () => []);
+    let pending = 0;
     for (const cell of place.cells) {
       if (cell < 0 || cell >= size || cells[cell] === 'blocked') continue;
       if (dist[cell] === 0) continue;
       dist[cell] = 0;
-      this.queue[tail++] = cell;
+      buckets[0]!.push(cell);
+      pending++;
     }
 
     // A destination is reachable even when its own door is shut, so that queued
     // dots still know which way the gate is; the door itself blocks admission.
-    while (head < tail) {
-      const cell = this.queue[head++]!;
-      const cx = cell % width;
-      const cy = (cell / width) | 0;
-      const next = dist[cell]! + 1;
-      for (let d = 1; d <= 7; d += 2) {
-        const nx = cx + DIR_DX[d]!;
-        const ny = cy + DIR_DY[d]!;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const neighbour = ny * width + nx;
-        if (!this.open(neighbour, avoidInterior, seeds)) continue;
-        if (dist[neighbour]! <= next) continue;
-        dist[neighbour] = next;
-        this.queue[tail++] = neighbour;
+    for (let at = 0; pending > 0; at++) {
+      const bucket = buckets[at % buckets.length]!;
+      while (bucket.length > 0) {
+        const cell = bucket.pop()!;
+        pending--;
+        if (dist[cell] !== at) continue; // a stale entry, already settled cheaper
+        const cx = cell % width;
+        const cy = (cell / width) | 0;
+        for (let d = 1; d <= 7; d += 2) {
+          const nx = cx + DIR_DX[d]!;
+          const ny = cy + DIR_DY[d]!;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const neighbour = ny * width + nx;
+          if (!this.open(neighbour, avoidInterior, seeds)) continue;
+          const next = at + stepCost(cells[neighbour]!);
+          if (next >= UNREACHABLE || dist[neighbour]! <= next) continue;
+          dist[neighbour] = next;
+          buckets[next % buckets.length]!.push(neighbour);
+          pending++;
+        }
       }
     }
 

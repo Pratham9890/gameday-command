@@ -17,14 +17,16 @@ import type {
   WorldActions,
   WorldView,
 } from '../../contracts.ts';
-import { CELL_SIZE_M, CONTRACT_VERSION, FRAME_EVERY_S, decisionKey } from '../../contracts.ts';
+import { CELL_SIZE_M, CONTRACT_VERSION, DOT_GROUP_SIZE, FRAME_EVERY_S, decisionKey } from '../../contracts.ts';
+import { DIR_DX as DIR_X, DIR_DY as DIR_Y } from './flowfield.ts';
 import { DecisionClient } from '../../brain/src/client.ts';
 import { sampleOdds } from '../../brain/src/sample.ts';
 import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
-import type { DotEdit, DotInfo } from './edits.ts';
+import type { DotEdit, DotInfo, OfficerStatus } from './edits.ts';
+import { FlowFields, WALK_STEP } from './flowfield.ts';
 import { Rng } from './rng.ts';
 
 /** One sim second per step. Coarse enough for 10x real time, fine enough for 2 m cells. */
@@ -100,6 +102,19 @@ export class Simulation {
   private readonly emit: (out: WorkerOut) => void;
   private readonly officerTargets = new Map<Id, number>();
   private readonly officerPos = new Map<Id, { x: number; y: number }>();
+  /** Where each officer started: their police post, or a gate on a map without one. */
+  private readonly officerHome = new Map<Id, number>();
+  /** People each officer has spoken to, and how many of them did as told. */
+  private readonly officerTold = new Map<Id, number>();
+  private readonly officerFollowed = new Map<Id, number>();
+  /**
+   * Officers' own routes. They ignore closures — police cross a closed street —
+   * and keep out of the bowl the way fans do, so a dispatch is a walk along
+   * the streets instead of a straight line through buildings.
+   */
+  private officerFields: FlowFields;
+  /** Alerts that reached people since the app last asked, with who they reached. */
+  private alerts: { t: SimSeconds; dots: Int32Array }[] = [];
   private readonly alerted: Uint8Array;
   private raised: RaisedSituation[] = [];
   private finished = false;
@@ -134,7 +149,9 @@ export class Simulation {
     this.alerted = new Uint8Array(population.dots);
     for (const officer of this.ctx.officers) {
       this.officerPos.set(officer.id, this.cellCenter(officer.cell));
+      this.officerHome.set(officer.id, officer.cell);
     }
+    this.officerFields = new FlowFields(map);
     // A package at game end only makes sense alongside the crowd leaving.
     this.hooks = createWorldHooks(
       config.incident,
@@ -213,31 +230,122 @@ export class Simulation {
   }
 
   private stepOfficers(dt: SimSeconds): void {
+    const { map } = this.ctx;
     for (const officer of this.ctx.officers) {
       const target = this.officerTargets.get(officer.id);
       if (target === undefined) continue;
       const pos = this.officerPos.get(officer.id)!;
       const goal = this.cellCenter(target);
-      const dx = goal.x - pos.x;
-      const dy = goal.y - pos.y;
-      const dist = Math.hypot(dx, dy);
-      const stride = officer.speedMps * dt;
-      if (dist <= stride) {
-        pos.x = goal.x;
-        pos.y = goal.y;
+      const field = this.officerField(officer.id);
+      let left = officer.speedMps * dt;
+      // Sub-steps of at most a metre: a stride longer than a cell would cut the
+      // corners the route goes round.
+      while (left > 0) {
+        const cell = ((pos.y / CELL_SIZE_M) | 0) * map.width + ((pos.x / CELL_SIZE_M) | 0);
+        const dir = field && field.dist[cell] !== 0 ? field.dir[cell]! : 0;
+        const step = Math.min(left, 1);
+        left -= step;
+        if (dir !== 0) {
+          const dx = DIR_X[dir]!;
+          const dy = DIR_Y[dir]!;
+          const norm = dx !== 0 && dy !== 0 ? Math.SQRT1_2 : 1;
+          pos.x += dx * norm * step;
+          pos.y += dy * norm * step;
+          continue;
+        }
+        // On the destination itself, or nowhere to route from: the last
+        // stretch to the exact post is a straight line.
+        const gx = goal.x - pos.x;
+        const gy = goal.y - pos.y;
+        const dist = Math.hypot(gx, gy);
+        if (dist <= step) {
+          pos.x = goal.x;
+          pos.y = goal.y;
+          left = 0;
+        } else {
+          pos.x += (gx / dist) * step;
+          pos.y += (gy / dist) * step;
+        }
+      }
+      officer.cell = ((pos.y / CELL_SIZE_M) | 0) * map.width + ((pos.x / CELL_SIZE_M) | 0);
+      if (pos.x === goal.x && pos.y === goal.y) {
         officer.cell = target;
         this.officerTargets.delete(officer.id);
         // An officer reaching their post starts giving instructions to the
-        // people around them. Raised once, on arrival: sending officers has to
-        // change what the crowd does, or dispatching them is just a number on
-        // the scorecard and two plans that differ only in officers score alike.
+        // people around them. Sending officers has to change what the crowd
+        // does, or dispatching them is just a number on the scorecard and two
+        // plans that differ only in officers score alike. The world hooks
+        // repeat it while they stay on station.
         this.raised.push({ situation: 'officer_instruction', cells: this.cellsAround(target, officer.radiusCells) });
-      } else {
-        pos.x += (dx / dist) * stride;
-        pos.y += (dy / dist) * stride;
-        officer.cell = ((pos.y / CELL_SIZE_M) | 0) * this.ctx.map.width + ((pos.x / CELL_SIZE_M) | 0);
       }
     }
+  }
+
+  /** The route to the place an officer was sent to, or null if it is not a place. */
+  private officerField(id: Id) {
+    const place = this.ctx.officerPost.get(id);
+    if (place === undefined) return null;
+    const kind = this.ctx.map.places[place]?.kind;
+    // Like a fan: keep out of the bowl only when starting outside it. An
+    // officer posted on the concourse has no route that avoids the bowl, and
+    // the straight-line fallback then walked them through the wall.
+    const officer = this.ctx.officers.find((o) => o.id === id);
+    const here = officer ? this.ctx.map.cells[officer.cell] : undefined;
+    const inside = here === 'stands' || here === 'concourse';
+    return this.officerFields.field(place, !inside && kind !== 'seating' && kind !== 'concourse' && kind !== 'shelter');
+  }
+
+  /** What every officer is doing, for the app: where, heading where, and how much they have helped. */
+  officerStatus(): OfficerStatus[] {
+    return this.ctx.officers.map((officer) => {
+      const target = this.officerTargets.get(officer.id);
+      const place = this.ctx.officerPost.get(officer.id) ?? -1;
+      const field = target !== undefined ? this.officerField(officer.id) : null;
+      const cost = field ? field.dist[officer.cell] : undefined;
+      const pos = this.officerPos.get(officer.id)!;
+      return {
+        id: officer.id,
+        unit: officer.unit,
+        cell: officer.cell,
+        x: pos.x,
+        y: pos.y,
+        state: target !== undefined ? 'en_route' : place >= 0 ? 'on_scene' : 'standby',
+        targetCell: target ?? -1,
+        place,
+        homeCell: this.officerHome.get(officer.id) ?? officer.cell,
+        told: this.officerTold.get(officer.id) ?? 0,
+        followed: this.officerFollowed.get(officer.id) ?? 0,
+        // Route cost back to steps of open ground, then to seconds at their pace.
+        etaS: cost === undefined || cost >= 0xffff ? null : ((cost / WALK_STEP) * CELL_SIZE_M) / officer.speedMps,
+      };
+    });
+  }
+
+  /** Alerts raised since the last call, each with the dots it reached. */
+  takeAlerts(): { t: SimSeconds; dots: Int32Array }[] {
+    const out = this.alerts;
+    this.alerts = [];
+    return out;
+  }
+
+  /** The officer closest to a cell and within earshot of it, or null. */
+  private officerOver(cell: number): Id | null {
+    const width = this.ctx.map.width;
+    const cx = cell % width;
+    const cy = (cell / width) | 0;
+    let best: Id | null = null;
+    let bestSq = Infinity;
+    for (const officer of this.ctx.officers) {
+      const dx = (officer.cell % width) - cx;
+      const dy = ((officer.cell / width) | 0) - cy;
+      if (Math.abs(dx) > officer.radiusCells || Math.abs(dy) > officer.radiusCells) continue;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = officer.id;
+      }
+    }
+    return best;
   }
 
   /** Cells within a square of `radius` of this one, clipped to the map. */
@@ -308,6 +416,7 @@ export class Simulation {
       if (raise.situation === 'alert_received') {
         for (const i of reached) this.alerted[i] = 1;
         this.scorer.noteReached(reached);
+        if (reached.length > 0) this.alerts.push({ t: this.ctx.t, dots: Int32Array.from(reached) });
       }
       for (const i of reached) {
         const fanTypeId = types[dots.typeIndex[i]!]?.id ?? types[0]!.id;
@@ -336,8 +445,17 @@ export class Simulation {
       const ask = asks[a]!;
       const answer = answers[a]!;
       this.scorer.noteDecision(answer.source);
+      const byOfficer = ask.situation === 'officer_instruction';
       for (const dot of ask.dotIds) {
         const picked = sampleOdds(answer.odds, this.ctx.rng.next());
+        if (byOfficer) {
+          const cell = this.cellOfDot(dot);
+          const officer = cell >= 0 ? this.officerOver(cell) : null;
+          if (officer !== null) {
+            this.officerTold.set(officer, (this.officerTold.get(officer) ?? 0) + DOT_GROUP_SIZE);
+            if (picked === 'follow') this.officerFollowed.set(officer, (this.officerFollowed.get(officer) ?? 0) + DOT_GROUP_SIZE);
+          }
+        }
         this.opts.movement.onChoice?.(this.ctx, dot, ask.situation, picked);
         // One record per dot: the dot detail panel needs to explain any dot the
         // commander clicks, and DecisionRecord in the contract carries one dot.

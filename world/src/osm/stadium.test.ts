@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeOfficers, policeStations } from '../officers.ts';
 import { CELL_SIZE_M } from '../../../contracts.ts';
 import { FlowFields, UNREACHABLE } from '../../../engine/src/flowfield.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from './stadium.ts';
@@ -68,6 +69,43 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
       const reachable = sample.filter((cell) => field.dist[cell] !== UNREACHABLE).length;
       expect(reachable, `${place.name} unreachable from the lots`).toBe(sample.length);
     });
+  });
+
+  it('lets the crowd into the bowl only through a gate', () => {
+    const inBowl = (cell: number) => map.cells[cell] === 'stands' || map.cells[cell] === 'concourse';
+    const gates = map.places.filter((p) => p.kind === 'gate').map((p) => {
+      const xs = p.cells.map((c) => c % map.width);
+      const ys = p.cells.map((c) => Math.floor(c / map.width));
+      return { x: xs.reduce((a, b) => a + b) / xs.length, y: ys.reduce((a, b) => a + b) / ys.length };
+    });
+    // Any open cell outside the bowl that touches it, diagonals included, is a doorway.
+    const doorways: number[] = [];
+    for (let cell = 0; cell < map.cells.length; cell++) {
+      if (map.cells[cell] === 'blocked' || inBowl(cell)) continue;
+      const cx = cell % map.width;
+      const cy = Math.floor(cell / map.width);
+      let touches = false;
+      for (let dy = -1; dy <= 1 && !touches; dy++) {
+        for (let dx = -1; dx <= 1 && !touches; dx++) touches = inBowl((cy + dy) * map.width + cx + dx);
+      }
+      if (touches) doorways.push(cell);
+    }
+    expect(doorways.length).toBeGreaterThan(0);
+    // A gate corridor runs about 20 cells from its queue block into the bowl,
+    // so its own inner end is that far from the gate's centre.
+    const away = doorways.filter((cell) =>
+      gates.every((g) => Math.hypot((cell % map.width) - g.x, Math.floor(cell / map.width) - g.y) > 22),
+    );
+    expect(away).toEqual([]);
+  });
+
+  it('puts police posts out on the streets around the stadium', () => {
+    const stations = policeStations(map);
+    expect(stations.map((s) => s.id)).toEqual(['station-north', 'station-southeast', 'station-southwest']);
+    for (const station of stations) expect(map.cells[station.cell]).toBe('road');
+    // Officers start there, not at the gates.
+    const starts = new Set(makeOfficers(map, 12).map((o) => o.cell));
+    expect(starts).toEqual(new Set(stations.map((s) => s.cell)));
   });
 
   it('lets fans in the stands reach the concourse to shelter', () => {

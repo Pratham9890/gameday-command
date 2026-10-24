@@ -15,6 +15,8 @@ export interface CrowdViewProps {
   incidentLabel?: string;
   selected: number | null;
   onPick: (dot: number | null) => void;
+  selectedOfficer: string | null;
+  onPickOfficer: (id: string) => void;
   /** Bumped by the parent to centre on the selected group. */
   focusToken: number;
 }
@@ -23,12 +25,16 @@ export interface CrowdViewProps {
  * One run, close up. Owns its own PixiJS Application, so the app mounts either
  * this or the side-by-side maps, never both: one WebGL context at a time.
  */
-export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incidentCells, incidentLabel, selected, onPick, focusToken }: CrowdViewProps) {
+export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incidentCells, incidentLabel, selected, onPick, selectedOfficer, onPickOfficer, focusToken }: CrowdViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CrowdScene | null>(null);
   const pickRef = useRef(onPick);
   pickRef.current = onPick;
+  const pickOfficerRef = useRef(onPickOfficer);
+  pickOfficerRef.current = onPickOfficer;
+  /** Alerts already flashed, so each one lights up once. */
+  const alertsShown = useRef(0);
   const [following, setFollowing] = useState(false);
   const [heat, setHeat] = useState(true);
 
@@ -43,6 +49,7 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
       types,
       dangerDensity,
       onPick: (dot) => pickRef.current(dot),
+      onPickOfficer: (id) => pickOfficerRef.current(id),
       onFollowChange: setFollowing,
     });
     sceneRef.current = scene;
@@ -60,10 +67,17 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
     scene.setTypes(run.typeIndex.current);
     if (!view) return;
     const { frame, density } = view;
+    const live = scrubIndex === null;
+    // Officer detail lives only on the latest frame; a replayed frame falls back to bare officer cells.
+    scene.setScene(live ? run.scene.current : null, live);
     scene.setFrame(
       { t: frame.t, x: frame.x, y: frame.y, state: frame.state, officerCells: frame.officerCells, density: density?.peoplePerM2 },
-      scrubIndex === null,
+      live,
     );
+    const alerts = run.alerts.current ?? [];
+    if (alerts.length < alertsShown.current) alertsShown.current = alerts.length; // rewound
+    if (live && alerts.length > alertsShown.current) scene.flashAlert(alerts[alerts.length - 1]!.dots);
+    alertsShown.current = alerts.length;
   }, [run, run.tick, scrubIndex, map, types, dangerDensity]);
 
   useEffect(() => {
@@ -86,6 +100,10 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
   useEffect(() => {
     sceneRef.current?.setHeat(heat);
   }, [heat]);
+
+  useEffect(() => {
+    sceneRef.current?.setSelectedOfficer(selectedOfficer);
+  }, [selectedOfficer]);
 
   return (
     <div className="crowd">
@@ -115,7 +133,7 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
           </label>
         )}
       </div>
-      <div className="crowd-hint">scroll to zoom · drag to move · click a fan</div>
+      <div className="crowd-hint">scroll to zoom · drag to move · click a fan or an officer</div>
     </div>
   );
 }
