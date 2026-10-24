@@ -119,7 +119,17 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
                 Destination
                 <select value={destination} onChange={(e) => setDestination(Number(e.target.value))}>
                   <option value={-1}>Spot I click on the map</option>
-                  {map.places.map((place, i) => place.cells.length > 0 && <option key={place.id} value={i}>{place.name}</option>)}
+                  {/* Gates, the bowl and the combined lots: the map has ~140 small lots,
+                      and a specific one is better picked by clicking the map. */}
+                  {map.places.map(
+                    (place, i) =>
+                      place.cells.length > 0 &&
+                      (place.kind !== 'parking' || place.id === 'lots') && (
+                        <option key={place.id} value={i}>
+                          {place.name}
+                        </option>
+                      ),
+                  )}
                 </select>
               </label>
               <button className="small primary" disabled={officerIds.length === 0} onClick={() => {

@@ -48,6 +48,14 @@ describe('barricadeAt', () => {
     expect(barricadeAt(map, 125)).toBeNull();
   });
 
+  it('snaps a click a step or two off the road onto it', () => {
+    const map = roadMap();
+    // The road is row 5 of a 60-wide map. Two rows north: still that street.
+    expect(barricadeAt(map, 3 * 60 + 30)?.closableId).toBe('barricade-330');
+    // Four rows away is not.
+    expect(barricadeAt(map, 1 * 60 + 30)).toBeNull();
+  });
+
   it('skips a gate door even when it is the first overlapping closable', () => {
     const map = roadMap();
     map.closables.unshift({ id: 'overlap', name: 'Gate approach', cells: [125, 304] });

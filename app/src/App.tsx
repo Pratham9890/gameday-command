@@ -588,17 +588,22 @@ export function App() {
 
   const orderAt = (cell: number) => {
     if (!pickMode) return;
-    setPickMode(null);
-    if (ordersDisabled || !loaded) return;
+    if (ordersDisabled || !loaded) {
+      setPickMode(null);
+      return;
+    }
     if (pickMode.kind === 'dispatch') {
+      setPickMode(null);
       sendOrder({ type: 'dispatch', officerIds: pickMode.officerIds, toCell: cell });
       return;
     }
     const barricade = barricadeAt(loaded.map, cell);
+    // A miss keeps barricade mode on, so the commander just clicks again.
     if (!barricade) {
       setPickHint('That is not a street — click a road');
       return;
     }
+    setPickMode(null);
     sendOrder({
       type: 'barricade', closableId: barricade.closableId, closed: true,
       name: barricade.name, cells: barricade.existing ? undefined : barricade.cells,
