@@ -7,9 +7,12 @@
  * Units: meters, seconds of sim time, grid cells of CELL_SIZE_M meters.
  * Ownership tags: [A] Engine, [B] World (incidents, responders, scoring), [C] Brain, [D] App + server.
  * Runs entirely on one Mac. Live fan decisions come from a local Kev server (MLX, port 8009).
+ *
+ * v2 (approved by Nipun): vehicle traffic and weather. Every addition is
+ * optional, so a run with no traffic and no weather steps exactly as v1 did.
  */
 
-export const CONTRACT_VERSION = 'gameday.v1' as const;
+export const CONTRACT_VERSION = 'gameday.v2' as const;
 export const CELL_SIZE_M = 2;            // grid cell edge in meters
 export const DOT_GROUP_SIZE = 5;         // one dot = this many fans
 export const DEFAULT_DANGER_DENSITY = 4; // people per square meter, editable per run
@@ -17,6 +20,79 @@ export const FRAME_EVERY_S = 15;         // replay frame cadence in sim seconds
 
 export type Id = string;
 export type SimSeconds = number;         // seconds since scenario start
+
+// ───────────────────────── Weather [B] ─────────────────────────────
+
+export type WeatherKind = 'clear' | 'overcast' | 'rain' | 'heavy_rain' | 'thunderstorm' | 'snow' | 'fog' | 'heat';
+
+/** What the sky is doing at one moment. Same for every plan in a comparison. */
+export interface WeatherState {
+  kind: WeatherKind;
+  intensity: number;                     // 0..1, how hard it is raining, snowing, fogging
+  tempC: number;
+  windMps: number;
+  windFromDeg: number;                   // compass bearing the wind blows FROM
+  visibilityM: number;
+  lightning: boolean;                    // strikes within 8 miles right now
+}
+
+/** A weather scenario: the sky changes at these moments. Applies to all three plans. */
+export interface WeatherTimeline {
+  id: Id;
+  label: string;                         // "Rain moving in at kickoff"
+  segments: { from: SimSeconds; state: WeatherState }[]; // sorted by from
+}
+
+// ───────────────────────── Vehicles [A + B] ────────────────────────
+
+export type VehicleKind =
+  | 'compact' | 'sedan' | 'suv' | 'pickup' | 'minivan' | 'rideshare'
+  | 'motorcycle' | 'rv' | 'bus' | 'police' | 'ambulance';
+export const VEHICLE_KINDS: VehicleKind[] = [
+  'compact', 'sedan', 'suv', 'pickup', 'minivan', 'rideshare', 'motorcycle', 'rv', 'bus', 'police', 'ambulance',
+];
+
+export type VehicleState =
+  | 'waiting'      // not on the map yet
+  | 'driving'      // moving on a road
+  | 'stopped'      // in traffic, at a crowd, or behind a closure
+  | 'parking'      // creeping down a lot aisle to its stall
+  | 'parked'
+  | 'departing'    // pulling out of the lot
+  | 'responding'   // emergency vehicle on its way to the incident
+  | 'on_scene'
+  | 'gone';
+export const VEHICLE_STATES: VehicleState[] = [
+  'waiting', 'driving', 'stopped', 'parking', 'parked', 'departing', 'responding', 'on_scene', 'gone',
+];
+
+export interface VehicleType {
+  kind: VehicleKind;
+  label: string;
+  lengthM: number;                       // real-world footprint, drawn to scale
+  widthM: number;
+  maxSpeedMps: number;                   // city driving, before weather and crowds
+  passengers: number;                    // typical occupancy on game day
+  share: number;                         // fraction of general traffic, sums to 1 (emergency kinds 0)
+}
+
+/** Traffic settings for a run. Absent = no vehicles, which is exactly v1. */
+export interface TrafficConfig {
+  vehicles: number;                      // general traffic, a sample of game-day cars
+  seed: number;                          // separate stream so traffic never shifts the crowd's RNG
+  emergencyResponse: boolean;            // dispatch an ambulance to the incident when it fires
+}
+
+/** Packed per frame. Index i = vehicle i. */
+export interface VehicleFrame {
+  x: Float32Array;                       // meters, centre of the vehicle
+  y: Float32Array;
+  heading: Float32Array;                 // radians, 0 = east, clockwise (screen y grows south)
+  speed: Float32Array;                   // m/s
+  kind: Uint8Array;                      // index into VEHICLE_KINDS
+  state: Uint8Array;                     // index into VEHICLE_STATES
+  waitedS: Float32Array;                 // seconds spent stopped so far
+}
 
 // ───────────────────────────── Map [B] ─────────────────────────────
 
@@ -42,6 +118,10 @@ export interface MapBundle {
   /** Named edges that can be closed (a street segment, a gate door). */
   closables: { id: Id; name: string; cells: number[] }[];
   sources: { label: string; url: string }[]; // OSM export, public gate times
+  /** v2: street centrelines in meters, flat [x0, y0, x1, y1, ...], for drawing lanes and names. */
+  streets?: { name: string; kind: string; points: number[] }[];
+  /** v2: the playing field's cells, inside the bowl. Nobody is seated there. */
+  field?: number[];
 }
 
 // ─────────────────────────── Crowd [C] ─────────────────────────────
@@ -198,6 +278,8 @@ export interface SimConfig {
   plan: ResponsePlan;
   officers: Officer[];
   startFrom?: Snapshot;                  // later: built from sensor zone counts
+  traffic?: TrafficConfig;               // v2: absent = pedestrians only
+  weather?: WeatherTimeline;             // v2: absent = clear all day
 }
 
 // ─────────────────────────── Engine output [A] ─────────────────────
@@ -212,6 +294,8 @@ export interface TickFrame {
   y: Float32Array;
   state: Uint8Array;                     // index into DOT_STATES
   officerCells: Int32Array;
+  vehicles?: VehicleFrame;               // v2
+  weather?: WeatherState;                // v2
 }
 export const DOT_STATES: DotState[] = ['arriving', 'tailgating', 'queued', 'walking', 'seated', 'sheltering', 'leaving', 'gone'];
 
@@ -282,6 +366,11 @@ export interface Scorecard {
   officerMinutesUsed: number;
   fansNotReached: number;                // people, not dots
   fallbackDecisions: number;             // decisions that used defaults
+  // v2, present when the run had traffic:
+  emergencyResponseMin?: number | null;  // ambulance from the map edge to the incident; null = never got there
+  vehicleDelayMin?: number;              // vehicle minutes spent stopped
+  peakVehiclesStopped?: number;          // most vehicles stopped at one moment
+  vehiclesOut?: number;                  // vehicles that drove off the map during the window
 }
 
 // ───────────────────────── Briefing [C] ────────────────────────────

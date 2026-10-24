@@ -270,6 +270,125 @@ main { min-width: 0; }
 .crowd-toggles { top: 56px; left: 12px; display: flex; gap: 12px; padding: 5px 10px; font-size: 12px; color: var(--dim); }
 .crowd-hint { position: absolute; z-index: 2; right: 54px; bottom: 14px; color: var(--dim); font-size: 11.5px; pointer-events: none; text-shadow: 0 1px 2px #000; }
 
+.tag.muted-tag { background: #21262d; color: var(--dim); }
+
+/* ─── v2: layered maps, weather, traffic, clickable heat ─── */
+
+header.top .controls label.toggle { gap: 6px; cursor: pointer; }
+header.top .controls label.toggle input { accent-color: var(--scarlet); }
+
+.maps-stack { position: relative; width: 100%; touch-action: none; user-select: none; cursor: grab; }
+.maps-stack:active { cursor: grabbing; }
+.maps-stack .layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.maps-stack .layer.live { pointer-events: none; }
+.maps-stack .weather-fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+.hud { position: absolute; inset: 0; display: grid; pointer-events: none; }
+.hud-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px; min-width: 0; }
+.chip {
+  display: flex; align-items: center; gap: 8px; max-width: 100%;
+  background: rgba(10, 14, 20, 0.72); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  border: 1px solid #ffffff14; border-radius: 8px; padding: 5px 9px; font-size: 11px; color: var(--ink);
+  box-shadow: 0 6px 18px #0007;
+}
+.weather-chip .wx-icon { font-size: 18px; line-height: 1; }
+.weather-chip > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.weather-chip em { font-style: normal; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.weather-chip .strike { color: #ffd84d; font-weight: 700; }
+.wx-thunderstorm { border-color: #ffd84d55; }
+.wx-heavy_rain, .wx-rain { border-color: #6ea8ff44; }
+.wx-snow { border-color: #ffffff44; }
+.wx-heat { border-color: #ff8a2b55; }
+.traffic-chip { flex-wrap: wrap; gap: 4px 10px; }
+.traffic-chip span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.traffic-chip .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.traffic-chip .dot.moving { background: #b4f07a; }
+.traffic-chip .dot.stopped { background: #ff3030; box-shadow: 0 0 6px #ff3030; }
+.traffic-chip .dot.parked { background: #7c848e; }
+.traffic-chip .hot { color: #ff8a8a; font-weight: 600; }
+.traffic-chip .ems { color: #ffd1d1; }
+
+.zoom-controls {
+  position: absolute; left: 10px; bottom: 10px; display: flex; align-items: center; gap: 4px;
+  background: rgba(10, 14, 20, 0.78); border: 1px solid #ffffff14; border-radius: 9px; padding: 4px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); cursor: default;
+}
+.zoom-controls button { padding: 3px 9px; font-size: 12px; border-radius: 6px; background: #161b22; }
+.zoom-controls .zoom-level { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; min-width: 38px; text-align: right; }
+.map-hint {
+  position: absolute; right: 10px; bottom: -22px; color: var(--dim); font-size: 11px; pointer-events: none;
+}
+.compare .canvas-wrap { overflow: visible; margin-bottom: 22px; }
+/* clip, not hidden: a hidden overflow can still be scrolled by focusing a button inside it. */
+.compare .canvas-wrap .maps-stack { border-radius: 8px; overflow: clip; }
+
+.legend-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px; padding: 4px 0 2px; }
+.legend-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.legend-title { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.legend-group.fans { gap: 12px; font-size: 12px; color: var(--dim); }
+.legend-group.fans span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-group.fans i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.legend-group.fans i.officer { background: #2f81f7; box-shadow: 0 0 0 2px #e6f0ff inset; }
+
+.band-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 6px; border-radius: 999px;
+  transition: opacity 0.15s, border-color 0.15s, transform 0.15s;
+}
+.band-chip i { width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 10px currentColor; }
+.band-chip span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+.band-chip strong { font-size: 11.5px; }
+.band-chip em { font-style: normal; color: var(--dim); font-size: 10.5px; }
+.band-chip b { font-size: 11px; color: var(--dim); font-weight: 500; font-variant-numeric: tabular-nums; }
+.band-chip.on { border-color: #e6edf3; background: #1f2630; transform: translateY(-1px); }
+.band-chip.off { opacity: 0.45; }
+
+.muted-inline { color: var(--dim); font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.panel h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.panel h2 button.small { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.small-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; text-transform: none; letter-spacing: 0; color: var(--dim); font-weight: 400; cursor: pointer; }
+.small-toggle input { accent-color: var(--scarlet); }
+
+.vehicle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.vehicle-chip {
+  display: grid; grid-template-columns: 1fr; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 8px;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.vehicle-chip.on { border-color: #e6edf3; background: #1f2630; }
+.vehicle-chip.off { opacity: 0.45; }
+.vehicle-icon { width: 100%; height: 26px; display: block; margin-bottom: 4px; }
+.vehicle-name { font-weight: 600; font-size: 12px; }
+.vehicle-size { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.vehicle-count { color: var(--dim); font-size: 10.5px; }
+
+.areas { width: 100%; border-collapse: collapse; font-size: 12px; }
+.areas th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.areas th .label, .spot-col h3 .label, .plan h3 .label { background: var(--scarlet); border-radius: 4px; padding: 0 6px; font-size: 10.5px; color: #fff; }
+.areas td { padding: 6px 8px; border-bottom: 1px solid #1d242c; vertical-align: top; font-variant-numeric: tabular-nums; }
+.areas td em { display: block; color: var(--dim); font-style: normal; font-size: 11px; }
+.areas tbody tr { cursor: pointer; transition: background 0.12s; }
+.areas tbody tr:hover { background: #1b2230; }
+.areas tbody tr.on { background: #1f2630; box-shadow: inset 3px 0 0 #e6edf3; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+
+.spots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.spot-col h3 { font-size: 12px; margin: 0 0 6px; }
+.spot { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; text-align: left; margin-bottom: 6px; }
+.spot .where { font-weight: 600; font-size: 12px; }
+.spot .nums { grid-column: 1; color: var(--dim); font-size: 11px; }
+.spot .go { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--dim); font-size: 11px; }
+.spot:hover .go { color: var(--ink); }
+
+.scorecard dt.section, .scorecard dd.section { border-top: 1px solid var(--line); padding-top: 5px; margin-top: 3px; }
+.vehicle-detail { display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: start; }
+.vehicle-detail .vehicle-icon { height: 34px; }
+
+@media (max-width: 1200px) {
+  .spots { grid-template-columns: 1fr; }
+  .hud-panel { padding: 4px; }
+  .chip { font-size: 10px; padding: 3px 6px; }
+  .weather-chip em { display: none; }
+}
+
 /* ── Fan inspector ─────────────────────────────────────────────── */
 .inspector {
   position: absolute; z-index: 4; top: 56px; right: 54px; bottom: 12px; width: 320px; overflow-y: auto;
@@ -345,3 +464,63 @@ main { min-width: 0; }
 .gates .bad { color: #ff8589; }
 .crowd-label.gate.open { border-color: rgba(63, 185, 80, 0.6); color: #b4f1be; }
 .crowd-label.gate.shut { background: rgba(70, 14, 16, 0.94); border-color: #e5484d; color: #ffb3b5; }
+/* ─── v2 in the 3D close-up ─── */
+.crowd-weather { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.crowd-weather .weather-fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+.crowd-readouts { position: absolute; z-index: 2; top: 56px; right: 12px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+.canvas-wrap .hud-panel { padding-top: 52px; }
+.band-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 0; }
+main > .areas-panel, main > .vehicles-panel { margin-top: 12px; }
+.controls .weather-select { max-width: 210px; }
+.controls label.toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; cursor: pointer; }
+.controls label.toggle input { accent-color: var(--scarlet); }
+.vehicle-inspector section .vehicle-icon { height: 34px; margin-bottom: 8px; }
+.vehicle-inspector { bottom: auto; }
+
+/* ─── streets, police pins ─── */
+.crowd-label.street {
+  background: rgba(20, 24, 30, 0.72); color: #e6e9ee; border-color: #ffffff22;
+  font-size: 10.5px; font-style: italic; font-weight: 500; letter-spacing: 0.01em; padding: 1px 6px;
+}
+.crowd-label.street.major { color: #ffe27a; border-color: #f5c51855; }
+.crowd-pin {
+  position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; z-index: 3;
+  width: 26px; height: 32px; padding: 0; border: 0; background: transparent; color: #0b0f14;
+  font-weight: 800; font-size: 13px; line-height: 26px; text-align: center;
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,0.6));
+}
+.crowd-pin::before {
+  content: ''; position: absolute; inset: 0 0 6px 0; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+  background: var(--pin); border: 2px solid #fff; z-index: -1;
+}
+.crowd-pin.critical::after {
+  content: ''; position: absolute; left: 50%; top: 13px; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  border-radius: 50%; border: 2px solid var(--pin); animation: pin-pulse 1.4s ease-out infinite; z-index: -2;
+}
+@keyframes pin-pulse { from { transform: scale(0.4); opacity: 0.9; } to { transform: scale(1.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .crowd-pin.critical::after { animation: none; } }
+
+/* ─── 2D plan, traffic key, police list ─── */
+.canvas-wrap.plan { background: #05070a; }
+.canvas-wrap.plan .maps-stack { width: min(100%, calc(100vh - 230px)); margin: 0 auto; }
+.flow-key { display: inline-flex; align-items: center; gap: 10px; padding: 4px 10px; border-radius: 999px; margin-right: 8px; font-size: 11.5px; color: var(--dim); }
+.flow-key span { display: inline-flex; align-items: center; gap: 4px; }
+.flow-key i { width: 18px; height: 5px; border-radius: 3px; display: inline-block; }
+.flow-key.on { border-color: #3d4854; color: var(--ink); }
+.flow-key:not(.on) { opacity: 0.5; }
+.panel.police { border-color: #5a1f2a; background: linear-gradient(180deg, #1b1216, var(--panel)); }
+.police-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.police-tabs button { flex: 1; padding: 4px 6px; font-size: 11.5px; position: relative; }
+.police-tabs button.on { border-color: #e6edf3; background: #222a35; }
+.police-tabs .crit-count { position: absolute; top: -6px; right: -4px; background: #ff3b5c; color: #fff; border-radius: 999px; font-size: 10px; padding: 0 5px; line-height: 15px; }
+.hotspots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.hotspots button { width: 100%; display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 8px; text-align: left; padding: 6px 8px; }
+.hotspots .rank { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: #0b0f14; font-weight: 800; font-size: 12px; border: 2px solid #fff; }
+.hotspots .what { display: flex; flex-direction: column; min-width: 0; }
+.hotspots .what strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hotspots .what em { font-style: normal; color: var(--dim); font-size: 11px; }
+.hotspots .level { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+.hotspots .level.critical { background: #ff3b5c33; color: #ff8aa0; }
+.hotspots .level.high { background: #ff9b2b33; color: #ffbf73; }
+.hotspots .level.watch { background: #f5d54726; color: #f5d547; }
+.hotspots li.critical button { border-color: #ff3b5c88; }

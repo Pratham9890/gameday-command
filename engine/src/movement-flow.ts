@@ -391,7 +391,7 @@ export class FlowMovement implements MovementModel {
         continue;
       }
 
-      const free = population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2;
+      const free = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * (ctx.walkFactor ?? 1);
       const stride = free * densityFactor(density.peoplePerM2[cell]!) * dt;
       const here = field.dist[cell]!;
 
@@ -517,7 +517,7 @@ export class FlowMovement implements MovementModel {
     // At the seat but it is taken: sit down right here.
     if (dist < CELL_SIZE_M * 1.5 && occupancy[seat]! >= MAX_DOTS_PER_CELL) return true;
 
-    const free = population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2;
+    const free = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * (ctx.walkFactor ?? 1);
     const factor = densityFactor(cell >= 0 ? density.peoplePerM2[cell]! : 0);
     const step = Math.min(free * factor * dt, dist);
     const base = Math.atan2(dy, dx);
@@ -672,7 +672,7 @@ export class FlowMovement implements MovementModel {
     if (goal < 0) return;
     const gx = ((goal % map.width) + 0.5) * CELL_SIZE_M;
     const gy = (((goal / map.width) | 0) + 0.5) * CELL_SIZE_M;
-    const step = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * dt;
+    const step = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * (ctx.walkFactor ?? 1) * dt;
     let best = -1;
     let bestD = Math.hypot(gx - dots.x[i]!, gy - dots.y[i]!);
     let bx = 0;

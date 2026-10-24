@@ -16,6 +16,10 @@ export function allowedNumbers(req: BriefingRequest): number[] {
       s.officerMinutesUsed,
       s.fansNotReached,
       s.fallbackDecisions,
+      s.emergencyResponseMin ?? null,
+      s.vehicleDelayMin ?? null,
+      s.peakVehiclesStopped ?? null,
+      s.vehiclesOut ?? null,
     ];
     for (const value of fields) {
       if (value === null) continue;
@@ -57,6 +61,13 @@ export function templateBriefing(req: BriefingRequest): Briefing {
       `${s.fansNotReached} fans not reached,`,
       `${s.fallbackDecisions} fallback decisions.`,
     ];
+    if (s.vehicleDelayMin !== undefined) {
+      parts.push(
+        `Ambulance ${s.emergencyResponseMin == null ? 'never reached the scene' : `on scene in ${Math.round(s.emergencyResponseMin * 10) / 10} minutes`},`,
+        `${Math.round(s.vehicleDelayMin)} vehicle minutes stopped in traffic,`,
+        `${s.vehiclesOut ?? 0} vehicles out.`,
+      );
+    }
     return parts.join(' ');
   });
 

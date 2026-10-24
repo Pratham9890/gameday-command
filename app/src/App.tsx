@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig } from '../../contracts.ts';
-import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S } from '../../contracts.ts';
+import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig, VehicleKind } from '../../contracts.ts';
+import { CELL_SIZE_M, DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
+import { DEFAULT_VEHICLES, VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
+import { WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
-import { ComparisonMaps } from './ComparisonMaps.tsx';
+import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.tsx';
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
@@ -15,7 +17,10 @@ import { GatesPanel } from './GatesPanel.tsx';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
+import { HOTSPOT_COLOUR, policeHotspots, standingDensity, type PoliceHotspot } from './congestion.ts';
+import { bandTotals, heatBands, hotspots, makePlaceIndex, type Hotspot } from './heat.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
+import { vehicleIcon } from './vehicleArt.ts';
 
 /** One seed for every plan in a comparison: the whole point is the same crowd. */
 const SEED = 20251023;
@@ -28,6 +33,9 @@ const params = new URLSearchParams(window.location.search);
 const MAP_ID = params.get('map') ?? 'default';
 /** `?autorun=1` starts the three runs without a click, for an unattended demo. */
 const AUTORUN = params.get('autorun') === '1';
+/** `?weather=thunderstorm` and `?traffic=0` set the scenario from the URL. */
+const START_WEATHER = params.get('weather') ?? 'clear';
+const START_TRAFFIC = params.get('traffic') !== '0';
 const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
 const OFFICERS = 24;
@@ -35,6 +43,8 @@ const SPEEDS = [5, 20, 60] as const;
 const DANGER = DEFAULT_DANGER_DENSITY;
 
 const fanCount = (map: MapBundle) => (map.width > 200 ? STADIUM_FANS : TEST_FANS);
+/** The test map is a gate wall and a lot with no streets between them. */
+const hasRoads = (map: MapBundle) => map.width > 200;
 const minutes = (seconds: number) => `${seconds < 0 ? '−' : '+'}${Math.abs(Math.round(seconds / 60))} min`;
 const n = (value: number) => Math.round(value).toLocaleString();
 
@@ -151,6 +161,20 @@ function PlanCard({
               <dd>{n(card.officerMinutesUsed)} min</dd>
             </>
           )}
+          {card.vehicleDelayMin !== undefined && (
+            <>
+              <dt>
+                Ambulance on scene <Info>Minutes from the start of the incident until the ambulance, driving in from the edge of the map, reached the zone. Crowds and closed streets slow it down.</Info>
+              </dt>
+              <dd className={card.emergencyResponseMin === null ? 'bad' : undefined}>
+                {card.emergencyResponseMin == null ? 'never got there' : `${card.emergencyResponseMin.toFixed(1)} min`}
+              </dd>
+              <dt>
+                Time stuck in traffic <Info>Every vehicle's minutes spent stopped, added up: behind other cars, at a closure, or waiting for a crowd to clear the road.</Info>
+              </dt>
+              <dd>{n(card.vehicleDelayMin)} vehicle-min</dd>
+            </>
+          )}
           {alerts && (
             <>
               <dt>
@@ -236,7 +260,7 @@ function Legend() {
       </div>
       <div className="legend-row">
         <span>
-          <i className="heat" /> red ground = dangerously packed
+          <i className="heat" /> coloured ground = how packed (key below)
         </span>
         <span>
           <i className="zone" /> incident zone
@@ -261,6 +285,14 @@ function Legend() {
   );
 }
 
+function VehicleIcon({ kind }: { kind: VehicleKind }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (ref.current) vehicleIcon(kind, ref.current, 1);
+  }, [kind]);
+  return <canvas ref={ref} className="vehicle-icon" />;
+}
+
 export function App() {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -275,8 +307,20 @@ export function App() {
   const [picked, setPicked] = useState<{ run: number; dot: number } | null>(null);
   /** An officer clicked on the close-up. One inspector at a time: picking either clears the other. */
   const [pickedOfficer, setPickedOfficer] = useState<{ run: number; id: string } | null>(null);
+  const [pickedVehicle, setPickedVehicle] = useState<{ run: number; vehicle: number } | null>(null);
+  const [pickedCell, setPickedCell] = useState<Extract<MapPick, { type: 'cell' }> | null>(null);
+  const [weatherId, setWeatherId] = useState(START_WEATHER);
+  const [trafficOn, setTrafficOn] = useState(START_TRAFFIC);
+  const [showVehicles, setShowVehicles] = useState(true);
+  const [vehicleFocus, setVehicleFocus] = useState<VehicleKind | null>(null);
+  const [selectedBand, setSelectedBand] = useState<number | null>(null);
+  const [focusBox, setFocusBox] = useState<FocusBox | null>(null);
   /** The 3D close-up of one plan (the default) or all three maps side by side. */
-  const [view, setView] = useState<'close' | 'compare'>(params.get('view') === 'compare' ? 'compare' : 'close');
+  /** The 3D close-up of one plan (the default), a large 2D plan of one, or all three maps side by side. */
+  const [view, setView] = useState<'close' | 'plan' | 'compare'>(
+    params.get('view') === 'compare' ? 'compare' : params.get('view') === 'plan' ? 'plan' : 'close',
+  );
+  const [showFlow, setShowFlow] = useState(true);
   const [closeRun, setCloseRun] = useState(0);
   const [focusToken, setFocusToken] = useState(0);
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
@@ -312,10 +356,27 @@ export function App() {
     setBriefing(null);
     setPicked(null);
     setPickedOfficer(null);
+    setPickedVehicle(null);
+    setPickedCell(null);
     setSavedComparison(null);
     setPlansDirty(false);
     setGeneration((g) => g + 1);
   };
+
+  const placeIndex = useMemo(() => (loaded ? makePlaceIndex(loaded.map) : null), [loaded]);
+  const bands = useMemo(() => heatBands(DANGER), []);
+  const traffic = trafficOn && !!loaded && hasRoads(loaded.map);
+
+  // The sky and the traffic are part of the moment, not the plan: changing
+  // either restarts all three runs on the same seed.
+  const firstScenario = useRef(true);
+  useEffect(() => {
+    if (firstScenario.current) {
+      firstScenario.current = false;
+      return;
+    }
+    restart();
+  }, [weatherId, trafficOn]);
 
   // Picking an incident loads its playbook as editable copies.
   useEffect(() => {
@@ -346,6 +407,8 @@ export function App() {
         incident,
         plan: applyDisabled(state.plan, state.disabled),
         officers,
+        traffic: traffic ? { vehicles: DEFAULT_VEHICLES, seed: SEED ^ 0x7a11c, emergencyResponse: true } : undefined,
+        weather: weatherTimeline(weatherId),
       };
       return { config, map: loaded.map, population, defaults: loaded.defaults };
     });
@@ -449,7 +512,19 @@ export function App() {
     (window as unknown as { gameday?: unknown }).gameday = {
       mapId: loaded?.map.id ?? null,
       incident: incident?.kind ?? null,
+      weather: weatherId,
+      traffic,
       allDone,
+      /** Vehicles in a run doing something, for pointing the camera at them in a check. */
+      vehiclesIn: (run: number, state: string) => {
+        const v = runs[run]?.latest.current?.frame.vehicles;
+        if (!v) return [];
+        const out: { i: number; kind: string; x: number; y: number }[] = [];
+        for (let i = 0; i < v.state.length; i++) {
+          if (VEHICLE_STATES[v.state[i]!] === state) out.push({ i, kind: VEHICLE_KINDS[v.kind[i]!]!, x: v.x[i]!, y: v.y[i]! });
+        }
+        return out;
+      },
       savedComparison,
       briefing: briefing ? { canned: briefing.canned, model: briefing.model } : null,
       runs: runs.map((r, i) => ({
@@ -475,6 +550,70 @@ export function App() {
   const kev = runs.reduce((sum, r) => sum + r.kevCount, 0);
   const totalDecisions = runs.reduce((sum, r) => sum + r.decisionCount, 0);
   const guessed = runs.reduce((sum, r) => sum + r.fallbackCount, 0);
+
+  /** The frame on screen for a run: the scrubbed one, or the latest. */
+  const shown = (run: RunHandle) => {
+    const kept = run.frames.current ?? [];
+    return scrub === null ? run.latest.current : (kept[Math.min(scrub, kept.length - 1)] ?? run.latest.current);
+  };
+  const ticks = runs.map((r) => r.tick).join(',');
+  // People on their feet per run, which every colour and count below is built
+  // from: seated fans are dense and safe, as in the scorecard's danger minutes.
+  const standing = useMemo(
+    () =>
+      runs.map((run) => {
+        const view = shown(run);
+        return view?.density && loaded ? standingDensity(loaded.map, view.frame, view.density.peoplePerM2) : null;
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ticks, scrub, loaded],
+  );
+  const totals = useMemo(
+    () => standing.map((rho) => (rho ? bandTotals(rho, bands) : null)),
+    [standing, bands],
+  );
+  const spots = useMemo<(Hotspot[] | null)[]>(() => {
+    if (selectedBand === null || !loaded || !placeIndex) return [null, null, null];
+    return standing.map((rho) => (rho ? hotspots(rho, loaded.map, bands[selectedBand]!, placeIndex, 4) : null));
+  }, [standing, selectedBand, loaded, placeIndex, bands]);
+  // The most congested places in each run, for the police list and the map pins.
+  const police = useMemo<PoliceHotspot[][]>(() => {
+    if (!loaded || !placeIndex) return [[], [], []];
+    return runs.map((run, i) => policeHotspots(loaded.map, standing[i] ?? undefined, shown(run)?.frame.vehicles, placeIndex, DANGER, 6));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [standing, loaded, placeIndex]);
+
+  const vehicleCounts = useMemo(() => {
+    const counts = new Map<VehicleKind, number>();
+    const v = shown(runs[view === 'compare' ? 0 : closeRun]!)?.frame.vehicles;
+    if (!v) return counts;
+    for (let i = 0; i < v.kind.length; i++) {
+      const state = VEHICLE_STATES[v.state[i]!];
+      if (state === 'gone' || state === 'waiting') continue;
+      const kind = VEHICLE_KINDS[v.kind[i]!]!;
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return counts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticks, scrub, view, closeRun]);
+  const vehicleInfo = (() => {
+    if (!pickedVehicle) return null;
+    const v = shown(runs[pickedVehicle.run]!)?.frame.vehicles;
+    if (!v) return null;
+    const i = pickedVehicle.vehicle;
+    return {
+      type: VEHICLE_TYPES[VEHICLE_KINDS[v.kind[i]!]!],
+      state: VEHICLE_STATES[v.state[i]!]!,
+      speed: v.speed[i]!,
+      waited: v.waitedS[i]!,
+    };
+  })();
+  const mapPicked: MapPick | null = pickedVehicle
+    ? { type: 'vehicle', ...pickedVehicle }
+    : picked
+      ? { type: 'dot', ...picked }
+      : pickedCell;
+  const zoomTo = (h: Hotspot) => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() });
 
   const hideHelp = () => {
     setShowHelp(false);
@@ -519,6 +658,17 @@ export function App() {
               </button>
             ))}
           </span>
+          <select className="weather-select" value={weatherId} onChange={(e) => setWeatherId(e.target.value)} title="Weather, the same for all three plans">
+            {WEATHER_TIMELINES.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.label}
+              </option>
+            ))}
+          </select>
+          <label className="toggle" title="Simulate vehicle traffic alongside the crowd">
+            <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
+            vehicles
+          </label>
           <button onClick={restart} disabled={!loaded}>
             Restart
           </button>
@@ -561,18 +711,34 @@ export function App() {
         <main>
           {loaded && (
             <>
-              <div className={`canvas-wrap${view === 'close' ? ' close' : ''}`}>
+              <div className={`canvas-wrap${view === 'close' ? ' close' : view === 'plan' ? ' plan' : ''}`}>
                 {/* Only one of these is mounted at a time, so the page holds a
                     single WebGL context. ComparisonMaps draws all three runs in
                     one PixiJS Application for the same reason. */}
-                {view === 'compare' ? (
+                {view !== 'close' ? (
                   <ComparisonMaps
+                    key={view}
                     map={loaded.map}
-                    runs={runs}
+                    runs={view === 'plan' ? [runs[closeRun]!] : runs}
+                    showFlow={showFlow}
+                    hotspots={view === 'plan' ? [police[closeRun] ?? []] : police}
                     scrubIndex={scrub}
                     dangerDensity={DANGER}
                     incidentCells={incident?.cells}
-                    onPickDot={(run, dot) => setPicked({ run, dot })}
+                    playing={playing}
+                    selectedBand={selectedBand}
+                    vehicleFocus={vehicleFocus}
+                    showVehicles={showVehicles}
+                    picked={view === 'plan' ? (mapPicked && mapPicked.run === closeRun ? { ...mapPicked, run: 0 } : null) : mapPicked}
+                    focus={focusBox}
+                    onPick={(raw) => {
+                      // The 2D plan has one panel; its index 0 is the plan on show.
+                      const pick = raw && view === 'plan' ? { ...raw, run: closeRun } : raw;
+                      setPicked(pick?.type === 'dot' ? { run: pick.run, dot: pick.dot } : null);
+                      setPickedVehicle(pick?.type === 'vehicle' ? { run: pick.run, vehicle: pick.vehicle } : null);
+                      setPickedCell(pick?.type === 'cell' ? pick : null);
+                      if (pick?.type === 'cell') setSelectedBand(pick.band);
+                    }}
                   />
                 ) : (
                   <CrowdView
@@ -586,18 +752,33 @@ export function App() {
                     selected={picked?.run === closeRun ? picked.dot : null}
                     onPick={(dot) => {
                       setPickedOfficer(null);
+                      setPickedVehicle(null);
                       setPicked(dot === null ? null : { run: closeRun, dot });
                     }}
                     selectedOfficer={pickedOfficer?.run === closeRun ? pickedOfficer.id : null}
                     onPickOfficer={(id) => {
                       setPicked(null);
+                      setPickedVehicle(null);
                       setPickedOfficer({ run: closeRun, id });
                     }}
                     focusToken={focusToken}
+                    showVehicles={showVehicles}
+                    vehicleFocus={vehicleFocus}
+                    selectedVehicle={pickedVehicle?.run === closeRun ? pickedVehicle.vehicle : null}
+                    onPickVehicle={(vehicle) => {
+                      setPicked(null);
+                      setPickedOfficer(null);
+                      setPickedVehicle({ run: closeRun, vehicle });
+                    }}
+                    selectedBand={selectedBand}
+                    focusBox={focusBox}
+                    showFlow={showFlow}
+                    onShowFlow={setShowFlow}
+                    hotspots={police[closeRun] ?? []}
                   />
                 )}
                 <div className="map-title">
-                  {view === 'close' ? (
+                  {view !== 'compare' ? (
                     <>
                       <span className="label">{LABELS[closeRun]}</span> {planStates[closeRun]?.plan.name}
                     </>
@@ -607,7 +788,10 @@ export function App() {
                 </div>
                 <div className="view-toggle">
                   <button className={view === 'close' ? 'on' : undefined} onClick={() => setView('close')}>
-                    3D, one plan
+                    3D
+                  </button>
+                  <button className={view === 'plan' ? 'on' : undefined} onClick={() => setView('plan')}>
+                    2D plan
                   </button>
                   <button className={view === 'compare' ? 'on' : undefined} onClick={() => setView('compare')}>
                     All three
@@ -647,6 +831,60 @@ export function App() {
                     }}
                     onClose={() => setPicked(null)}
                   />
+                )}
+                {pickedVehicle && vehicleInfo && (
+                  <aside className="inspector vehicle-inspector">
+                    <header>
+                      <div>
+                        <h3>{vehicleInfo.type.label}</h3>
+                        <p className="muted">
+                          Vehicle #{pickedVehicle.vehicle} · Plan {LABELS[pickedVehicle.run]}
+                        </p>
+                      </div>
+                      <button className="small ghost" onClick={() => setPickedVehicle(null)} title="Close">
+                        ✕
+                      </button>
+                    </header>
+                    <section>
+                      <VehicleIcon kind={vehicleInfo.type.kind} />
+                      <dl className="detail">
+                        <dt>doing</dt>
+                        <dd className={vehicleInfo.state === 'stopped' ? 'warn' : undefined}>{vehicleInfo.state.replace(/_/g, ' ')}</dd>
+                        <dt>speed</dt>
+                        <dd>{Math.round(vehicleInfo.speed * 2.237)} mph</dd>
+                        <dt>time stopped</dt>
+                        <dd>{vehicleInfo.waited < 60 ? `${Math.round(vehicleInfo.waited)} s` : `${(vehicleInfo.waited / 60).toFixed(1)} min`}</dd>
+                        <dt>size</dt>
+                        <dd>
+                          {vehicleInfo.type.lengthM.toFixed(1)} m × {vehicleInfo.type.widthM.toFixed(1)} m
+                        </dd>
+                        <dt>aboard</dt>
+                        <dd>about {vehicleInfo.type.passengers}</dd>
+                      </dl>
+                    </section>
+                  </aside>
+                )}
+                {pickedCell && placeIndex && !picked && !pickedVehicle && (
+                  <aside className="inspector vehicle-inspector">
+                    <header>
+                      <span className="swatch" style={{ background: `rgb(${bands[pickedCell.band]!.rgb.join(',')})` }} />
+                      <div>
+                        <h3>{bands[pickedCell.band]!.label}</h3>
+                        <p className="muted">
+                          {bands[pickedCell.band]!.range} · Plan {LABELS[pickedCell.run]}
+                        </p>
+                      </div>
+                      <button className="small ghost" onClick={() => setPickedCell(null)} title="Close">
+                        ✕
+                      </button>
+                    </header>
+                    <section>
+                      <p>
+                        <strong>{pickedCell.density.toFixed(2)} people/m²</strong> · {placeIndex.describe(pickedCell.cell)}
+                      </p>
+                      <p className="muted">{bands[pickedCell.band]!.note} Every area this colour is highlighted, and the list below the map shows where.</p>
+                    </section>
+                  </aside>
                 )}
                 {!started && !picked && (
                   <div className="map-cta">
@@ -699,11 +937,143 @@ export function App() {
                   </>
                 )}
               </div>
+
+              <div className="band-bar">
+                {traffic && (
+                  <button className={`flow-key${showFlow ? ' on' : ''}`} onClick={() => setShowFlow((v) => !v)} title="Show or hide traffic flow on the roads">
+                    <span className="legend-title">Traffic</span>
+                    <span><i style={{ background: '#2ed573' }} /> moving</span>
+                    <span><i style={{ background: '#ffb020' }} /> slow</span>
+                    <span><i style={{ background: '#ff3040' }} /> jammed</span>
+                  </button>
+                )}
+                <span className="legend-title">How packed</span>
+                {bands.map((band) => {
+                  const total = totals.reduce((sum, t) => sum + (t?.[band.id]?.people ?? 0), 0) / 3;
+                  return (
+                    <button
+                      key={band.id}
+                      className={`band-chip${selectedBand === band.id ? ' on' : ''}${selectedBand !== null && selectedBand !== band.id ? ' off' : ''}`}
+                      onClick={() => setSelectedBand(selectedBand === band.id ? null : band.id)}
+                      title={band.note}
+                    >
+                      <i style={{ background: `rgb(${band.rgb.join(',')})` }} />
+                      <span>
+                        <strong>{band.label}</strong>
+                        <em>{band.range}</em>
+                      </span>
+                      {total > 0 && <b>{n(total)}</b>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {selectedBand !== null && (
+                <section className="panel areas-panel">
+                  <h2>
+                    Where it is {bands[selectedBand]!.label.toLowerCase()}{' '}
+                    <span className="muted-inline">{bands[selectedBand]!.range} · biggest areas per plan</span>
+                    <button className="small" onClick={() => setSelectedBand(null)}>
+                      Show all colours
+                    </button>
+                  </h2>
+                  <div className="spots">
+                    {spots.map((list, i) => (
+                      <div key={i} className="spot-col">
+                        <h3>
+                          <span className="label">{LABELS[i]}</span> {totals[i] ? `${n(totals[i]![selectedBand]!.people)} people · ${n(totals[i]![selectedBand]!.cells * CELL_SIZE_M * CELL_SIZE_M)} m²` : ''}
+                        </h3>
+                        {!list && <p className="muted">no frame yet</p>}
+                        {list && list.length === 0 && <p className="muted">none right now</p>}
+                        {list?.map((h, k) => (
+                          <button key={k} className="spot" onClick={() => zoomTo(h)}>
+                            <span className="where">{h.where}</span>
+                            <span className="nums">
+                              {n(h.people)} people · {n(h.cells * CELL_SIZE_M * CELL_SIZE_M)} m² · peak {h.peak.toFixed(1)}/m²
+                            </span>
+                            <span className="go">zoom ↗</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {traffic && (
+                <section className="panel vehicles-panel">
+                  <h2>
+                    Vehicles <span className="muted-inline">real sizes, drawn to scale · click one to pick it out</span>
+                    <label className="small-toggle">
+                      <input type="checkbox" checked={showVehicles} onChange={(e) => setShowVehicles(e.target.checked)} /> show on map
+                    </label>
+                  </h2>
+                  <div className="vehicle-grid">
+                    {VEHICLE_TYPE_LIST.map((type) => (
+                      <button
+                        key={type.kind}
+                        className={`vehicle-chip${vehicleFocus === type.kind ? ' on' : ''}${vehicleFocus !== null && vehicleFocus !== type.kind ? ' off' : ''}`}
+                        onClick={() => setVehicleFocus(vehicleFocus === type.kind ? null : type.kind)}
+                      >
+                        <VehicleIcon kind={type.kind} />
+                        <span className="vehicle-name">{type.label}</span>
+                        <span className="vehicle-size">
+                          {type.lengthM.toFixed(1)} × {type.widthM.toFixed(1)} m · {type.passengers} aboard
+                        </span>
+                        <span className="vehicle-count">{(vehicleCounts.get(type.kind) ?? 0).toLocaleString()} on the map</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
             </>
           )}
         </main>
 
         <aside className="side">
+          <section className="panel police">
+            <h2>
+              🚨 Most congested right now <Info>Ranked by people standing packed at 3 or more per m² and by vehicles stopped or crawling. Seated fans are left out: a full section is dense but safe. This ranks places to look at; where to send officers stays your call.</Info>
+            </h2>
+            <div className="police-tabs">
+              {LABELS.map((l, i) => (
+                <button
+                  key={l}
+                  className={closeRun === i ? 'on' : undefined}
+                  onClick={() => {
+                    setCloseRun(i);
+                    if (view === 'compare') setView('plan');
+                  }}
+                >
+                  Plan {l}
+                  {(police[i]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && <b className="crit-count">{police[i]!.filter((h) => h.level === 'critical').length}</b>}
+                </button>
+              ))}
+            </div>
+            {(police[closeRun] ?? []).length === 0 ? (
+              <p className="muted">{started ? 'Nothing congested at the moment.' : 'Run the plans to see where it gets congested.'}</p>
+            ) : (
+              <ol className="hotspots">
+                {(police[closeRun] ?? []).map((h) => (
+                  <li key={h.rank} className={h.level}>
+                    <button onClick={() => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() })} title="Show on the map">
+                      <span className="rank" style={{ background: HOTSPOT_COLOUR[h.level] }}>{h.rank}</span>
+                      <span className="what">
+                        <strong>{h.where}</strong>
+                        <em>
+                          {h.kind !== 'traffic' && `👥 ${n(h.crowdedPeople)} packed, peak ${h.peakDensity.toFixed(1)}/m²`}
+                          {h.kind === 'both' && ' · '}
+                          {h.kind !== 'crowd' && `🚗 ${h.stoppedVehicles} stopped${h.slowVehicles ? `, ${h.slowVehicles} slow` : ''}`}
+                        </em>
+                      </span>
+                      <span className={`level ${h.level}`}>{h.level}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
           <section className="panel">
             <h2>1 · Situation</h2>
             <div className="situations">
@@ -736,7 +1106,7 @@ export function App() {
                   map={loaded.map}
                   incident={incident}
                   totalFans={fanCount(loaded.map)}
-                  selected={view === 'close' && closeRun === i}
+                  selected={view !== 'compare' && closeRun === i}
                   rank={rankOf(i)}
                   onSelect={() => {
                     setCloseRun(i);
@@ -816,11 +1186,21 @@ export function App() {
                   <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? c.peakDensity.toFixed(1) : '…'}/m²`).join(' · ')}</dd>
                 </>
               )}
+              {cards.some((c) => c?.vehicleDelayMin !== undefined) && (
+                <>
+                  <dt>vehicles that drove off</dt>
+                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.vehiclesOut ?? 0) : '…'}`).join(' · ')}</dd>
+                  <dt>most stopped at once</dt>
+                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.peakVehiclesStopped ?? 0) : '…'}`).join(' · ')}</dd>
+                </>
+              )}
+              <dt>weather</dt>
+              <dd>{weatherTimeline(weatherId).label}, the same for all three</dd>
               <dt>random seed</dt>
               <dd>{SEED}, the same for all three</dd>
             </dl>
             <p className="muted">
-              Fan behavior is an assumption, not a forecast. The tool shows the tradeoffs between plans. The commander makes the call.
+              Fan behavior, traffic and weather are an assumption, not a forecast. The tool shows the tradeoffs between plans. The commander makes the call.
             </p>
           </details>
         </aside>

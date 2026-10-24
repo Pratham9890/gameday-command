@@ -18,6 +18,8 @@ export interface ScoreSample {
   officerInZone: boolean;
   /** Officers currently committed by the plan, for officer minutes. */
   officersCommitted: number;
+  /** Present when the run has vehicles. */
+  traffic?: { stopped: number; out: number; emergencyDispatched: boolean; emergencyOnScene: boolean };
 }
 
 export interface ScorerInit {
@@ -43,6 +45,12 @@ export interface ScorerState {
   everOccupied: boolean;
   fallbacks: number;
   reachedDots: number[];
+  hasTraffic?: boolean;
+  vehicleStoppedSeconds?: number;
+  peakVehiclesStopped?: number;
+  vehiclesOut?: number;
+  emergencyDispatched?: boolean;
+  emergencyAt?: SimSeconds | null;
 }
 
 export class Scorer {
@@ -54,6 +62,12 @@ export class Scorer {
   private firstOfficerAt: SimSeconds | null = null;
   private fallbacks = 0;
   private reachedDots: Set<number> = new Set<number>();
+  private hasTraffic = false;
+  private vehicleStoppedSeconds = 0;
+  private peakVehiclesStopped = 0;
+  private vehiclesOut = 0;
+  private emergencyDispatched = false;
+  private emergencyAt: SimSeconds | null = null;
 
   private readonly init: ScorerInit;
 
@@ -81,6 +95,15 @@ export class Scorer {
     this.officerSeconds += s.officersCommitted * s.dt;
 
     if (this.firstOfficerAt === null && s.officerInZone) this.firstOfficerAt = s.t;
+
+    if (s.traffic) {
+      this.hasTraffic = true;
+      this.vehicleStoppedSeconds += s.traffic.stopped * s.dt;
+      if (s.traffic.stopped > this.peakVehiclesStopped) this.peakVehiclesStopped = s.traffic.stopped;
+      this.vehiclesOut = s.traffic.out;
+      if (s.traffic.emergencyDispatched) this.emergencyDispatched = true;
+      if (this.emergencyAt === null && s.traffic.emergencyOnScene) this.emergencyAt = s.t;
+    }
 
     // Time to clear only means something once there was a crowd to clear, and
     // only from the incident onwards. The zone is busy long before kickoff as
@@ -116,6 +139,12 @@ export class Scorer {
       everOccupied: this.everOccupied,
       fallbacks: this.fallbacks,
       reachedDots: [...this.reachedDots],
+      hasTraffic: this.hasTraffic,
+      vehicleStoppedSeconds: this.vehicleStoppedSeconds,
+      peakVehiclesStopped: this.peakVehiclesStopped,
+      vehiclesOut: this.vehiclesOut,
+      emergencyDispatched: this.emergencyDispatched,
+      emergencyAt: this.emergencyAt,
     };
   }
 
@@ -128,12 +157,18 @@ export class Scorer {
     this.everOccupied = state.everOccupied;
     this.fallbacks = state.fallbacks;
     this.reachedDots = new Set(state.reachedDots);
+    this.hasTraffic = state.hasTraffic ?? false;
+    this.vehicleStoppedSeconds = state.vehicleStoppedSeconds ?? 0;
+    this.peakVehiclesStopped = state.peakVehiclesStopped ?? 0;
+    this.vehiclesOut = state.vehiclesOut ?? 0;
+    this.emergencyDispatched = state.emergencyDispatched ?? false;
+    this.emergencyAt = state.emergencyAt ?? null;
   }
 
   finish(): Scorecard {
     const sinceIncident = (t: SimSeconds | null) =>
       t === null ? null : Math.max(0, (t - this.init.incident.at) / 60);
-    return {
+    const card: Scorecard = {
       runId: this.init.runId,
       planId: this.init.planId,
       label: this.init.label,
@@ -145,5 +180,12 @@ export class Scorer {
       fansNotReached: (this.init.totalDots - this.reachedDots.size) * DOT_GROUP_SIZE,
       fallbackDecisions: this.fallbacks,
     };
+    if (this.hasTraffic) {
+      card.vehicleDelayMin = this.vehicleStoppedSeconds / 60;
+      card.peakVehiclesStopped = this.peakVehiclesStopped;
+      card.vehiclesOut = this.vehiclesOut;
+      if (this.emergencyDispatched) card.emergencyResponseMin = sinceIncident(this.emergencyAt);
+    }
+    return card;
   }
 }

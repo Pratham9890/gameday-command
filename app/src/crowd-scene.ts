@@ -1,9 +1,14 @@
 import { Application, Container, Graphics, Matrix, Sprite, Texture } from 'pixi.js';
-import type { CellKind, FanType, MapBundle } from '../../contracts.ts';
-import { CELL_SIZE_M, DOT_STATES } from '../../contracts.ts';
+import type { CellKind, FanType, MapBundle, VehicleFrame, VehicleKind, WeatherState } from '../../contracts.ts';
+import { CELL_SIZE_M, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import type { OfficerStatus, SceneInfo } from '../../engine/src/edits.ts';
 import { policeStations } from '../../world/src/officers.ts';
+import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
+import { bandOf, heatBands, type HeatBand } from './heat.ts';
 import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from './people.ts';
+import { paintFor } from './vehicleArt.ts';
+import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
+import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
 /**
  * The close-up: one run on an isometric map you can zoom into until the dots
@@ -73,7 +78,36 @@ export interface SceneFrame {
   state: Uint8Array;
   officerCells: Int32Array;
   density?: Float32Array;
+  vehicles?: VehicleFrame;
+  weather?: WeatherState;
 }
+
+/**
+ * How tall each vehicle stands, and how much of that is body below the
+ * windows. Footprints come from VEHICLE_TYPES; these finish the box.
+ */
+const VEHICLE_HEIGHT: Record<VehicleKind, { h: number; belt: number }> = {
+  compact: { h: 1.42, belt: 0.55 },
+  sedan: { h: 1.45, belt: 0.55 },
+  suv: { h: 1.8, belt: 0.55 },
+  pickup: { h: 1.9, belt: 0.55 },
+  minivan: { h: 1.78, belt: 0.52 },
+  rideshare: { h: 1.45, belt: 0.55 },
+  motorcycle: { h: 1.15, belt: 0.6 },
+  rv: { h: 3.6, belt: 0.55 },
+  bus: { h: 3.5, belt: 0.5 },
+  police: { h: 1.6, belt: 0.55 },
+  ambulance: { h: 2.7, belt: 0.6 },
+};
+const VSTATE = Object.fromEntries(VEHICLE_STATES.map((s, i) => [s, i])) as Record<(typeof VEHICLE_STATES)[number], number>;
+const GLASS = 0x1a2633;
+const hex = (css: string) => parseInt(css.slice(1), 16);
+const mix = (a: number, b: number, t: number) => {
+  const ch = (shift: number) => Math.round(((a >> shift) & 255) * (1 - t) + ((b >> shift) & 255) * t);
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
+};
+/** Frames further apart than this are a vehicle spawning or leaving, not driving. */
+const MAX_VEHICLE_TWEEN_M = 260;
 
 export interface CrowdSceneInit {
   host: HTMLElement;
@@ -85,6 +119,8 @@ export interface CrowdSceneInit {
   /** An officer was clicked. Checked before fans: officers are few and easy to miss. */
   onPickOfficer: (id: string) => void;
   onFollowChange: (following: boolean) => void;
+  /** A vehicle was clicked. Checked before fans, since a car sits on top of them. */
+  onPickVehicle?: (vehicle: number) => void;
 }
 
 interface Layer {
@@ -201,6 +237,18 @@ function makeParts(): Parts {
   return { shadow, ring, legs, torso, head, bubble };
 }
 
+/** Screen depth of the bowl's centre line, in the units person zIndex uses. */
+function bowlDepth(map: MapBundle): number {
+  let sum = 0;
+  let n = 0;
+  for (let c = 0; c < map.cells.length; c++) {
+    if (map.cells[c] !== 'stands') continue;
+    sum += (c % map.width) + Math.floor(c / map.width);
+    n++;
+  }
+  return n > 0 ? ((sum / n + 1) * CELL_SIZE_M) / 2 : 0;
+}
+
 /** A police post: a small blue booth with a light bar, in the depth-sorted layer with everyone else. */
 function buildStation(cell: number, width: number): Graphics {
   const C = CELL_SIZE_M;
@@ -249,8 +297,12 @@ function paintGround(map: MapBundle): HTMLCanvasElement {
   return canvas;
 }
 
-/** The stadium's outer wall: tall enough to read as the Horseshoe, low enough not to hide the stands. */
-const SHELL_H = 9;
+/**
+ * The stadium's perimeter wall, the one the gate rules rely on. Drawn as a
+ * low fence: the tiered bowl (stadium3d.ts) is the stadium you see, and a
+ * full-height wall beside it made two walls side by side.
+ */
+const SHELL_H = 2.5;
 const SHELL_COLOR = 0xb9b2a4;
 
 /**
@@ -268,7 +320,7 @@ const SHELL_COLOR = 0xb9b2a4;
  * walking behind a building was painted over its roof, which read as people
  * walking on top of buildings or stuck inside them.
  */
-function buildBuildings(map: MapBundle): Graphics[] {
+function buildBuildings(map: MapBundle, snow = 0): Graphics[] {
   const { width, height, cells } = map;
   const blocked = (u: number, v: number) => u >= 0 && v >= 0 && u < width && v < height && cells[v * width + u] === 'blocked';
 
@@ -301,7 +353,9 @@ function buildBuildings(map: MapBundle): Graphics[] {
     sizes.push(size);
   }
   const heightOf = (id: number) => (shells.has(id) ? SHELL_H : sizes[id]! < 40 ? 2.5 : 7 + (hash(id) % 5) * 3);
-  const roofOf = (id: number) => (shells.has(id) ? SHELL_COLOR : ROOFS[hash(id + 101) % ROOFS.length]!);
+  // Snow settles on the roofs: the rebuild is one-off per weather change, and
+  // tinting a finished Graphics can only darken, never whiten.
+  const roofOf = (id: number) => mix(shells.has(id) ? SHELL_COLOR : ROOFS[hash(id + 101) % ROOFS.length]!, 0xf2f6fa, snow);
 
   const C = CELL_SIZE_M;
   const quad = (pts: [number, number, number][]) =>
@@ -363,11 +417,34 @@ export class CrowdScene {
   private selectedOfficer: string | null = null;
   /** Who the last alert reached, and when it went out (wall clock). */
   private alert: { mask: Uint8Array; start: number; mx: number; my: number; radius: number } | null = null;
+  private cover = new Graphics();
+  /** One Graphics per diagonal, sorted in with the people (see buildBuildings). */
+  private buildings: Graphics[] = [];
+  private buildingSnow = -1;
+  private parked = new Graphics();
+  private moving = new Graphics();
+  private beams = new Graphics();
+  private parkedKey = '';
+  /** The padded window the parked layer was last drawn for, in world units. */
+  private parkedWindow = { x0: 0, x1: 0, y0: 0, y1: 0 };
+  private showVehicles = true;
+  private vehicleFocus: VehicleKind | null = null;
+  private selectedVehicle: number | null = null;
+  private bands: HeatBand[];
+  private bowl: Bowl | null = null;
+  private standsCrowd = new Graphics();
+  private flow!: Layer;
+  private flowCells: Uint8Array | null = null;
+  private standing: Float32Array | null = null;
+  private seated: Float32Array | null = null;
+  private showFlow = true;
+  private pins: { el: HTMLElement; sx: number; sy: number }[] = [];
+  private selectedBand: number | null = null;
   private heat!: Layer;
   private dots!: Layer;
   private parts!: Parts;
   private pool: Person[] = [];
-  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean; place: number }[] = [];
+  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean; place: number; street?: boolean }[] = [];
   /** Last text shown on each gate label, so the DOM is touched only when it changes. */
   private gateText = new Map<number, string>();
   private stationTags: { el: HTMLElement; sx: number; sy: number }[] = [];
@@ -394,6 +471,7 @@ export class CrowdScene {
 
   constructor(init: CrowdSceneInit) {
     this.init = init;
+    this.bands = heatBands(init.dangerDensity);
     this.nameTag = document.createElement('div');
     this.nameTag.className = 'crowd-name';
     this.nameTag.style.display = 'none';
@@ -444,12 +522,37 @@ export class CrowdScene {
     this.heat = makeLayer(map.width, map.height);
     this.heat.sprite.alpha = 0.8;
     this.dots = makeLayer(map.width, map.height);
-    this.ground.addChild(new Sprite(baseTexture), this.heat.sprite, this.zone, this.closedCells, this.dots.sprite);
+    this.flow = makeLayer(map.width, map.height);
+    // Smoothed, so a jam reads as a red stretch of road rather than 2 m tiles.
+    this.flow.texture.source.scaleMode = 'linear';
+    this.flow.sprite.alpha = 0.72;
+    this.cover.rect(0, 0, map.width, map.height).fill(0xffffff);
+    this.cover.alpha = 0;
+    this.ground.addChild(new Sprite(baseTexture), this.cover, this.heat.sprite, this.flow.sprite, this.zone, this.closedCells, this.dots.sprite);
+    this.bowl = buildBowl(map);
 
     this.people.sortableChildren = true;
-    this.people.addChild(...buildBuildings(map));
+    this.buildings = buildBuildings(map);
+    this.buildingSnow = 0;
+    this.people.addChild(...this.buildings);
     for (const station of policeStations(map)) this.people.addChild(buildStation(station.cell, map.width));
-    this.world.addChild(slab, this.ground, this.routes, this.people, this.ripple, this.officers, this.marker);
+    // Beams, glows and officer routes lie on the ground, under everything.
+    // Vehicles go above the depth-sorted layer: a car beside a wall is never
+    // cut off by it.
+    const lanes = buildStreetLines(map);
+    this.world.addChild(slab, this.ground);
+    if (this.bowl) {
+      this.world.addChild(this.bowl.turf);
+      // The bowl sorts in with buildings and people at its centre line, so a
+      // building or fan behind the stadium goes behind it and one in front
+      // stays in front. As a layer of its own it either covered every building
+      // in front of it or was covered by every building behind it.
+      const depth = bowlDepth(map);
+      this.bowl.shell.zIndex = depth;
+      this.standsCrowd.zIndex = depth + 0.0005;
+      this.people.addChild(this.bowl.shell, this.standsCrowd);
+    }
+    this.world.addChild(lanes, this.beams, this.routes, this.people, this.parked, this.moving, this.ripple, this.officers, this.marker);
     app.stage.addChild(this.world);
 
     this.makeLabels();
@@ -474,7 +577,7 @@ export class CrowdScene {
         sy += Math.floor(cell / map.width) + 0.5;
       }
       const n = Math.max(1, place.cells.length);
-      const p = isoProject((sx / n) * CELL_SIZE_M, (sy / n) * CELL_SIZE_M, gate ? 6 : 0);
+      const p = isoProject((sx / n) * CELL_SIZE_M, (sy / n) * CELL_SIZE_M, gate ? 6 : 20);
       const el = document.createElement('div');
       el.className = `crowd-label${gate ? ' gate' : ''}`;
       el.textContent = gate ? place.name.replace(/\s*\(.*\)/, '') : place.kind === 'seating' ? 'Ohio Stadium' : place.name;
@@ -488,6 +591,14 @@ export class CrowdScene {
       el.textContent = `🚓 ${station.name}`;
       overlay.appendChild(el);
       this.stationTags.push({ el, sx: p.sx, sy: p.sy });
+    }
+    for (const street of streetLabels(map)) {
+      const p = isoProject(street.x, street.y, 0.5);
+      const el = document.createElement('div');
+      el.className = `crowd-label street${street.major ? ' major' : ''}`;
+      el.textContent = street.name;
+      overlay.appendChild(el);
+      this.labels.push({ el, sx: p.sx, sy: p.sy, gate: false, place: -1, street: true });
     }
   }
 
@@ -604,7 +715,9 @@ export class CrowdScene {
       if (down && !down.moved) {
         const p = local(e);
         const officer = this.officerAt(p.x, p.y);
+        const vehicle = officer === null ? this.pickVehicleAt(p.x, p.y) : null;
         if (officer !== null) this.init.onPickOfficer(officer);
+        else if (vehicle !== null && this.init.onPickVehicle) this.init.onPickVehicle(vehicle);
         else this.init.onPick(this.pickAt(p.x, p.y));
       }
       down = null;
@@ -676,6 +789,24 @@ export class CrowdScene {
     this.cam.y = h / 2 - p.sy * this.cam.scale;
   }
 
+  /** Frame a box of cells, for the hotspot list's zoom buttons. */
+  lookAtCells(x0: number, y0: number, x1: number, y1: number): void {
+    const C = CELL_SIZE_M;
+    const corners = [isoProject(x0 * C, y0 * C), isoProject((x1 + 1) * C, y0 * C), isoProject(x0 * C, (y1 + 1) * C), isoProject((x1 + 1) * C, (y1 + 1) * C)];
+    const sx = corners.map((p) => p.sx);
+    const sy = corners.map((p) => p.sy);
+    const spanX = Math.max(...sx) - Math.min(...sx) + 30;
+    const spanY = Math.max(...sy) - Math.min(...sy) + 20;
+    const { w, h } = this.viewSize();
+    const scale = Math.min(MAX_SCALE, Math.max(this.fitScale, Math.min(w / spanX, h / spanY) * 0.8));
+    this.cam.scale = scale;
+    const cx = (Math.max(...sx) + Math.min(...sx)) / 2;
+    const cy = (Math.max(...sy) + Math.min(...sy)) / 2;
+    this.cam.x = w / 2 - cx * scale;
+    this.cam.y = h / 2 - cy * scale;
+    this.setFollow(false);
+  }
+
   /** Back to the incident, for the "incident" button. */
   showIncident(): void {
     if (this.zoneAt) this.lookAt(this.zoneAt, PEOPLE_MIN_SCALE * 1.15);
@@ -692,7 +823,7 @@ export class CrowdScene {
     if (!pos) return;
     const { w, h } = this.viewSize();
     this.cam.scale = Math.max(this.cam.scale, 14);
-    const p = isoProject(pos.x, pos.y, FIG_H / 2);
+    const p = isoProject(pos.x, pos.y, FIG_H / 2 + this.liftAt(pos.x, pos.y));
     this.cam.x = w / 2 - p.sx * this.cam.scale;
     this.cam.y = h / 2 - p.sy * this.cam.scale;
     this.setFollow(true);
@@ -709,6 +840,52 @@ export class CrowdScene {
 
   setTypes(typeIndex: Uint16Array | null): void {
     this.typeIndex = typeIndex;
+  }
+
+  setVehicles(show: boolean, focus: VehicleKind | null, selected: number | null): void {
+    this.showVehicles = show;
+    this.vehicleFocus = focus;
+    this.selectedVehicle = selected;
+    this.parkedKey = '';
+  }
+
+  /** Isolate one density band, as in the side-by-side maps; null shows them all. */
+  setBand(band: number | null): void {
+    if (this.selectedBand === band) return;
+    this.selectedBand = band;
+    if (this.cur) void this.ready.then(() => this.cur && this.paintFrame(this.cur));
+  }
+
+  setFlow(on: boolean): void {
+    this.showFlow = on;
+    if (this.flow) this.flow.sprite.visible = on;
+  }
+
+  /** Numbered pins on the most congested areas, from the police list. */
+  setHotspots(spots: PoliceHotspot[]): void {
+    for (const pin of this.pins) pin.el.remove();
+    this.pins = spots.map((spot) => {
+      const el = document.createElement('button');
+      el.className = `crowd-pin ${spot.level}`;
+      el.style.setProperty('--pin', HOTSPOT_COLOUR[spot.level]);
+      el.textContent = String(spot.rank);
+      el.title = `${spot.rank}. ${spot.where}`;
+      el.addEventListener('click', () => this.lookAtCells(spot.x0, spot.y0, spot.x1, spot.y1));
+      this.init.overlay.appendChild(el);
+      const p = isoProject(spot.cx, spot.cy, 4 + this.liftAt(spot.cx, spot.cy));
+      return { el, sx: p.sx, sy: p.sy };
+    });
+  }
+
+  /** How high the ground is here: the tier a fan in the stands is sitting on. */
+  private liftAt(x: number, y: number): number {
+    const bowl = this.bowl;
+    if (!bowl) return 0;
+    const { width, height } = this.init.map;
+    const u = Math.floor(x / CELL_SIZE_M);
+    const v = Math.floor(y / CELL_SIZE_M);
+    if (u < 0 || v < 0 || u >= width || v >= height) return 0;
+    return bowl.height[v * width + u]!;
   }
 
   setHeat(on: boolean): void {
@@ -758,22 +935,53 @@ export class CrowdScene {
   private paintFrame(frame: SceneFrame): void {
     if (!this.app) return;
     const { map, dangerDensity } = this.init;
+    void dangerDensity;
+    if (frame.density) {
+      const n = frame.density.length;
+      if (!this.seated || this.seated.length !== n) this.seated = new Float32Array(n);
+      this.standing = standingDensity(map, frame, frame.density, this.standing ?? undefined, this.seated);
+    }
     if (frame.density && this.showHeat) {
+      // The same five bands as the side-by-side maps, so a colour means the
+      // same thing in both views and the band picked in one stays picked.
       const data = this.heat.image.data;
       data.fill(0);
-      const rho = frame.density;
+      const rho = this.standing!;
+      const bands = this.bands;
+      const picked = this.selectedBand;
       for (let i = 0; i < rho.length; i++) {
-        const value = rho[i]!;
-        if (value <= 0.08) continue;
-        const ratio = Math.min(value / dangerDensity, 1.5);
+        const b = bandOf(rho[i]!, bands);
+        if (b < 0) continue;
+        const band = bands[b]!;
         const o = i * 4;
-        data[o] = Math.min(255, 90 + ratio * 165);
-        data[o + 1] = Math.max(0, 180 - ratio * 170);
-        data[o + 2] = 40;
-        data[o + 3] = Math.min(220, ratio * 180);
+        data[o] = band.rgb[0];
+        data[o + 1] = band.rgb[1];
+        data[o + 2] = band.rgb[2];
+        data[o + 3] = Math.round(255 * (picked === null ? band.alpha * 0.85 : picked === b ? 0.95 : 0.06));
       }
       this.heat.ctx.putImageData(this.heat.image, 0, 0);
       this.heat.texture.source.update();
+    }
+    this.paintWeather(frame.weather);
+    this.paintStands(frame);
+
+    if (this.showFlow) {
+      this.flowCells = trafficFlow(map, frame.vehicles, this.flowCells ?? undefined);
+      const fd = this.flow.image.data;
+      fd.fill(0);
+      const cells = this.flowCells;
+      for (let c = 0; c < cells.length; c++) {
+        const level = cells[c]!;
+        if (!level) continue;
+        const [r, g, b] = FLOW_RGB[level]!;
+        const o = c * 4;
+        fd[o] = r;
+        fd[o + 1] = g;
+        fd[o + 2] = b;
+        fd[o + 3] = 235;
+      }
+      this.flow.ctx.putImageData(this.flow.image, 0, 0);
+      this.flow.texture.source.update();
     }
 
     const data = this.dots.image.data;
@@ -796,6 +1004,372 @@ export class CrowdScene {
     }
     this.dots.ctx.putImageData(this.dots.image, 0, 0);
     this.dots.texture.source.update();
+  }
+
+  /**
+   * The crowd in the stands, drawn on the tiers at the height it sits. The flat
+   * dot and heat layers are under the bowl, so without this a full stadium
+   * looked empty from above.
+   */
+  private paintStands(frame: SceneFrame): void {
+    const bowl = this.bowl;
+    const g = this.standsCrowd;
+    g.clear();
+    if (!bowl || !frame.density || !this.standing || !this.seated) return;
+    const { width } = this.init.map;
+    const rho = this.standing;
+    const seated = this.seated;
+    const bands = this.bands;
+    const picked = this.selectedBand;
+    const C = CELL_SIZE_M;
+    for (let k = 0; k < bowl.seats.length; k++) {
+      const c = bowl.seats[k]!;
+      const v = rho[c]!;
+      const sit = seated[c]!;
+      if (v < 0.08 && sit < 0.08) continue;
+      let colour: number;
+      let alpha: number;
+      if (v < 0.08) {
+        // Fans in their seats: a calm tint that fills in as the stadium does.
+        colour = 0xc9d6e8;
+        alpha = 0.18 + 0.42 * Math.min(1, sit / 5);
+      } else if (this.showHeat) {
+        const b = bandOf(v, bands);
+        const band = bands[b]!;
+        colour = (band.rgb[0] << 16) | (band.rgb[1] << 8) | band.rgb[2];
+        alpha = picked === null ? 0.55 + 0.3 * Math.min(1, v / 5) : picked === b ? 0.95 : 0.08;
+      } else {
+        colour = 0x7ddfff;
+        alpha = 0.25 + 0.6 * Math.min(1, v / 5);
+      }
+      const u = c % width;
+      const w = (c / width) | 0;
+      const h = bowl.height[c]! + 0.05;
+      const pts = [
+        isoProject(u * C + 0.2, w * C + 0.2, h), isoProject((u + 1) * C - 0.2, w * C + 0.2, h),
+        isoProject((u + 1) * C - 0.2, (w + 1) * C - 0.2, h), isoProject(u * C + 0.2, (w + 1) * C - 0.2, h),
+      ];
+      g.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
+    }
+  }
+
+  /**
+   * What the weather does to the model itself, as opposed to the animated
+   * layer over it: snow settles white on the ground and the roofs, rain leaves
+   * the ground dark and wet, fog greys it out.
+   */
+  private paintWeather(w: WeatherState | undefined): void {
+    const I = w?.intensity ?? 0;
+    let colour = 0xffffff;
+    let alpha = 0;
+    switch (w?.kind) {
+      case 'snow':
+        colour = 0xeef3f8;
+        alpha = 0.14 + 0.2 * I;
+        break;
+      case 'rain':
+      case 'heavy_rain':
+      case 'thunderstorm':
+        colour = 0x0a1626;
+        alpha = 0.07 + 0.12 * I;
+        break;
+      case 'fog':
+        colour = 0xc9d0d6;
+        alpha = 0.06 + 0.08 * I;
+        break;
+      case 'overcast':
+        colour = 0x0d1118;
+        alpha = 0.08 + 0.1 * I;
+        break;
+      case 'heat':
+        colour = 0xffb066;
+        alpha = 0.05 + 0.06 * I;
+        break;
+    }
+    this.cover.tint = colour;
+    this.cover.alpha = alpha;
+
+    const snow = w?.kind === 'snow' ? Math.round((0.25 + 0.3 * I) * 10) / 10 : 0;
+    if (snow !== this.buildingSnow && this.buildings.length > 0) {
+      const next = buildBuildings(this.init.map, snow);
+      for (const g of this.buildings) {
+        this.people.removeChild(g);
+        g.destroy();
+      }
+      this.people.addChild(...next);
+      this.buildings = next;
+      this.buildingSnow = snow;
+    }
+  }
+
+  /** Where a vehicle is right now (centre, heading), tweened between frames like the people. */
+  private vehicleAt(i: number, now: number): { x: number; y: number; h: number } | null {
+    const v = this.cur?.vehicles;
+    if (!v || i < 0 || i >= v.x.length) return null;
+    const x1 = v.x[i]!;
+    if (x1 < 0) return null;
+    const pv = this.prev?.vehicles;
+    if (!pv || !this.tween || pv.x.length !== v.x.length) return { x: x1, y: v.y[i]!, h: v.heading[i]! };
+    const x0 = pv.x[i]!;
+    const y0 = pv.y[i]!;
+    if (x0 < 0 || Math.hypot(x1 - x0, v.y[i]! - y0) > MAX_VEHICLE_TWEEN_M) return { x: x1, y: v.y[i]!, h: v.heading[i]! };
+    const a = Math.min(1, (now - this.arrivedAt) / this.interval);
+    let dh = v.heading[i]! - pv.heading[i]!;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    return { x: x0 + (x1 - x0) * a, y: y0 + (v.y[i]! - y0) * a, h: pv.heading[i]! + dh * a };
+  }
+
+  /**
+   * One vehicle as boxes: a body, a glass cabin on top for anything car-like,
+   * window bands on buses and RVs, and roof gear. Only the faces this viewpoint
+   * can see (normals pointing east or south) are drawn, then the roof.
+   */
+  private drawVehicle(g: Graphics, i: number, kind: VehicleKind, x: number, y: number, heading: number, opts: { detail: boolean; state: number; dim: boolean; flash: boolean; selected: boolean }): void {
+    const type = VEHICLE_TYPES[kind];
+    const { h: H, belt } = VEHICLE_HEIGHT[kind];
+    const L = type.lengthM;
+    const W = type.widthM;
+    const fx = Math.cos(heading);
+    const fy = Math.sin(heading);
+    const rx = -fy;
+    const ry = fx;
+    const paint =
+      kind === 'police' ? 0x1d222a : kind === 'ambulance' ? 0xf4f5f2 : kind === 'bus' ? (i % 3 ? 0xe8e8e6 : 0xc9ccd1) : kind === 'rv' ? 0xece4d3 : hex(paintFor(i));
+    const alpha = opts.dim ? 0.18 : 1;
+    const P = (a: number, b: number, z: number) => {
+      const p = isoProject(x + fx * a + rx * b, y + fy * a + ry * b, z);
+      return [p.sx, p.sy];
+    };
+
+    /** A box over a local rectangle [a0,a1] along the vehicle and [b0,b1] across it. */
+    const box = (a0: number, a1: number, b0: number, b1: number, z0: number, z1: number, side: number, top: number) => {
+      // Outward normals of the four sides, in world space.
+      const faces: [number, number, number[]][] = [
+        [fx, fy, [...P(a1, b0, z0), ...P(a1, b1, z0), ...P(a1, b1, z1), ...P(a1, b0, z1)]],
+        [-fx, -fy, [...P(a0, b1, z0), ...P(a0, b0, z0), ...P(a0, b0, z1), ...P(a0, b1, z1)]],
+        [rx, ry, [...P(a1, b1, z0), ...P(a0, b1, z0), ...P(a0, b1, z1), ...P(a1, b1, z1)]],
+        [-rx, -ry, [...P(a0, b0, z0), ...P(a1, b0, z0), ...P(a1, b0, z1), ...P(a0, b0, z1)]],
+      ];
+      for (const [nx, ny, pts] of faces) {
+        if (nx + ny <= 0) continue;
+        // East-facing faces catch more light than south-facing ones.
+        g.poly(pts, true).fill({ color: shade(side, 0.62 + 0.22 * Math.max(0, nx)), alpha });
+      }
+      g.poly([...P(a0, b0, z1), ...P(a1, b0, z1), ...P(a1, b1, z1), ...P(a0, b1, z1)], true).fill({ color: top, alpha });
+    };
+
+    const hl = L / 2;
+    const hw = W / 2;
+    if (!opts.detail) {
+      // Far out a vehicle is a few pixels: its roof is all that reads.
+      g.poly([...P(-hl, -hw, H * 0.8), ...P(hl, -hw, H * 0.8), ...P(hl, hw, H * 0.8), ...P(-hl, hw, H * 0.8)], true).fill({ color: paint, alpha });
+      return;
+    }
+
+    // A shadow on the ground, offset away from the light.
+    g.poly([...P(-hl + 0.2, -hw + 0.3, 0), ...P(hl + 0.2, -hw + 0.3, 0), ...P(hl + 0.2, hw + 0.4, 0), ...P(-hl + 0.2, hw + 0.4, 0)], true).fill({ color: 0x000000, alpha: 0.28 * alpha });
+
+    const bodyTop = H * belt;
+    switch (kind) {
+      case 'bus':
+      case 'rv': {
+        box(-hl, hl, -hw, hw, 0.35, H, paint, shade(paint, 1.04));
+        // A window band down the visible sides and across the front.
+        box(-hl + 0.6, hl - 0.25, -hw - 0.01, hw + 0.01, H * 0.55, H * 0.82, GLASS, shade(paint, 1.04));
+        box(-hl + 0.6, hl - 0.25, -hw + 0.02, hw - 0.02, H * 0.82, H, paint, shade(paint, 1.04));
+        if (kind === 'bus') {
+          const stripe = i % 3 ? 0xbb0000 : 0x4b5563;
+          g.poly([...P(-hl + 0.8, -0.25, H + 0.01), ...P(hl - 0.8, -0.25, H + 0.01), ...P(hl - 0.8, 0.25, H + 0.01), ...P(-hl + 0.8, 0.25, H + 0.01)], true).fill({ color: stripe, alpha });
+          box(-1.6, 0.2, -0.75, 0.75, H, H + 0.35, 0x8c939c, 0xa7adb5);
+        } else {
+          box(-L * 0.3, -L * 0.3 + 0.8, -0.4, 0.4, H, H + 0.18, 0xb9b2a2, 0xcfc8b8);
+          box(L * 0.05, L * 0.05 + 0.8, -0.4, 0.4, H, H + 0.18, 0xb9b2a2, 0xcfc8b8);
+        }
+        break;
+      }
+      case 'ambulance': {
+        box(hl - 1.9, hl, -hw + 0.05, hw - 0.05, 0.35, H * 0.62, paint, paint);
+        box(hl - 1.9, hl - 0.5, -hw + 0.15, hw - 0.15, H * 0.62, H * 0.78, GLASS, shade(paint, 0.95));
+        box(-hl, hl - 1.9, -hw, hw, 0.35, H, paint, paint);
+        box(-hl, hl - 1.9, -hw - 0.01, hw + 0.01, H * 0.45, H * 0.55, 0xd4252f, paint);
+        g.poly([...P(-1.4, -0.2, H + 0.01), ...P(-0.6, -0.2, H + 0.01), ...P(-0.6, 0.2, H + 0.01), ...P(-1.4, 0.2, H + 0.01)], true).fill({ color: 0xd4252f, alpha });
+        g.poly([...P(-1.2, -0.6, H + 0.01), ...P(-0.8, -0.6, H + 0.01), ...P(-0.8, 0.6, H + 0.01), ...P(-1.2, 0.6, H + 0.01)], true).fill({ color: 0xd4252f, alpha });
+        this.lightBar(g, P, hl - 2.1, W, H, opts.flash, [0xff2a2a, 0xffffff], alpha);
+        break;
+      }
+      case 'motorcycle': {
+        box(-hl, hl, -0.18, 0.18, 0.25, 0.75, paint, paint);
+        const head = isoProject(x - fx * 0.15, y - fy * 0.15, H + 0.15);
+        g.circle(head.sx, head.sy, 0.24).fill({ color: 0x0d0f12, alpha });
+        break;
+      }
+      case 'pickup': {
+        box(-hl, hl, -hw, hw, 0.3, bodyTop, paint, paint);
+        // The open bed: a dark well in the body's top, and the cab ahead of it.
+        g.poly([...P(-hl + 0.15, -hw + 0.18, bodyTop + 0.005), ...P(-L * 0.08, -hw + 0.18, bodyTop + 0.005), ...P(-L * 0.08, hw - 0.18, bodyTop + 0.005), ...P(-hl + 0.15, hw - 0.18, bodyTop + 0.005)], true).fill({ color: 0x23282f, alpha });
+        box(-L * 0.05, L * 0.2, -hw + 0.1, hw - 0.1, bodyTop, H, GLASS, shade(paint, 0.94));
+        break;
+      }
+      default: {
+        // Car-shaped: body, then a glass cabin with a painted roof.
+        const cabin =
+          kind === 'suv' ? [-0.42, 0.14] : kind === 'minivan' ? [-0.44, 0.18] : kind === 'compact' ? [-0.3, 0.12] : [-0.32, 0.12];
+        box(-hl, hl, -hw, hw, 0.28, bodyTop, kind === 'police' ? 0x1d222a : paint, kind === 'police' ? 0x1d222a : paint);
+        if (kind === 'police') box(-L * 0.18, L * 0.16, -hw - 0.01, hw + 0.01, 0.3, bodyTop - 0.02, 0xe9edf2, 0x1d222a);
+        box(L * cabin[0]!, L * cabin[1]!, -hw + 0.12, hw - 0.12, bodyTop, H, GLASS, kind === 'police' ? 0x2a3039 : shade(paint, 0.94));
+        if (kind === 'police') this.lightBar(g, P, L * (cabin[0]! + cabin[1]!) / 2, W, H, opts.flash, [0xff2a2a, 0x2a6bff], alpha);
+        if (kind === 'rideshare') box(-0.15, 0.15, -0.3, 0.3, H, H + 0.16, 0xff4fd8, 0xff7fe4);
+        break;
+      }
+    }
+
+    // Lamps: headlights always, tail lights bright red when braking.
+    const braking = opts.state === VSTATE.stopped;
+    const tail = braking ? 0xff2a2a : 0x7d1d1d;
+    for (const side of [-1, 1]) {
+      const b = side * (hw - 0.35);
+      const back = isoProject(x - fx * hl + rx * b, y - fy * hl + ry * b, bodyTop * 0.75);
+      g.circle(back.sx, back.sy, braking ? 0.2 : 0.13).fill({ color: tail, alpha });
+      const front = isoProject(x + fx * hl + rx * b, y + fy * hl + ry * b, bodyTop * 0.7);
+      g.circle(front.sx, front.sy, 0.12).fill({ color: 0xfff4c8, alpha });
+    }
+    if (opts.selected) {
+      g.poly([...P(-hl - 0.8, -hw - 0.8, 0), ...P(hl + 0.8, -hw - 0.8, 0), ...P(hl + 0.8, hw + 0.8, 0), ...P(-hl - 0.8, hw + 0.8, 0)], true).stroke({ color: 0xffd166, width: 0.18 });
+    }
+  }
+
+  private lightBar(g: Graphics, P: (a: number, b: number, z: number) => number[], a: number, W: number, H: number, flash: boolean, colours: [number, number], alpha: number): void {
+    const on = flash && ((performance.now() / 250) | 0) % 2 === 0;
+    const left = flash ? (on ? colours[0] : 0x3a1010) : shade(colours[0], 0.5);
+    const right = flash ? (on ? 0x10103a : colours[1]) : shade(colours[1], 0.5);
+    g.poly([...P(a - 0.18, -W * 0.38, H + 0.12), ...P(a + 0.18, -W * 0.38, H + 0.12), ...P(a + 0.18, 0, H + 0.12), ...P(a - 0.18, 0, H + 0.12)], true).fill({ color: left, alpha });
+    g.poly([...P(a - 0.18, 0, H + 0.12), ...P(a + 0.18, 0, H + 0.12), ...P(a + 0.18, W * 0.38, H + 0.12), ...P(a - 0.18, W * 0.38, H + 0.12)], true).fill({ color: right, alpha });
+  }
+
+  /** Light on the ground: headlight beams in bad weather, brake glow, emergency strobes. */
+  private drawGlow(x: number, y: number, heading: number, L: number, beam: boolean, brake: boolean, strobe: number | null): void {
+    const fx = Math.cos(heading);
+    const fy = Math.sin(heading);
+    const rx = -fy;
+    const ry = fx;
+    const at = (a: number, b: number) => {
+      const p = isoProject(x + fx * a + rx * b, y + fy * a + ry * b, 0);
+      return [p.sx, p.sy];
+    };
+    if (beam) this.beams.poly([...at(L / 2, -0.7), ...at(L / 2 + 11, -3), ...at(L / 2 + 11, 3), ...at(L / 2, 0.7)], true).fill({ color: 0xfff0be, alpha: 0.16 });
+    if (brake) this.beams.poly([...at(-L / 2, -1), ...at(-L / 2 - 1.6, -1.2), ...at(-L / 2 - 1.6, 1.2), ...at(-L / 2, 1)], true).fill({ color: 0xff2a2a, alpha: 0.25 });
+    if (strobe !== null) {
+      const p = isoProject(x, y, 0);
+      this.beams.ellipse(p.sx, p.sy, 9, 4.5).fill({ color: strobe, alpha: 0.22 });
+    }
+  }
+
+  private drawVehicles(now: number, x0: number, x1: number, y0: number, y1: number): void {
+    const v = this.cur?.vehicles;
+    this.moving.clear();
+    this.beams.clear();
+    if (!v || !this.showVehicles) {
+      if (this.parkedKey !== 'none') this.parked.clear();
+      this.parkedKey = 'none';
+      return;
+    }
+    const s = this.cam.scale;
+    const detail = s >= 2.2;
+    const sky = this.cur?.weather;
+    const dark = !!sky && (sky.kind === 'rain' || sky.kind === 'heavy_rain' || sky.kind === 'thunderstorm' || sky.kind === 'fog' || sky.kind === 'snow' || sky.kind === 'overcast');
+    const strobePhase = ((now / 250) | 0) % 2 === 0;
+
+    // Parked vehicles do not move, so their layer is rebuilt only when the set
+    // of parked vehicles changes, the detail level or highlighting changes, or
+    // the camera leaves the padded window it was drawn for. Rebuilding it on
+    // every frame cost 25-70 ms, a visible stutter each time a frame landed.
+    let sig = 0;
+    for (let i = 0; i < v.x.length; i++) if (v.state[i] === VSTATE.parked) sig = (sig + Math.imul(i + 1, 2654435761)) >>> 0;
+    const win = this.parkedWindow;
+    const inside = x0 >= win.x0 && x1 <= win.x1 && y0 >= win.y0 && y1 <= win.y1;
+    const key = `${sig}|${detail}|${this.vehicleFocus}|${this.selectedVehicle}`;
+    const order: number[] = [];
+    if (key !== this.parkedKey || (detail && !inside)) {
+      this.parkedKey = key;
+      this.parked.clear();
+      // Zoomed in, draw a window half a screen wider than the view on each side;
+      // zoomed out, everything is on screen anyway and drawn as flat roofs.
+      const padX = (x1 - x0) * 0.5;
+      const padY = (y1 - y0) * 0.5;
+      this.parkedWindow = detail ? { x0: x0 - padX, x1: x1 + padX, y0: y0 - padY, y1: y1 + padY } : { x0: -Infinity, x1: Infinity, y0: -Infinity, y1: Infinity };
+      const pw = this.parkedWindow;
+      const parked: number[] = [];
+      for (let i = 0; i < v.x.length; i++) {
+        if (v.state[i] !== VSTATE.parked || v.x[i]! < 0) continue;
+        const p = isoProject(v.x[i]!, v.y[i]!);
+        if (p.sx < pw.x0 - 10 || p.sx > pw.x1 + 10 || p.sy < pw.y0 - 10 || p.sy > pw.y1 + 10) continue;
+        parked.push(i);
+      }
+      // Painter's order: furthest from the south-east viewer first.
+      parked.sort((a, b) => v.x[a]! + v.y[a]! - (v.x[b]! + v.y[b]!));
+      for (const i of parked) {
+        const kind = VEHICLE_KINDS[v.kind[i]!]!;
+        this.drawVehicle(this.parked, i, kind, v.x[i]!, v.y[i]!, v.heading[i]!, {
+          detail,
+          state: v.state[i]!,
+          dim: this.vehicleFocus !== null && this.vehicleFocus !== kind,
+          flash: false,
+          selected: i === this.selectedVehicle,
+        });
+      }
+    }
+
+    for (let i = 0; i < v.x.length; i++) {
+      const st = v.state[i]!;
+      if (st === VSTATE.parked || st === VSTATE.waiting || st === VSTATE.gone) continue;
+      order.push(i);
+    }
+    const placed: { i: number; x: number; y: number; h: number }[] = [];
+    for (const i of order) {
+      const at = this.vehicleAt(i, now);
+      if (!at) continue;
+      const p = isoProject(at.x, at.y);
+      if (i !== this.selectedVehicle && (p.sx < x0 - 20 || p.sx > x1 + 20 || p.sy < y0 - 20 || p.sy > y1 + 20)) continue;
+      placed.push({ i, ...at });
+    }
+    placed.sort((a, b) => a.x + a.y - (b.x + b.y));
+    for (const { i, x, y, h } of placed) {
+      const kind = VEHICLE_KINDS[v.kind[i]!]!;
+      const st = v.state[i]!;
+      const emergency = kind === 'police' || kind === 'ambulance';
+      const flash = emergency && (st === VSTATE.responding || st === VSTATE.on_scene || st === VSTATE.stopped);
+      const dim = this.vehicleFocus !== null && this.vehicleFocus !== kind;
+      if (!dim && detail) {
+        const strobe = flash ? (strobePhase ? 0xff2a2a : kind === 'police' ? 0x2a6bff : 0xffffff) : null;
+        this.drawGlow(x, y, h, VEHICLE_TYPES[kind].lengthM, dark && st !== VSTATE.on_scene, st === VSTATE.stopped, strobe);
+      }
+      this.drawVehicle(this.moving, i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
+    }
+  }
+
+  private pickVehicleAt(px: number, py: number): number | null {
+    const v = this.cur?.vehicles;
+    if (!v || !this.showVehicles) return null;
+    const now = performance.now();
+    const s = this.cam.scale;
+    let best: number | null = null;
+    let bestSq = Infinity;
+    for (let i = 0; i < v.x.length; i++) {
+      const at = this.vehicleAt(i, now);
+      if (!at) continue;
+      const kind = VEHICLE_KINDS[v.kind[i]!]!;
+      const p = isoProject(at.x, at.y, VEHICLE_HEIGHT[kind].h * 0.5);
+      const dx = p.sx * s + this.cam.x - px;
+      const dy = p.sy * s + this.cam.y - py;
+      const reach = Math.max(10, (VEHICLE_TYPES[kind].lengthM / 2 + 0.5) * s);
+      const sq = dx * dx + dy * dy;
+      if (sq < reach * reach && sq < bestSq) {
+        bestSq = sq;
+        best = i;
+      }
+    }
+    return best;
   }
 
   /** Where a group stands right now, tweened between the last two frames. */
@@ -864,7 +1438,7 @@ export class CrowdScene {
     for (let i = 0; i < cur.x.length; i++) {
       const pos = this.positionOf(i, now);
       if (!pos) continue;
-      const p = isoProject(pos.x, pos.y, lift);
+      const p = isoProject(pos.x, pos.y, lift + this.liftAt(pos.x, pos.y));
       const dx = p.sx * s + this.cam.x - px;
       const dy = p.sy * s + this.cam.y - py;
       const sq = dx * dx + dy * dy;
@@ -919,7 +1493,7 @@ export class CrowdScene {
     if (this.follow && this.selected !== null) {
       const pos = this.positionOf(this.selected, now);
       if (pos) {
-        const p = isoProject(pos.x, pos.y, FIG_H / 2);
+        const p = isoProject(pos.x, pos.y, FIG_H / 2 + this.liftAt(pos.x, pos.y));
         const tx = w / 2 - p.sx * this.cam.scale;
         const ty = h / 2 - p.sy * this.cam.scale;
         this.cam.x += (tx - this.cam.x) * 0.12;
@@ -954,7 +1528,7 @@ export class CrowdScene {
       const show = (i: number) => {
         const pos = this.positionOf(i, now);
         if (!pos) return;
-        const p = isoProject(pos.x, pos.y);
+        const p = isoProject(pos.x, pos.y, this.liftAt(pos.x, pos.y));
         if (i !== this.selected && (p.sx < x0 || p.sx > x1 || p.sy < y0 || p.sy > y1)) return;
         const person = this.person(used++);
         person.c.visible = true;
@@ -982,6 +1556,8 @@ export class CrowdScene {
     }
     for (let i = used; i < this.pool.length; i++) this.pool[i]!.c.visible = false;
 
+    this.drawVehicles(now, -this.cam.x / s, (w - this.cam.x) / s, -this.cam.y / s, (h - this.cam.y) / s);
+
     this.drawOfficers(s);
     this.drawMarker(now, s, asPeople);
 
@@ -992,7 +1568,8 @@ export class CrowdScene {
       // Zoomed out, the twelve gate labels pile up over the bowl, so only shut
       // gates stay labelled there; the gates panel lists every one regardless.
       const shut = label.gate && this.scene?.gates.some((g) => g.place === label.place && !g.open);
-      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && (!label.gate || shut || s > this.fitScale * 1.6);
+      const near = label.street ? s > this.fitScale * 2.4 : !label.gate || shut || s > this.fitScale * 1.6;
+      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && near;
       label.el.style.display = visible ? '' : 'none';
       if (visible) label.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
@@ -1012,6 +1589,13 @@ export class CrowdScene {
       this.zoneTag.style.transform = `translate(${x | 0}px, ${(y | 0) - 26}px) translate(-50%, -100%)`;
     } else {
       this.zoneTag.style.display = 'none';
+    }
+    for (const pin of this.pins) {
+      const x = pin.sx * s + this.cam.x;
+      const y = pin.sy * s + this.cam.y;
+      const visible = x > -40 && x < w + 40 && y > -40 && y < h + 40;
+      pin.el.style.display = visible ? '' : 'none';
+      if (visible) pin.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
   }
 
@@ -1085,7 +1669,7 @@ export class CrowdScene {
       this.nameTag.style.display = 'none';
       return;
     }
-    const p = isoProject(pos.x, pos.y);
+    const p = isoProject(pos.x, pos.y, this.liftAt(pos.x, pos.y));
     const k = Math.max(1, PEOPLE_MIN_SCALE / s);
     const pulse = 1 + 0.15 * Math.sin(now / 220);
     this.marker
@@ -1115,6 +1699,7 @@ export class CrowdScene {
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
     for (const tag of [...this.stationTags, ...this.closedTags]) tag.el.remove();
+    for (const pin of this.pins) pin.el.remove();
     this.nameTag.remove();
     this.zoneTag.remove();
     const app = this.app;

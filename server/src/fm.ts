@@ -22,6 +22,13 @@ function planLine(card: Scorecard, name: string): string {
     `  officer minutes used: ${Math.round(card.officerMinutesUsed)}`,
     `  fans not reached: ${card.fansNotReached}`,
     `  fallback decisions: ${card.fallbackDecisions}`,
+    ...(card.vehicleDelayMin === undefined
+      ? []
+      : [
+          `  ambulance on scene: ${card.emergencyResponseMin == null ? 'never reached the scene' : `${Math.round(card.emergencyResponseMin * 10) / 10} minutes`}`,
+          `  vehicle minutes stopped in traffic: ${Math.round(card.vehicleDelayMin)}`,
+          `  vehicles out: ${card.vehiclesOut ?? 0}`,
+        ]),
   ].join('\n');
 }
 

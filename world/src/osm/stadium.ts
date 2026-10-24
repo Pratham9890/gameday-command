@@ -43,6 +43,9 @@ const CONCOURSE_RADIUS_CELLS = 2;
 const GATE_HALF_WIDTH_CELLS = 3;
 /** How deep the queue block outside a gate runs, in cells. */
 const GATE_DEPTH_CELLS = 4;
+/** Field plus sidelines and end zones, 160 ft by 360 ft with a margin. */
+const FIELD_WIDTH_M = 61;
+const FIELD_LENGTH_M = 122;
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
 export function loadExtract(path = EXTRACT_PATH): OsmExtract {
@@ -120,13 +123,22 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
   // 1. Parking lots.
   for (const lot of parkingRings) fillPolygon(lot.points, width, height, set('parking'));
 
-  // 2. Ways: roads and footpaths.
+  // 2. Ways: roads and footpaths. Road centrelines are kept as well, so the
+  // app can paint lane markings and street names over the 2 m cells.
+  const streets: { name: string; kind: string; points: number[] }[] = [];
   for (const element of extract.elements) {
     const highway = element.tags?.highway;
     if (!highway || !element.geometry) continue;
     const points = project(element.geometry);
     if (FOOT_WAYS.has(highway)) strokePolyline(points, 0, width, height, set('walk'));
-    else if (highway in ROAD_RADIUS) strokePolyline(points, ROAD_RADIUS[highway]!, width, height, set('road'));
+    else if (highway in ROAD_RADIUS) {
+      strokePolyline(points, ROAD_RADIUS[highway]!, width, height, set('road'));
+      streets.push({
+        name: element.tags?.name ?? '',
+        kind: highway,
+        points: points.flatMap((p) => [(p.x + 0.5) * CELL_SIZE_M, (p.y + 0.5) * CELL_SIZE_M]),
+      });
+    }
   }
 
   // The extract holds more than one leisure=stadium (St John Arena is next
@@ -262,11 +274,33 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
   }
 
   // Places built from what actually landed on the grid.
-  const standsCells: number[] = [];
+  const bowlCells: number[] = [];
   const concourseCells: number[] = [];
   for (let i = 0; i < cells.length; i++) {
-    if (cells[i] === 'stands') standsCells.push(i);
+    if (cells[i] === 'stands') bowlCells.push(i);
     else if (cells[i] === 'concourse') concourseCells.push(i);
+  }
+
+  // The playing field: a regulation field plus sidelines, running north-south
+  // at the middle of the bowl. OSM draws the stadium as one polygon, so without
+  // this every cell of it was a seat and a seventh of the crowd sat on the turf.
+  let bx = 0;
+  let by = 0;
+  for (const c of bowlCells) {
+    bx += c % width;
+    by += (c / width) | 0;
+  }
+  bx /= Math.max(1, bowlCells.length);
+  by /= Math.max(1, bowlCells.length);
+  const halfW = FIELD_WIDTH_M / 2 / CELL_SIZE_M;
+  const halfL = FIELD_LENGTH_M / 2 / CELL_SIZE_M;
+  const field: number[] = [];
+  const standsCells: number[] = [];
+  for (const c of bowlCells) {
+    const dx = (c % width) + 0.5 - bx;
+    const dy = ((c / width) | 0) + 0.5 - by;
+    if (Math.abs(dx) <= halfW && Math.abs(dy) <= halfL) field.push(c);
+    else standsCells.push(c);
   }
 
   const lots: Place[] = [];
@@ -342,6 +376,8 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
     cells,
     places,
     closables,
+    streets,
+    field,
     sources: [
       { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: 'https://www.openstreetmap.org/way/119153498' },
       { label: `Fetched ${extract.fetchedAt.slice(0, 10)} via Overpass API`, url: 'https://overpass-api.de/' },

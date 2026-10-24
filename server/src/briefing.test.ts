@@ -37,6 +37,20 @@ describe('briefing', () => {
     expect(briefingIsSupported(briefing.text, request)).toBe(true);
   });
 
+  it('cites traffic numbers only when the run had vehicles, and they verify', () => {
+    const withTraffic: BriefingRequest = {
+      ...request,
+      scorecards: [card('A', { emergencyResponseMin: 4.25, vehicleDelayMin: 812.4, peakVehiclesStopped: 96, vehiclesOut: 1310 })],
+    };
+    const text = templateBriefing(withTraffic).text;
+    expect(text).toContain('Ambulance on scene in 4.3 minutes');
+    expect(text).toContain('812 vehicle minutes');
+    expect(briefingIsSupported(text, withTraffic)).toBe(true);
+    expect(templateBriefing(request).text).not.toContain('Ambulance');
+    // A model inventing a traffic figure is still caught.
+    expect(briefingIsSupported('About 2471 cars were stuck.', withTraffic)).toBe(false);
+  });
+
   it('labels fan behavior as an assumption', () => {
     expect(templateBriefing(request).text).toContain('assumption, not a forecast');
   });

@@ -10,14 +10,13 @@ import type { FanType } from '../../contracts.ts';
 export const STATE_RGB: [number, number, number][] = [
   [0x7a, 0xa2, 0xf7], // arriving
   [0xbb, 0x9a, 0xf7], // tailgating
-  [0xe0, 0xaf, 0x68], // queued
-  [0x9e, 0xce, 0x6a], // walking
-  [0x7d, 0xcf, 0xff], // seated
-  [0xf7, 0x76, 0x8e], // sheltering
-  [0xc0, 0xca, 0xf5], // leaving
+  [0xff, 0xc4, 0x5c], // queued
+  [0xb4, 0xf0, 0x7a], // walking
+  [0x7d, 0xdf, 0xff], // seated
+  [0xff, 0x7a, 0xa8], // sheltering
+  [0xd4, 0xdb, 0xff], // leaving
   [0x00, 0x00, 0x00], // gone, never drawn
 ];
-
 export const rgbNum = ([r, g, b]: [number, number, number]) => (r << 16) | (g << 8) | b;
 export const rgbCss = (rgb: [number, number, number]) => `#${rgbNum(rgb).toString(16).padStart(6, '0')}`;
 
