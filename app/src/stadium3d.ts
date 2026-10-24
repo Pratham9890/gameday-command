@@ -2,6 +2,7 @@ import { Graphics } from 'pixi.js';
 import type { MapBundle } from '../../contracts.ts';
 import { CELL_SIZE_M } from '../../contracts.ts';
 import { isoProject } from './people.ts';
+import { diagonalZ } from './depth.ts';
 
 /**
  * The Horseshoe and the streets, for the 3D close-up.
@@ -18,8 +19,8 @@ const TIER_STEP = 1.5;
 const C = CELL_SIZE_M;
 
 export interface Bowl {
-  /** Static tiers and outer walls. */
-  shell: Graphics;
+  /** Static tiers and outer walls, sorted with the people by ground diagonal. */
+  shell: { d: number; g: Graphics }[];
   /** Field turf and markings, at ground level inside the bowl. */
   turf: Graphics;
   /** Height of each cell's top, in meters; 0 outside the bowl and on the field. */
@@ -34,6 +35,7 @@ const quad = (pts: [number, number, number][]) =>
     return [p.sx, p.sy];
   });
 
+/** Build diagonal tier batches and ground-level turf from the stadium cells. */
 export function buildBowl(map: MapBundle): Bowl | null {
   const { width: W, height: H, cells } = map;
   const field = new Uint8Array(W * H);
@@ -90,34 +92,56 @@ export function buildBowl(map: MapBundle): Bowl | null {
   cx /= seats.length;
   cy /= seats.length;
 
-  const shell = new Graphics();
+  const shell: Bowl['shell'] = [];
   const hOf = (u: number, v: number) => (u >= 0 && v >= 0 && u < W && v < H ? height[v * W + u]! : 0);
-  for (const c of seats) {
-    const u = c % W;
-    const v = (c / W) | 0;
-    const h = height[c]!;
-    const x0 = u * C;
-    const x1 = (u + 1) * C;
-    const y0 = v * C;
-    const y1 = (v + 1) * C;
-    // The two faces this viewpoint sees: south and east, where the neighbour is lower.
-    const south = hOf(u, v + 1);
-    if (south < h) {
-      const outer = !inBowl(u, v + 1);
-      shell.poly(quad([[x0, y1, south], [x1, y1, south], [x1, y1, h], [x0, y1, h]]), true).fill(outer ? (Math.floor(h / 3) % 2 ? 0x8a8780 : 0x9b978e) : 0x5b5e66);
+  for (let start = 0; start < seats.length;) {
+    const first = seats[start]!;
+    const d = first % W + Math.floor(first / W);
+    let end = start + 1;
+    while (end < seats.length && seats[end]! % W + Math.floor(seats[end]! / W) === d) end++;
+    const g = new Graphics();
+    g.zIndex = diagonalZ(d);
+    shell.push({ d, g });
+    // Every face precedes every top on this diagonal, so a face cannot cover its neighbour's seat.
+    for (let k = start; k < end; k++) {
+      const c = seats[k]!;
+      const u = c % W;
+      const v = (c / W) | 0;
+      const h = height[c]!;
+      const x0 = u * C;
+      const x1 = (u + 1) * C;
+      const y0 = v * C;
+      const y1 = (v + 1) * C;
+      // The two faces this viewpoint sees: south and east, where the neighbour is lower.
+      const south = hOf(u, v + 1);
+      if (south < h) {
+        const outer = !inBowl(u, v + 1);
+        g.poly(quad([[x0, y1, south], [x1, y1, south], [x1, y1, h], [x0, y1, h]]), true).fill(outer ? (Math.floor(h / 3) % 2 ? 0x8a8780 : 0x9b978e) : 0x5b5e66);
+      }
+      const east = hOf(u + 1, v);
+      if (east < h) {
+        const outer = !inBowl(u + 1, v);
+        g.poly(quad([[x1, y0, east], [x1, y1, east], [x1, y1, h], [x1, y0, h]]), true).fill(outer ? (Math.floor(h / 3) % 2 ? 0xa29e95 : 0xb2ada3) : 0x6b6e76);
+      }
     }
-    const east = hOf(u + 1, v);
-    if (east < h) {
-      const outer = !inBowl(u + 1, v);
-      shell.poly(quad([[x1, y0, east], [x1, y1, east], [x1, y1, h], [x1, y0, h]]), true).fill(outer ? (Math.floor(h / 3) % 2 ? 0xa29e95 : 0xb2ada3) : 0x6b6e76);
+    for (let k = start; k < end; k++) {
+      const c = seats[k]!;
+      const u = c % W;
+      const v = (c / W) | 0;
+      const h = height[c]!;
+      const x0 = u * C;
+      const x1 = (u + 1) * C;
+      const y0 = v * C;
+      const y1 = (v + 1) * C;
+      // Seats: scarlet and grey sections around the bowl, a lighter aisle every few.
+      const angle = Math.atan2(v - cy, u - cx);
+      const section = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * 28);
+      const aisle = Math.abs(((angle + Math.PI) / (Math.PI * 2)) * 28 - section - 0.5) > 0.46;
+      const row = Math.round(h / TIER_STEP) % 2;
+      const seat = aisle ? 0xb9b4aa : section % 2 ? (row ? 0x9c1c24 : 0x8a1820) : row ? 0x6d7179 : 0x62666e;
+      g.poly(quad([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]), true).fill(seat);
     }
-    // Seats: scarlet and grey sections around the bowl, a lighter aisle every few.
-    const angle = Math.atan2(v - cy, u - cx);
-    const section = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * 28);
-    const aisle = Math.abs(((angle + Math.PI) / (Math.PI * 2)) * 28 - section - 0.5) > 0.46;
-    const row = Math.round(h / TIER_STEP) % 2;
-    const seat = aisle ? 0xb9b4aa : section % 2 ? (row ? 0x9c1c24 : 0x8a1820) : row ? 0x6d7179 : 0x62666e;
-    shell.poly(quad([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]), true).fill(seat);
+    start = end;
   }
 
   // The field: turf in ten-yard stripes, white lines every five yards, scarlet end zones.

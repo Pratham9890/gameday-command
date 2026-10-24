@@ -7,6 +7,8 @@ import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands, type HeatBand } from './heat.ts';
 import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from './people.ts';
 import { paintFor } from './vehicleArt.ts';
+import { diagonalZ, heightAt, personZ, vehicleDiagonal } from './depth.ts';
+import { DiagonalPool } from './diagonal-pool.ts';
 import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
@@ -237,18 +239,6 @@ function makeParts(): Parts {
   return { shadow, ring, legs, torso, head, bubble };
 }
 
-/** Screen depth of the bowl's centre line, in the units person zIndex uses. */
-function bowlDepth(map: MapBundle): number {
-  let sum = 0;
-  let n = 0;
-  for (let c = 0; c < map.cells.length; c++) {
-    if (map.cells[c] !== 'stands') continue;
-    sum += (c % map.width) + Math.floor(c / map.width);
-    n++;
-  }
-  return n > 0 ? ((sum / n + 1) * CELL_SIZE_M) / 2 : 0;
-}
-
 /** A police post: a small blue booth with a light bar, in the depth-sorted layer with everyone else. */
 function buildStation(cell: number, width: number): Graphics {
   const C = CELL_SIZE_M;
@@ -272,7 +262,7 @@ function buildStation(cell: number, width: number): Graphics {
   const mid = (x0 + x1) / 2;
   g.poly(quad([[mid - 1.2, y0 + 1, h], [mid, y0 + 1, h], [mid, y1 - 1, h], [mid - 1.2, y1 - 1, h]]), true).fill(0xe5484d);
   g.poly(quad([[mid, y0 + 1, h], [mid + 1.2, y0 + 1, h], [mid + 1.2, y1 - 1, h], [mid, y1 - 1, h]]), true).fill(OFFICER);
-  g.zIndex = ((u + v + 2) * C) / 2;
+  g.zIndex = diagonalZ(u + v);
   return g;
 }
 
@@ -388,8 +378,8 @@ function buildBuildings(map: MapBundle, snow = 0): Graphics[] {
     }
     if (!g) continue;
     roofs.forEach((r, k) => g!.poly(quad(r), true).fill(colors[k]!));
-    // Just before a figure standing on the line in front of this diagonal.
-    g.zIndex = ((d + 1) * C) / 2 - 0.001;
+    // Figures anywhere in this diagonal sort after its roofs.
+    g.zIndex = diagonalZ(d);
     diagonals.set(d, g);
   }
   return [...diagonals.values()];
@@ -421,8 +411,9 @@ export class CrowdScene {
   /** One Graphics per diagonal, sorted in with the people (see buildBuildings). */
   private buildings: Graphics[] = [];
   private buildingSnow = -1;
-  private parked = new Graphics();
-  private moving = new Graphics();
+  // Between seated tint (+0.0005) and figures (+0.001): pedestrians beside a car stay visible.
+  private parked = new DiagonalPool(this.people, 0.0008);
+  private moving = new DiagonalPool(this.people, 0.0008);
   private beams = new Graphics();
   private parkedKey = '';
   /** The padded window the parked layer was last drawn for, in world units. */
@@ -432,7 +423,7 @@ export class CrowdScene {
   private selectedVehicle: number | null = null;
   private bands: HeatBand[];
   private bowl: Bowl | null = null;
-  private standsCrowd = new Graphics();
+  private standsCrowd = new DiagonalPool(this.people, 0.0005);
   private flow!: Layer;
   private flowCells: Uint8Array | null = null;
   private standing: Float32Array | null = null;
@@ -537,22 +528,15 @@ export class CrowdScene {
     this.people.addChild(...this.buildings);
     for (const station of policeStations(map)) this.people.addChild(buildStation(station.cell, map.width));
     // Beams, glows and officer routes lie on the ground, under everything.
-    // Vehicles go above the depth-sorted layer: a car beside a wall is never
-    // cut off by it.
+    // Vehicles share the depth-sorted layer so cars behind pedestrians or buildings stay behind them.
     const lanes = buildStreetLines(map);
     this.world.addChild(slab, this.ground);
     if (this.bowl) {
       this.world.addChild(this.bowl.turf);
-      // The bowl sorts in with buildings and people at its centre line, so a
-      // building or fan behind the stadium goes behind it and one in front
-      // stays in front. As a layer of its own it either covered every building
-      // in front of it or was covered by every building behind it.
-      const depth = bowlDepth(map);
-      this.bowl.shell.zIndex = depth;
-      this.standsCrowd.zIndex = depth + 0.0005;
-      this.people.addChild(this.bowl.shell, this.standsCrowd);
+      // Per-diagonal tiers let fans on the far half of the bowl stand above their own seats.
+      for (const { g } of this.bowl.shell) this.people.addChild(g);
     }
-    this.world.addChild(lanes, this.beams, this.routes, this.people, this.parked, this.moving, this.ripple, this.officers, this.marker);
+    this.world.addChild(lanes, this.beams, this.routes, this.people, this.ripple, this.officers, this.marker);
     app.stage.addChild(this.world);
 
     this.makeLabels();
@@ -882,10 +866,7 @@ export class CrowdScene {
     const bowl = this.bowl;
     if (!bowl) return 0;
     const { width, height } = this.init.map;
-    const u = Math.floor(x / CELL_SIZE_M);
-    const v = Math.floor(y / CELL_SIZE_M);
-    if (u < 0 || v < 0 || u >= width || v >= height) return 0;
-    return bowl.height[v * width + u]!;
+    return heightAt(bowl.height, width, height, x, y);
   }
 
   setHeat(on: boolean): void {
@@ -1013,8 +994,7 @@ export class CrowdScene {
    */
   private paintStands(frame: SceneFrame): void {
     const bowl = this.bowl;
-    const g = this.standsCrowd;
-    g.clear();
+    this.standsCrowd.clear();
     if (!bowl || !frame.density || !this.standing || !this.seated) return;
     const { width } = this.init.map;
     const rho = this.standing;
@@ -1022,6 +1002,8 @@ export class CrowdScene {
     const bands = this.bands;
     const picked = this.selectedBand;
     const C = CELL_SIZE_M;
+    let diagonal = -1;
+    let g: Graphics | null = null;
     for (let k = 0; k < bowl.seats.length; k++) {
       const c = bowl.seats[k]!;
       const v = rho[c]!;
@@ -1044,12 +1026,16 @@ export class CrowdScene {
       }
       const u = c % width;
       const w = (c / width) | 0;
+      if (diagonal !== u + w) {
+        diagonal = u + w;
+        g = this.standsCrowd.get(diagonal);
+      }
       const h = bowl.height[c]! + 0.05;
       const pts = [
         isoProject(u * C + 0.2, w * C + 0.2, h), isoProject((u + 1) * C - 0.2, w * C + 0.2, h),
         isoProject((u + 1) * C - 0.2, (w + 1) * C - 0.2, h), isoProject(u * C + 0.2, (w + 1) * C - 0.2, h),
       ];
-      g.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
+      g!.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
     }
   }
 
@@ -1310,7 +1296,9 @@ export class CrowdScene {
       parked.sort((a, b) => v.x[a]! + v.y[a]! - (v.x[b]! + v.y[b]!));
       for (const i of parked) {
         const kind = VEHICLE_KINDS[v.kind[i]!]!;
-        this.drawVehicle(this.parked, i, kind, v.x[i]!, v.y[i]!, v.heading[i]!, {
+        const type = VEHICLE_TYPES[kind];
+        const d = vehicleDiagonal(v.x[i]!, v.y[i]!, v.heading[i]!, type.lengthM, type.widthM);
+        this.drawVehicle(this.parked.get(d), i, kind, v.x[i]!, v.y[i]!, v.heading[i]!, {
           detail,
           state: v.state[i]!,
           dim: this.vehicleFocus !== null && this.vehicleFocus !== kind,
@@ -1344,7 +1332,9 @@ export class CrowdScene {
         const strobe = flash ? (strobePhase ? 0xff2a2a : kind === 'police' ? 0x2a6bff : 0xffffff) : null;
         this.drawGlow(x, y, h, VEHICLE_TYPES[kind].lengthM, dark && st !== VSTATE.on_scene, st === VSTATE.stopped, strobe);
       }
-      this.drawVehicle(this.moving, i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
+      const type = VEHICLE_TYPES[kind];
+      const d = vehicleDiagonal(x, y, h, type.lengthM, type.widthM);
+      this.drawVehicle(this.moving.get(d), i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
     }
   }
 
@@ -1400,7 +1390,7 @@ export class CrowdScene {
     let best: string | null = null;
     let bestSq = reach * reach;
     for (const o of this.officerPositions(performance.now())) {
-      const p = isoProject(o.x, o.y, 1.2 * k);
+      const p = isoProject(o.x, o.y, 1.2 * k + this.liftAt(o.x, o.y));
       const dx = p.sx * s + this.cam.x - px;
       const dy = p.sy * s + this.cam.y - py;
       const sq = dx * dx + dy * dy;
@@ -1533,7 +1523,7 @@ export class CrowdScene {
         const person = this.person(used++);
         person.c.visible = true;
         person.c.position.set(p.sx, p.sy);
-        person.c.zIndex = p.sy;
+        person.c.zIndex = personZ(pos.x, pos.y);
         const state = cur.state[i]!;
         person.ring.tint = rgbNum(STATE_RGB[state] ?? STATE_RGB[3]!);
         person.torso.tint = shirtColor(types, this.typeIndex?.[i] ?? 0);
@@ -1619,16 +1609,17 @@ export class CrowdScene {
         }));
 
     for (const o of officers) {
-      const p = isoProject(o.x, o.y);
+      const p = isoProject(o.x, o.y, this.liftAt(o.x, o.y));
       // Where they are headed: a dotted line to the post, so a dispatch is visible.
       if (o.state === 'en_route' && o.targetCell >= 0) {
+        const ground = isoProject(o.x, o.y);
         const t = centre(o.targetCell);
-        const len = Math.hypot(t.sx - p.sx, t.sy - p.sy);
+        const len = Math.hypot(t.sx - ground.sx, t.sy - ground.sy);
         const dash = Math.max(1.5, 6 / s);
         for (let d = 0; d < len; d += dash * 2) {
           const a = d / len;
           const b = Math.min(1, (d + dash) / len);
-          this.routes.moveTo(p.sx + (t.sx - p.sx) * a, p.sy + (t.sy - p.sy) * a).lineTo(p.sx + (t.sx - p.sx) * b, p.sy + (t.sy - p.sy) * b);
+          this.routes.moveTo(ground.sx + (t.sx - ground.sx) * a, ground.sy + (t.sy - ground.sy) * a).lineTo(ground.sx + (t.sx - ground.sx) * b, ground.sy + (t.sy - ground.sy) * b);
         }
         this.routes.stroke({ color: OFFICER, width: Math.max(0.25, 2 / s), alpha: 0.85 });
         this.routes.circle(t.sx, t.sy, 1.4 * k).stroke({ color: OFFICER, width: Math.max(0.2, 1.5 / s) });
