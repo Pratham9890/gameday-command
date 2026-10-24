@@ -293,7 +293,10 @@ export class FlowMovement implements MovementModel {
         continue;
       }
 
-      const field = this.fields.field(target, map.places[target]?.kind === 'gate');
+      // Gates are approached from outside, so routes to them do not cut through
+      // the bowl — unless the fan is already inside it and leaving, in which
+      // case the way out is through the bowl by definition.
+      const field = this.fields.field(target, map.places[target]?.kind === 'gate' && !this.insideBowl(ctx, cell));
       const best = field.dir[cell]!;
       if (best === 0) {
         // No route: a closed gate or a sealed street. They wait where they are.
@@ -466,15 +469,22 @@ export class FlowMovement implements MovementModel {
     dots.setState(i, 'walking');
   }
 
+  /** True when this cell is inside the stadium bowl. */
+  private insideBowl(ctx: SimContext, cell: number): boolean {
+    const kind = ctx.map.cells[cell];
+    return kind === 'stands' || kind === 'concourse';
+  }
+
   /** Nearest place from a list, by walking distance from where the dot stands. */
   private nearest(ctx: SimContext, i: number, candidates: number[], exclude = -1): number {
     const cell = this.cellOf(ctx, i);
     if (cell < 0) return -1;
+    const inside = this.insideBowl(ctx, cell);
     let best = -1;
     let bestDist = UNREACHABLE;
     for (const index of candidates) {
       if (index === exclude) continue;
-      const d = this.fields.field(index, ctx.map.places[index]?.kind === 'gate').dist[cell]!;
+      const d = this.fields.field(index, ctx.map.places[index]?.kind === 'gate' && !inside).dist[cell]!;
       if (d < bestDist) {
         bestDist = d;
         best = index;
@@ -522,6 +532,9 @@ export class FlowMovement implements MovementModel {
         return;
 
       case 'exit_route':
+        // On the way out a gate is a door, not a turnstile: mark them admitted
+        // so reaching it does not put them back in the entry queue.
+        this.admitted[dot] = 1;
         if (option === 'nearest_exit') this.retarget(ctx, dot, this.nearest(ctx, dot, this.exitIndexes));
         else if (option === 'my_gate') this.retarget(ctx, dot, this.homeGate[dot]!);
         return;

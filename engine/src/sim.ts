@@ -103,7 +103,12 @@ export class Simulation {
     for (const officer of this.ctx.officers) {
       this.officerPos.set(officer.id, this.cellCenter(officer.cell));
     }
-    this.hooks = createWorldHooks(config.incident, config.plan);
+    // A package at game end only makes sense alongside the crowd leaving.
+    this.hooks = createWorldHooks(
+      config.incident,
+      config.plan,
+      config.incident.kind === 'suspicious_package' ? config.incident.at : undefined,
+    );
     this.scorer = new Scorer({
       runId: config.runId,
       planId: config.plan.id,

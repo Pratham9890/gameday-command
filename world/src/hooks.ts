@@ -30,9 +30,10 @@ export interface WorldRuntime extends WorldHooks {
  * Plan action times are relative to Incident.at, per the contract, so every
  * comparison run sees its plan at the same offset from the same moment.
  */
-export function createWorldHooks(incident: Incident, plan: ResponsePlan): WorldRuntime {
+export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEndAt?: SimSeconds): WorldRuntime {
   const applied = new Set<number>();
   let incidentRaised = false;
+  let exodusRaised = false;
   let committed = 0;
   const assigned = new Set<Id>();
 
@@ -77,6 +78,13 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan): WorldR
 
   return {
     onStep(t: SimSeconds, world: WorldView, act: WorldActions): void {
+      // The game ends and the stands empty, whatever else is happening. The
+      // suspicious package scenario is about a street closing into that exodus.
+      if (gameEndAt !== undefined && !exodusRaised && t >= gameEndAt) {
+        exodusRaised = true;
+        act.raiseSituation('exit_route');
+      }
+
       if (t < incident.at) return;
 
       if (!incidentRaised) {

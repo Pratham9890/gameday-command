@@ -52,6 +52,9 @@ export function expandCells(map: MapBundle, cells: readonly number[], radius: nu
   return [...out].sort((a, b) => a - b);
 }
 
+/** Kickoff plus three and a half hours: the gates let out. */
+export const GAME_END_S = 3.5 * 3600;
+
 /** The gate nearest due north, which is where a late crowd piles in. */
 export function northGate(map: MapBundle) {
   const gates = placesOfKind(map, 'gate');
@@ -88,4 +91,57 @@ export function testGateSurge(map: MapBundle, at = 0): Incident {
     safeCount: safeCountFor(cells),
     note: `Late crowd piling into ${gate.name}`,
   };
+}
+
+
+/**
+ * A lightning delay: everyone in the stands has to get out of the open.
+ *
+ * The zone is the seating deck, which is both who gets asked and what "clear"
+ * means — the delay is over when the stands are empty. A plan's shelter order
+ * raises for every fan on the map, inside or out; this is the part that is
+ * measured.
+ */
+export function lightningDelay(map: MapBundle, at = 1800): Incident {
+  const stands = placesOfKind(map, 'seating')[0];
+  return {
+    id: 'inc-lightning',
+    kind: 'lightning_delay',
+    at,
+    placeId: stands?.id,
+    cells: stands?.cells,
+    safeCount: 0,
+    note: 'Lightning within 8 miles. Everyone in the stands has to get out of the open.',
+  };
+}
+
+/** The street a suspicious package would close: the longest one on the map. */
+export function biggestStreet(map: MapBundle) {
+  return map.closables
+    .filter((c) => c.id.startsWith('street-') || /lane|plaza/i.test(c.id))
+    .sort((a, b) => b.cells.length - a.cells.length)[0];
+}
+
+/** A suspicious package closing a street as the game lets out. */
+export function suspiciousPackage(map: MapBundle, at = GAME_END_S): Incident {
+  const street = biggestStreet(map) ?? map.closables[map.closables.length - 1];
+  if (!street) throw new Error('map has nothing closable for a package incident');
+  return {
+    id: 'inc-package',
+    kind: 'suspicious_package',
+    at,
+    cells: street.cells,
+    safeCount: safeCountFor(street.cells),
+    note: `Unattended bag on ${street.name}. The street closes as the game lets out.`,
+  };
+}
+
+/** The three incidents the commander can trigger. */
+export function incidentsFor(map: MapBundle): Incident[] {
+  return [gateSurge(map, 0), lightningDelay(map), suspiciousPackage(map)];
+}
+
+/** The sim window to run an incident in: the crowd still builds from kickoff minus 60. */
+export function windowFor(incident: Incident): { startAt: number; endAt: number } {
+  return { startAt: -3600, endAt: Math.max(900, incident.at + 1800) };
 }

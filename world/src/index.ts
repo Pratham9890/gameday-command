@@ -1,5 +1,20 @@
 export { makeTestMap, TEST_GATE_XS, TEST_GATE_THROUGHPUT_PER_MIN, TEST_MAP_WIDTH, TEST_MAP_HEIGHT } from './test-map.ts';
-export { CLEAR_DENSITY, INCIDENT_LABELS, expandCells, gateSurge, northGate, placesOfKind, safeCountFor, testGateSurge } from './incidents.ts';
+export {
+  CLEAR_DENSITY,
+  GAME_END_S,
+  INCIDENT_LABELS,
+  biggestStreet,
+  expandCells,
+  gateSurge,
+  incidentsFor,
+  lightningDelay,
+  northGate,
+  placesOfKind,
+  safeCountFor,
+  suspiciousPackage,
+  testGateSurge,
+  windowFor,
+} from './incidents.ts';
 export { playbookFor } from './playbook.ts';
 export { Scorer, type ScoreSample, type ScorerInit } from './scoring.ts';
 export { createWorldHooks, type WorldRuntime } from './hooks.ts';
