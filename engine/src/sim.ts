@@ -236,7 +236,11 @@ export class Simulation {
       const reached: number[] = [];
       for (let i = 0; i < dots.count; i++) {
         if (dots.state[i] === GONE) continue;
-        if (inZone && !inZone.has(this.cellOfDot(i))) continue;
+        // Off the map means they have not arrived yet: a fan in their car is not
+        // in the zone and cannot be reached by a PA announcement.
+        const cell = this.cellOfDot(i);
+        if (cell < 0) continue;
+        if (inZone && !inZone.has(cell)) continue;
         if (raise.reachShare !== undefined && rng.next() >= raise.reachShare) continue;
         reached.push(i);
       }

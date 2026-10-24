@@ -1,5 +1,5 @@
 import type { DensityGrid, TickFrame, WorkerIn, WorkerOut } from '../../contracts.ts';
-import { CircleMovement } from './movement-circle.ts';
+import { FlowMovement } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
 /**
@@ -75,7 +75,7 @@ host.onmessage = (event) => {
           defaults: message.defaults,
           serverUrl: message.serverUrl,
           replay: message.replay,
-          movement: new CircleMovement(),
+          movement: new FlowMovement(),
           emit: send,
         });
         send({ type: 'ready', runId: message.config.runId });

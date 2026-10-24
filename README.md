@@ -73,9 +73,15 @@ Copy `.env.example` to `.env` to change ports or the Kev URL.
 
 ## Where things stand
 
-Milestone 1 is in: workspaces, the frozen contract wired through every lane, the tiny 3-gate test map, one gate-surge incident with three editable plans, even-odds decisions with the full pause/fallback/tape path, a seeded engine with snapshot and restore, the Hono server with the contract's routes, and the Pixi app drawing three runs side by side.
+The real engine runs. Fans arrive on their type's schedule, walk a flow field to the nearest gate by walking distance, queue there against the gate's actual throughput, get admitted, and find a seat. Walking speed falls as the cell they are in fills up. Closing a gate or a street reroutes everyone, and a `redirect` only moves fans an alert actually reached who chose to follow it.
 
-Movement is still a stand-in: dots orbit where they spawned so every other lane could be built against real `TickFrame`s. Flow fields and density-limited walking speed are next, then the stadium map, then all three incidents with the briefing and replay.
+Measured on an 800x800 grid (the stadium plus half a mile at 2 m cells) with 20,000 dots standing for 100,000 fans, in one worker:
+
+- **140x real time** for movement
+- **107x real time** through a lightning delay that asks every dot at once
+- **57,974 dot decisions collapse to 121 distinct model calls**
+
+Still to come: the real OpenStreetMap stadium map, live Kev decisions end to end, all three incidents, the briefing through Apple's on-device model, and the replay scrubber.
 
 ## Rules this project holds to
 
