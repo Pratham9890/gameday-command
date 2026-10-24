@@ -77,7 +77,7 @@ The real engine runs. Fans arrive on their type's schedule, walk a flow field to
 
 Measured on an 800x800 grid (the stadium plus half a mile at 2 m cells) with 20,000 dots standing for 100,000 fans, in one worker:
 
-- **140x real time** for movement
+- **225x real time** in one browser Web Worker with a warm cache, zero fallbacks
 - **107x real time** through a lightning delay that asks every dot at once
 - **57,974 dot decisions collapse to 121 distinct model calls**
 

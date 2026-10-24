@@ -28,6 +28,9 @@ const KEV_MODEL = process.env.KEV_MODEL ?? 'kev-latest';
 const KEV_TIMEOUT_MS = Number(process.env.KEV_TIMEOUT_MS ?? Math.round(DECISION_TIMEOUT_MS * 0.75));
 /** How many questions to have in flight at once. One GPU answers roughly serially. */
 const KEV_CONCURRENCY = Number(process.env.KEV_CONCURRENCY ?? 4);
+/** Background warming has no commander waiting on it, so it can be patient. */
+const KEV_WARM_TIMEOUT_MS = Number(process.env.KEV_WARM_TIMEOUT_MS ?? 30000);
+const WARM_TIMEOUT_MS = KEV_WARM_TIMEOUT_MS;
 const PORT = Number(process.env.PORT ?? 8787);
 const FM_URL = process.env.FM_URL ?? 'http://127.0.0.1:8080';
 const FM_MODEL = process.env.FM_MODEL ?? 'system';
@@ -57,11 +60,76 @@ function defaultMap(): MapBundle {
   return mapById(STADIUM_MAP_ID) ?? mapById(TEST_MAP_ID)!;
 }
 
+/**
+ * Keys that ran out of time, fetched afterwards without a deadline.
+ *
+ * Kev answers in about 250 ms, so a lightning delay that raises well over a
+ * hundred keys at once can only have a handful answered inside the engine's 2 s
+ * pause — the rest fall back, as the contract says they must. Without this they
+ * would fall back on every future run too, and the demo would never become
+ * model-driven. Here the server keeps fetching them quietly in the background,
+ * so a scenario run a second time is answered from cache rather than guessed.
+ *
+ * Deliberately shallow: two at a time (Kev serialises on one GPU), each key
+ * once, and a bounded queue, so warming never competes with the run in front of
+ * the commander.
+ */
+const WARM_CONCURRENCY = 2;
+const WARM_QUEUE_MAX = 500;
+
+function makeWarmer(db: Db) {
+  const queued = new Set<string>();
+  const pending: { ask: DecisionAsk; situation: (typeof SITUATIONS)[keyof typeof SITUATIONS] }[] = [];
+  let running = 0;
+
+  const write = db.prepare(
+    'insert or replace into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
+  );
+  const seen = db.prepare<[string], { key: string }>('select key from decision_cache where key = ?');
+
+  const pump = () => {
+    while (running < WARM_CONCURRENCY && pending.length > 0) {
+      const job = pending.shift()!;
+      running++;
+      void askKev(job.ask, job.situation, { url: KEV_URL, model: KEV_MODEL, timeoutMs: WARM_TIMEOUT_MS })
+        .then((result) => {
+          const options = job.situation.options.map((o) => o.key);
+          if (result && oddsAreValid(result.odds, options)) {
+            write.run(job.ask.key, JSON.stringify(result.odds), result.model, result.ms, Date.now());
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          queued.delete(job.ask.key);
+          running--;
+          pump();
+        });
+    }
+  };
+
+  return (ask: DecisionAsk, situation: (typeof SITUATIONS)[keyof typeof SITUATIONS]) => {
+    if (queued.has(ask.key) || pending.length >= WARM_QUEUE_MAX) return;
+    if (seen.get(ask.key)) return;
+    queued.add(ask.key);
+    pending.push({ ask, situation });
+    pump();
+  };
+}
+
 export function createApp(db: Db): Hono {
+  const warmLater = makeWarmer(db);
+
   const app = new Hono();
 
   app.get('/api/health', (c) =>
-    c.json({ ok: true, kev: KEV_URL, fm: FM_URL, stadiumMap: extractExists(), defaultMapId: defaultMap().id }),
+    c.json({
+      ok: true,
+      kev: KEV_URL,
+      fm: FM_URL,
+      stadiumMap: extractExists(),
+      defaultMapId: defaultMap().id,
+      cachedDecisions: (db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n,
+    }),
   );
 
   app.get('/api/maps/:id', (c) => {
@@ -136,11 +204,15 @@ export function createApp(db: Db): Hono {
         const situation = SITUATIONS[ask.situation];
         if (!situation || remaining < 100) {
           answers.set(ask.key, fallbackFor(ask));
+          // Out of time, but not out of interest: fetch it in the background so
+          // the next run of this scenario finds it in the cache.
+          if (situation) warmLater(ask, situation);
           continue;
         }
         const result = await askKev(ask, situation, { url: KEV_URL, model: KEV_MODEL, timeoutMs: remaining });
         if (!result || !oddsAreValid(result.odds, optionsFor(ask))) {
           answers.set(ask.key, fallbackFor(ask));
+          warmLater(ask, situation);
           continue;
         }
         writeCache.run(ask.key, JSON.stringify(result.odds), result.model, result.ms, Date.now());

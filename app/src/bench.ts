@@ -7,8 +7,8 @@
  * pathologically slow under software GL — so a page that renders would measure
  * the renderer rather than the engine.
  */
-import type { DecisionDefaults, MapBundle, Scorecard, SimConfig, WorkerIn, WorkerOut } from '../../contracts.ts';
-import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE } from '../../contracts.ts';
+import type { DecisionDefaults, MapBundle, Scorecard, SimConfig, Snapshot, WorkerIn, WorkerOut } from '../../contracts.ts';
+import { CONTRACT_VERSION, DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE } from '../../contracts.ts';
 import { makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { gateSurge, windowFor } from '../../world/src/incidents.ts';
@@ -62,10 +62,24 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
   let pausedMs = 0;
   let decidingAt = 0;
 
+  let snapshot: Snapshot | null = null;
+  let askedForSnapshot = false;
+
   const done = new Promise<Scorecard>((resolve, reject) => {
     worker.onmessage = (event: MessageEvent<WorkerOut>) => {
       const message = event.data;
-      if (message.type === 'frame') frames++;
+      if (message.type === 'frame') {
+        frames++;
+        // Part way in, ask the worker for a snapshot: the contract's restart
+        // point has to come out of the worker itself, not just the engine
+        // module under Node.
+        if (frames === 20 && !askedForSnapshot) {
+          askedForSnapshot = true;
+          worker.postMessage({ type: 'snapshot' } satisfies WorkerIn);
+        }
+      } else if (message.type === 'snapshot') {
+        snapshot = message.snapshot;
+      }
       else if (message.type === 'deciding') {
         pauses++;
         keys += message.pendingKeys;
@@ -96,6 +110,28 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
   const wallSeconds = (performance.now() - started) / 1000;
   worker.terminate();
 
+  const snap = snapshot as Snapshot | null;
+  const snapshotCheck = snap
+    ? {
+        ok:
+          snap.version === CONTRACT_VERSION &&
+          Number.isFinite(snap.t) &&
+          snap.rngState.length === 4 &&
+          snap.dots.x.length === population.dots &&
+          snap.dots.y.length === population.dots &&
+          snap.dots.state.length === population.dots &&
+          snap.dots.typeIndex.length === population.dots &&
+          snap.dots.targetPlace.length === population.dots &&
+          Array.isArray(snap.officers) &&
+          snap.officers.length > 0,
+        t: snap.t,
+        rngState: snap.rngState.length,
+        dots: snap.dots.x.length,
+        officers: snap.officers.length,
+        closed: snap.closed.length,
+      }
+    : { ok: false, reason: 'no snapshot came back from the worker' };
+
   const simSeconds = config.endAt - config.startAt;
   const ratio = simSeconds / wallSeconds;
   const result = {
@@ -112,6 +148,7 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
     sources,
     peakDensity: card.peakDensity,
     fallbackDecisions: card.fallbackDecisions,
+    snapshot: snapshotCheck,
   };
 
   log(
@@ -119,15 +156,23 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
       `(${frames} frames, ${pauses} pause(s) over ${keys} keys costing ${(pausedMs / 1000).toFixed(1)}s)`,
   );
   log(`${label}: decisions ${JSON.stringify(sources)}, peak ${card.peakDensity.toFixed(2)}/m², fallbacks ${card.fallbackDecisions}`);
+  log(`${label}: worker snapshot ${JSON.stringify(snapshotCheck)}`);
   return result;
 }
 
 (async () => {
   try {
     // First pass warms the server's decision cache; the second is the measurement.
-    const warm = await run('warm-up pass', 100_000 / 1);
+    const warm = await run('warm-up pass', 100_000);
     const measured = await run('measured (warm cache)', 100_000);
-    window.benchResult = { warm, measured, dotGroupSize: DOT_GROUP_SIZE, ok: measured.timesRealTime as number >= 10 };
+    window.benchResult = {
+      warm,
+      measured,
+      dotGroupSize: DOT_GROUP_SIZE,
+      ok:
+        (measured.timesRealTime as number) >= 10 &&
+        (measured.snapshot as { ok: boolean }).ok,
+    };
     log(`\nRESULT: ${(measured.timesRealTime as number) >= 10 ? 'PASS' : 'FAIL'} — requirement 3 wants 10x or faster.`);
   } catch (error) {
     log(`bench failed: ${error instanceof Error ? error.message : String(error)}`);
