@@ -89,6 +89,20 @@ All three incidents work — a lightning delay, a gate surge at a north gate at 
 
 The commander view has the live map with a density heatmap, the incident panel, a plan editor that edits each step's timing and size, the three runs side by side, a scorecard each, the briefing, a replay scrubber over the kept frames, a deciding indicator while sim time waits on Kev, and dot detail — click any dot to see which group it belonged to, what it was deciding, the odds it was given, and whether a model or the fallback table answered.
 
+### The demo, driven end to end
+
+Last run in a fresh Chrome profile with Kev-4B and `fm serve` both live, on the real stadium map with 100,000 fans:
+
+| | Plan A, six officers | Plan B, open Gate 2 + PA | Plan C, close Gate 1 |
+| --- | --- | --- | --- |
+| time to clear | **6 min** | 9 min | **never** |
+| peak density | 5.00 /m² | 5.00 /m² | 5.00 /m² |
+| officer minutes | 180 | 60 | 120 |
+| fans not reached | 100,000 | 99,205 | 49,935 |
+| fallback decisions | **0** | 358 | 401 |
+
+Closing the hot gate never clears it — the crowd piles up outside. Opening a relief gate reaches almost everyone but takes longer. Six officers clears fastest and reaches nobody. That is the tradeoff the commander is being shown, and the briefing underneath it is written by the on-device model from those numbers alone.
+
 ### Verified, and not
 
 | Requirement | State |

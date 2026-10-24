@@ -19,6 +19,13 @@ const SITUATION_FOR_INCIDENT: Record<IncidentKind, SituationId> = {
   fight: 'heard_rumor',
 };
 
+/**
+ * How often an officer on station repeats the commander's order to the fans
+ * around them, in sim seconds. Officers are not a loudspeaker: they work the
+ * crowd in front of them over and over.
+ */
+const OFFICER_REPEAT_S = 90;
+
 export interface WorldRuntime extends WorldHooks {
   /** Officers the plan has committed so far, for officer minutes on the scorecard. */
   committedOfficers(): number;
@@ -36,6 +43,11 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
   let exodusRaised = false;
   let committed = 0;
   const assigned = new Set<Id>();
+  /** Officer id -> the cell they were sent to, so we know when they are on station. */
+  const posts = new Map<Id, number>();
+  /** The order officers pass on, set by whichever plan step spoke last. */
+  let standingOrder: SituationId | null = null;
+  let lastRepeat = -Infinity;
 
   function sendOfficers(count: number, toPlaceId: Id, world: WorldView, act: WorldActions): void {
     const target = world.map.places.find((p) => p.id === toPlaceId);
@@ -44,9 +56,29 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
     const free = world.officers.filter((o) => !assigned.has(o.id)).slice(0, count);
     for (const officer of free) {
       assigned.add(officer.id);
+      posts.set(officer.id, cell);
       act.moveOfficer(officer.id, cell);
     }
     committed += free.length;
+  }
+
+  /** Cells within earshot of every officer who has reached the post they were sent to. */
+  function officerReach(world: WorldView): number[] {
+    const { width, height } = world.map;
+    const cells = new Set<number>();
+    for (const officer of world.officers) {
+      const post = posts.get(officer.id);
+      if (post === undefined || officer.cell !== post) continue; // still walking
+      const cx = officer.cell % width;
+      const cy = Math.floor(officer.cell / width);
+      const r = officer.radiusCells;
+      for (let y = Math.max(0, cy - r); y <= Math.min(height - 1, cy + r); y++) {
+        for (let x = Math.max(0, cx - r); x <= Math.min(width - 1, cx + r); x++) {
+          cells.add(y * width + x);
+        }
+      }
+    }
+    return [...cells];
   }
 
   function apply(action: ResponsePlan['actions'][number], world: WorldView, act: WorldActions): void {
@@ -69,9 +101,12 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
         return;
       case 'redirect':
         act.setTarget(action.fromPlaceId, action.toPlaceId);
+        // Officers on station start passing the redirect on by hand.
+        standingOrder = 'officer_instruction';
         return;
       case 'shelter_order':
         act.raiseSituation('lightning_shelter');
+        standingOrder = 'lightning_shelter';
         return;
     }
   }
@@ -98,6 +133,18 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
         applied.add(i);
         apply(action, world, act);
       });
+
+      // An officer standing in the crowd is the commander's voice where the PA
+      // does not reach. Until this existed, sending officers cost officer
+      // minutes and changed nothing at all, so two plans that differed only in
+      // how many officers they sent scored identically.
+      if (standingOrder && t - lastRepeat >= OFFICER_REPEAT_S) {
+        const cells = officerReach(world);
+        if (cells.length > 0) {
+          lastRepeat = t;
+          act.raiseSituation(standingOrder, cells);
+        }
+      }
     },
     committedOfficers: () => committed,
   };
