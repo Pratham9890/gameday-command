@@ -92,7 +92,7 @@ export function Inspector({ map, types, run, label, dot, scrubbing, appliedNote,
         <div>
           <h3>{groupName(dot)}</h3>
           <p className="muted">
-            {type?.label ?? 'Fan'} · group of {DOT_GROUP_SIZE} · dot {dot} in run {label}
+            {type?.label ?? 'Fan'} · a group of {DOT_GROUP_SIZE} · Plan {label}
           </p>
         </div>
         <button className="small ghost" onClick={onClose} title="Close">
@@ -144,8 +144,8 @@ export function Inspector({ map, types, run, label, dot, scrubbing, appliedNote,
       </section>
 
       <section>
-        <h4>Latest decision</h4>
-        {!record && <p className="muted">None yet. They are walking their route.</p>}
+        <h4>Their last choice</h4>
+        {!record && <p className="muted">None yet. They are walking to where they are headed.</p>}
         {record && (
           <>
             <p>
@@ -161,14 +161,14 @@ export function Inspector({ map, types, run, label, dot, scrubbing, appliedNote,
               ))}
             </div>
             <p className={`muted${record.source === 'default' ? ' warn' : ''}`}>
-              answered by {record.source === 'default' ? 'fallback defaults' : record.source}
+              {record.source === 'default' ? 'No AI answer in time, so this used the default odds' : 'Odds from the Kev AI model of fan behavior'}
             </p>
           </>
         )}
       </section>
 
       <section className="edit">
-        <h4>Change them</h4>
+        <h4>Change this group</h4>
         <label>
           fan type
           <select value={fanType} onChange={(e) => setFanType(Number(e.target.value))}>

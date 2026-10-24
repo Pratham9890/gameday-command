@@ -1,27 +1,31 @@
-import type { PlanAction, ResponsePlan } from '../../contracts.ts';
+import type { MapBundle, PlanAction, ResponsePlan } from '../../contracts.ts';
 
 /** A one-line description of what a plan step does, in the commander's words. */
-export function describeAction(action: PlanAction): string {
+export function describeAction(action: PlanAction, map?: MapBundle): string {
+  // Plans store ids; a commander reads names.
+  const place = (id: string) => map?.places.find((p) => p.id === id)?.name ?? id;
+  const door = (id: string) => (map?.closables.find((c) => c.id === id)?.name ?? id).replace(/ door$/, '');
   switch (action.type) {
     case 'close':
-      return `Close ${action.closableId}`;
+      return `Close ${door(action.closableId)}`;
     case 'open':
-      return `Open ${action.closableId}`;
+      return `Open ${door(action.closableId)}`;
     case 'send_officers':
-      return `Send ${action.count} officers to ${action.toPlaceId}`;
+      return `Send ${action.count} officers to ${place(action.toPlaceId)}`;
     case 'hold_officers':
-      return `Hold ${action.officerIds.length} officers`;
+      return `Hold ${action.officerIds.length} officers back`;
     case 'alert':
-      return `${action.channel === 'pa' ? 'PA' : 'Phone'} alert, ${Math.round(action.reachShare * 100)}% reached`;
+      return `${action.channel === 'pa' ? 'PA announcement' : 'Phone alert'} reaching ${Math.round(action.reachShare * 100)}% of fans`;
     case 'redirect':
-      return `Redirect ${action.fromPlaceId} to ${action.toPlaceId}`;
+      return `Send ${place(action.fromPlaceId)} fans to ${place(action.toPlaceId)}`;
     case 'shelter_order':
-      return `Shelter order (${action.shelterPlaceIds.length} places)`;
+      return 'Order everyone to shelter';
   }
 }
 
 export interface PlanEditorProps {
   plan: ResponsePlan;
+  map?: MapBundle;
   /** Steps the commander has switched off, by index. */
   disabled: Set<number>;
   onChange: (plan: ResponsePlan, disabled: Set<number>) => void;
@@ -31,7 +35,7 @@ export interface PlanEditorProps {
  * Edits one plan in place. Times are minutes after the incident, which is how a
  * commander thinks about it; the contract stores seconds.
  */
-export function PlanEditor({ plan, disabled, onChange }: PlanEditorProps) {
+export function PlanEditor({ plan, map, disabled, onChange }: PlanEditorProps) {
   const update = (index: number, patch: Partial<PlanAction>) => {
     const actions = plan.actions.map((action, i) => (i === index ? ({ ...action, ...patch } as PlanAction) : action));
     onChange({ ...plan, actions }, disabled);
@@ -51,7 +55,7 @@ export function PlanEditor({ plan, disabled, onChange }: PlanEditorProps) {
           <label className="step-on">
             <input type="checkbox" checked={!disabled.has(index)} onChange={() => toggle(index)} />
           </label>
-          <span className="step-what">{describeAction(action)}</span>
+          <span className="step-what" title={describeAction(action, map)}>{describeAction(action, map)}</span>
           <label className="step-at">
             <input
               type="number"
@@ -61,7 +65,7 @@ export function PlanEditor({ plan, disabled, onChange }: PlanEditorProps) {
               value={action.at / 60}
               onChange={(e) => update(index, { at: Math.max(0, Number(e.target.value)) * 60 })}
             />
-            min
+            min in
           </label>
           {action.type === 'send_officers' && (
             <label className="step-n">
@@ -72,7 +76,7 @@ export function PlanEditor({ plan, disabled, onChange }: PlanEditorProps) {
                 value={action.count}
                 onChange={(e) => update(index, { count: Math.max(0, Number(e.target.value)) } as Partial<PlanAction>)}
               />
-              off.
+              cops
             </label>
           )}
           {action.type === 'alert' && (

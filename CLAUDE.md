@@ -102,6 +102,17 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 - `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
 - **All three runs draw into ONE PixiJS Application** (`ComparisonMaps.tsx`), as three panels of a single canvas with the base map texture shared between them. Three Applications meant three WebGL contexts and paying Pixi's GPU probe three times over. Dots are pixel bytes, the heatmap reuses one `ImageData`, the incident zone is drawn only when it changes, and the renderer is stopped and driven by hand — frames arrive every 15 sim seconds, so a running ticker redraws an unchanged scene sixty times a second.
 
+## The commander screen
+
+`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The map takes the left and one story runs down the right, as **1 · Situation**, **2 · Three plans, same crowd** and **3 · Verdict**. A dismissible "how it works" strip sits under the top bar. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+
+- **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
+- **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
+- **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work", because **both are dominated by seated fans**. The stands sit at the 5/m² cap by design, so every plan read ~175,000 danger minutes and 5.0/m². The live "dangerously packed" count skips stands cells for the same reason. Fixing this properly means teaching `world/src/scoring.ts` to leave seating out, which changes the scorecard and the briefing. It has not been done.
+- **Plan edits no longer restart the runs on every keystroke.** `inits` depends on `[loaded, generation]` only, and edits show **Restart with my changes**.
+- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The ⚠ button goes back there and ⤢ shows the whole map.
+- The canned briefing (template, used whenever `fm serve` is down) is folded under "Full numbers for every plan". It is a wall of raw figures, and the verdict sentence says the same thing in one line.
+
 ## The close-up view
 
 `app/src/CrowdView.tsx` + `app/src/crowd-scene.ts` are the default map: one run on an isometric map you can zoom into until dots become people, click one, and change them. The look follows the operator view in Cryplo/MHacks26. The A/B/C chips pick the run; **Side by side** brings back `ComparisonMaps`.
@@ -179,7 +190,7 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 
 ## Current state
 
-Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 110 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
+Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 117 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
 
 Measured on the stadium map (800x800 cells at 2 m, 100,000 fans as 20,000 dots):
 

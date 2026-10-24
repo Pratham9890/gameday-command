@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig } from '../../contracts.ts';
 import { DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S } from '../../contracts.ts';
 import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
@@ -9,7 +9,9 @@ import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.
 import { ComparisonMaps } from './ComparisonMaps.tsx';
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
-import { applyDisabled, PlanEditor } from './PlanEditor.tsx';
+import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
+import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
+import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
 
 /** One seed for every plan in a comparison: the whole point is the same crowd. */
@@ -26,9 +28,32 @@ const AUTORUN = params.get('autorun') === '1';
 const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
 const OFFICERS = 24;
+const SPEEDS = [5, 20, 60] as const;
+const DANGER = DEFAULT_DANGER_DENSITY;
 
 const fanCount = (map: MapBundle) => (map.width > 200 ? STADIUM_FANS : TEST_FANS);
 const minutes = (seconds: number) => `${seconds < 0 ? '−' : '+'}${Math.abs(Math.round(seconds / 60))} min`;
+const n = (value: number) => Math.round(value).toLocaleString();
+
+/** The situation in a sentence a judge gets on first read. */
+function pitchFor(incident: Incident, zoneName: string): string {
+  switch (incident.kind) {
+    case 'gate_surge':
+      return `A late rush piles up at ${zoneName} right at kickoff. Which plan spreads the crowd out before it gets dangerous?`;
+    case 'lightning_delay':
+      return 'Lightning 30 minutes into the game. Over 100,000 people in open stands have to get under cover. Which plan gets them there safely?';
+    case 'suspicious_package':
+      return 'An unattended bag closes a street just as the game lets out. Which plan gets everyone home without a crush?';
+    default:
+      return incident.note ?? INCIDENT_LABELS[incident.kind];
+  }
+}
+
+const STEPS_HELP: { title: string; text: string }[] = [
+  { title: 'Pick a situation', text: 'Three real game-day problems at Ohio Stadium.' },
+  { title: 'Press play', text: 'Three response plans run at once on the exact same crowd.' },
+  { title: 'See which plan wins', text: 'The one that clears the danger zone fastest, with the least crush risk.' },
+];
 
 interface Loaded {
   map: MapBundle;
@@ -40,50 +65,168 @@ interface PlanState {
   disabled: Set<number>;
 }
 
-function ScorecardView({ card, live }: { card: Scorecard | null; live: RunHandle }) {
+/** A "?" that explains a number in plain words on hover or tap. */
+function Info({ children }: { children: ReactNode }) {
   return (
-    <div className="scorecard">
-      <dl>
-        <dt>sim clock</dt>
-        <dd>{minutes(live.t)}</dd>
-        <dt>decisions</dt>
-        <dd>
-          {live.decisionCount.toLocaleString()}
-          {live.kevCount > 0 && <span className="tag kev">{live.kevCount.toLocaleString()} Kev</span>}
-        </dd>
-        <dt>{card ? 'fallback decisions' : 'fallbacks so far'}</dt>
-        {/* The scorecard counts one fallback per decision the run had to guess;
-            the live tally counts every dot that acted on one, which is a much
-            bigger number. Showing the live tally after the run finished made
-            the panel disagree with the briefing, which quotes the scorecard. */}
-        <dd className={(card ? card.fallbackDecisions : live.fallbackCount) > 0 ? 'warn' : undefined}>
-          {(card ? card.fallbackDecisions : live.fallbackCount).toLocaleString()}
-          {card && live.fallbackCount > 0 && (
-            <span className="tag muted-tag">{live.fallbackCount.toLocaleString()} dots</span>
+    <span className="info" tabIndex={0}>
+      ?<span className="info-pop">{children}</span>
+    </span>
+  );
+}
+
+function PlanCard({
+  label,
+  state,
+  run,
+  map,
+  incident,
+  seats,
+  totalFans,
+  selected,
+  rank,
+  onSelect,
+  onEdit,
+}: {
+  label: string;
+  state: PlanState;
+  run: RunHandle;
+  map: MapBundle;
+  incident: Incident;
+  seats: Uint8Array;
+  totalFans: number;
+  selected: boolean;
+  rank: number | null;
+  onSelect: () => void;
+  onEdit: (plan: ResponsePlan, disabled: Set<number>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const live = liveStats(run.latest.current?.density?.peoplePerM2, incident.cells, DANGER, seats);
+  const alerts = state.plan.actions.some((a, i) => a.type === 'alert' && !state.disabled.has(i));
+  const officers = state.plan.actions.some((a, i) => a.type === 'send_officers' && !state.disabled.has(i));
+  const card = run.scorecard;
+  const steps = state.plan.actions.map((action, i) => ({ action, i })).filter(({ i }) => !state.disabled.has(i));
+  const started = run.t >= incident.at;
+
+  return (
+    <section className={`plan-card${selected ? ' selected' : ''}${rank === 0 ? ' best' : ''}`} onClick={onSelect}>
+      <header>
+        <span className="label">{label}</span>
+        <h3>{state.plan.name}</h3>
+        {rank === 0 && <span className="badge best">Best plan</span>}
+        {selected && rank !== 0 && <span className="badge">on map</span>}
+      </header>
+
+      <ol className="plan-steps">
+        {steps.length === 0 && <li className="muted">Does nothing. A baseline to compare against.</li>}
+        {steps.map(({ action, i }) => {
+          const done = run.t >= incident.at + action.at;
+          return (
+            <li key={i} className={done ? 'done' : undefined}>
+              <span className="tick">{done ? '✓' : '·'}</span>
+              {describeAction(action, map)}
+              {action.at > 0 && <span className="muted"> after {Math.round(action.at / 60) || '<1'} min</span>}
+            </li>
+          );
+        })}
+      </ol>
+
+      {card ? (
+        <dl className="results">
+          <dt>
+            Time to clear <Info>Minutes from the start of the incident until the crowd in the zone thinned out to safe levels. Lower is better.</Info>
+          </dt>
+          <dd className={card.timeToClearMin === null ? 'bad' : undefined}>{clearText(card)}</dd>
+          {officers && (
+            <>
+              <dt>
+                First officer on scene <Info>Minutes from the start of the incident until an officer reached the zone.</Info>
+              </dt>
+              <dd>{card.firstOfficerMin === null ? 'never' : `${card.firstOfficerMin.toFixed(1)} min`}</dd>
+              <dt>
+                Officer time used <Info>Officers committed, times how long. The staffing cost of the plan.</Info>
+              </dt>
+              <dd>{n(card.officerMinutesUsed)} min</dd>
+            </>
           )}
-        </dd>
-        {card ? (
-          <>
-            <dt>time to clear</dt>
-            <dd>{card.timeToClearMin === null ? 'not cleared' : `${Math.round(card.timeToClearMin)} min`}</dd>
-            <dt>peak density</dt>
-            <dd>{card.peakDensity.toFixed(2)} /m²</dd>
-            <dt>danger minutes</dt>
-            <dd>{Math.round(card.dangerMinutes).toLocaleString()}</dd>
-            <dt>first officer</dt>
-            <dd>{card.firstOfficerMin === null ? 'none' : `${card.firstOfficerMin.toFixed(1)} min`}</dd>
-            <dt>officer minutes</dt>
-            <dd>{Math.round(card.officerMinutesUsed).toLocaleString()}</dd>
-            <dt>fans not reached</dt>
-            <dd>{card.fansNotReached.toLocaleString()}</dd>
-          </>
-        ) : (
-          <>
-            <dt className="muted">scorecard</dt>
-            <dd className="muted">at end of run</dd>
-          </>
-        )}
-      </dl>
+          {alerts && (
+            <>
+              <dt>
+                Fans the alert reached <Info>How many fans actually got the PA announcement or phone alert.</Info>
+              </dt>
+              <dd>{n(Math.max(0, totalFans - card.fansNotReached))}</dd>
+            </>
+          )}
+        </dl>
+      ) : (
+        <dl className="results">
+          <dt>
+            In the zone now <Info>People standing inside the yellow incident zone on the map right now.</Info>
+          </dt>
+          <dd>{run.ready ? n(live.zonePeople) : '…'}</dd>
+          <dt>
+            Dangerously packed <Info>People standing (not seated) anywhere on the map tighter than {DANGER} per m², where crowd crush becomes possible.</Info>
+          </dt>
+          <dd className={live.dangerPeople > 0 ? 'bad' : undefined}>{run.ready ? n(live.dangerPeople) : '…'}</dd>
+          <dt className="muted">Result</dt>
+          <dd className="muted">{started ? 'when the run ends' : 'after the incident'}</dd>
+        </dl>
+      )}
+
+      <button
+        className="link"
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing((v) => !v);
+        }}
+      >
+        {editing ? 'Done editing' : 'Edit this plan'}
+      </button>
+      {editing && (
+        <div className="plan-edit" onClick={(e) => e.stopPropagation()}>
+          <p className="muted">Switch steps off, or change when they happen and how many officers go.</p>
+          <PlanEditor plan={state.plan} map={map} disabled={state.disabled} onChange={onEdit} />
+        </div>
+      )}
+      {run.error && <p className="error">{run.error}</p>}
+    </section>
+  );
+}
+
+function Legend() {
+  const rings: [string, number][] = [
+    ['walking in', 3],
+    ['waiting at a gate', 2],
+    ['in their seat', 4],
+    ['taking shelter', 5],
+    ['leaving', 6],
+  ];
+  return (
+    <div className="map-legend">
+      <div className="legend-row">
+        {rings.map(([text, state]) => (
+          <span key={text}>
+            <i className="ring" style={{ borderColor: rgbCss(STATE_RGB[state]!) }} />
+            {text}
+          </span>
+        ))}
+      </div>
+      <div className="legend-row">
+        <span>
+          <i className="heat" /> red ground = dangerously packed
+        </span>
+        <span>
+          <i className="zone" /> incident zone
+        </span>
+        <span>
+          <i className="cop" /> officer
+        </span>
+        <span className="shirts" title={FAN_TYPES.map((t) => t.label).join(', ')}>
+          {FAN_TYPES.slice(0, 5).map((t, i) => (
+            <i key={t.id} style={{ background: `#${shirtColor(FAN_TYPES, i).toString(16).padStart(6, '0')}` }} />
+          ))}
+          shirt = type of fan
+        </span>
+      </div>
     </div>
   );
 }
@@ -93,19 +236,27 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [incidentIndex, setIncidentIndex] = useState(0);
   const [planStates, setPlanStates] = useState<PlanState[]>([]);
+  const [plansDirty, setPlansDirty] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [savedComparison, setSavedComparison] = useState<string | null>(null);
   const [speed, setSpeed] = useState(20);
   const [scrub, setScrub] = useState<number | null>(null);
   const [picked, setPicked] = useState<{ run: number; dot: number } | null>(null);
-  /** Close-up of one run (the default) or the three maps side by side. */
+  /** The 3D close-up of one plan (the default) or all three maps side by side. */
   const [view, setView] = useState<'close' | 'compare'>(params.get('view') === 'compare' ? 'compare' : 'close');
   const [closeRun, setCloseRun] = useState(0);
   const [focusToken, setFocusToken] = useState(0);
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingBusy, setBriefingBusy] = useState(false);
+  const [showHelp, setShowHelp] = useState(() => {
+    try {
+      return localStorage.getItem('gd-help-hidden') !== '1';
+    } catch {
+      return true;
+    }
+  });
 
   useEffect(() => {
     void (async () => {
@@ -121,17 +272,31 @@ export function App() {
 
   const incidents = useMemo<Incident[]>(() => (loaded ? incidentsFor(loaded.map) : []), [loaded]);
   const incident = incidents[incidentIndex];
+  const seats = useMemo(() => {
+    const mask = new Uint8Array(loaded?.map.cells.length ?? 0);
+    loaded?.map.cells.forEach((kind, i) => {
+      if (kind === 'stands') mask[i] = 1;
+    });
+    return mask;
+  }, [loaded]);
+  const zoneName = (incident?.placeId && loaded?.map.places.find((p) => p.id === incident.placeId)?.name) || 'the closed street';
+
+  const restart = () => {
+    setPlaying(false);
+    setScrub(null);
+    setBriefing(null);
+    setPicked(null);
+    setSavedComparison(null);
+    setPlansDirty(false);
+    setGeneration((g) => g + 1);
+  };
 
   // Picking an incident loads its playbook as editable copies.
   useEffect(() => {
     if (!loaded || !incident) return;
     const plans = playbookFor(incident.kind, loaded.map).slice(0, 3);
     setPlanStates(plans.map((plan) => ({ plan, disabled: new Set<number>() })));
-    setBriefing(null);
-    setScrub(null);
-    setPicked(null);
-    setPlaying(false);
-    setGeneration((g) => g + 1);
+    restart();
   }, [loaded, incident]);
 
   const inits = useMemo<(RunInit | null)[]>(() => {
@@ -150,7 +315,7 @@ export function App() {
         startAt: window.startAt,
         endAt: window.endAt,
         speed,
-        dangerDensity: DEFAULT_DANGER_DENSITY,
+        dangerDensity: DANGER,
         mapId: loaded.map.id,
         incident,
         plan: applyDisabled(state.plan, state.disabled),
@@ -159,8 +324,9 @@ export function App() {
       return { config, map: loaded.map, population, defaults: loaded.defaults };
     });
     // speed is deliberately out of the dependency list: it is sent live below.
+    // Plan edits wait for "Restart with my changes" rather than restarting mid-run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, incident, planStates, generation]);
+  }, [loaded, generation]);
 
   // Fixed count of hooks, one per comparison slot.
   const runA = useRun(inits[0] ?? null);
@@ -181,6 +347,8 @@ export function App() {
 
   const cards = runs.map((r) => r.scorecard);
   const allDone = cards.every((c) => c !== null);
+  const order = allDone ? rankPlans(cards) : null;
+  const rankOf = (i: number) => (order ? order.indexOf(i) : null);
 
   // Start without a click when asked, once all three workers are ready.
   useEffect(() => {
@@ -210,7 +378,6 @@ export function App() {
       .finally(() => setBriefingBusy(false));
   }, [allDone, incident, briefing, briefingBusy, cards, planStates]);
 
-  const pickedRecord = picked ? runs[picked.run]?.decisionsByDot.current?.get(picked.dot) : undefined;
   const pickedRun = picked ? runs[picked.run] : undefined;
 
   // Ask the picked group's worker about them on every frame: the inspector
@@ -268,131 +435,102 @@ export function App() {
     };
   });
 
+  const t = Math.max(...runs.map((r) => r.t));
+  const window_ = incident ? windowFor(incident) : { startAt: 0, endAt: 1 };
+  const progress = Math.min(1, Math.max(0, (t - window_.startAt) / (window_.endAt - window_.startAt)));
+  const status = incident ? incidentStatus(incident, t) : null;
+  const started = runs.some((r) => r.frameCount > 1);
+  const deciding = runs.reduce((sum, r) => sum + (r.deciding ?? 0), 0);
+  const scrubT = scrub !== null ? runs.map((r) => r.frames.current?.[scrub]?.frame.t).find((x) => x !== undefined) : undefined;
+  const kev = runs.reduce((sum, r) => sum + r.kevCount, 0);
+  const totalDecisions = runs.reduce((sum, r) => sum + r.decisionCount, 0);
+  const guessed = runs.reduce((sum, r) => sum + r.fallbackCount, 0);
+
+  const hideHelp = () => {
+    setShowHelp(false);
+    try {
+      localStorage.setItem('gd-help-hidden', '1');
+    } catch {
+      // private window: the strip just comes back next time
+    }
+  };
+
   return (
     <>
       <header className="top">
-        <h1>Gameday Command</h1>
-        <span className="sub">
-          {loaded
-            ? `${loaded.map.name} · ${fanCount(loaded.map).toLocaleString()} fans as ${(fanCount(loaded.map) / DOT_GROUP_SIZE).toLocaleString()} dots · seed ${SEED}`
-            : 'loading map…'}
-        </span>
+        <div className="brand">
+          <h1>Gameday Command</h1>
+          <span className="sub">Test crowd plans for Ohio Stadium before game day, not during it.</span>
+        </div>
+
+        <div className="clock">
+          <strong>{clockText(t)}</strong>
+          {status && <span className={`status ${status.phase}`}>{status.text}</span>}
+          <span className="progress">
+            <i style={{ width: `${progress * 100}%` }} />
+            {incident && (
+              <b
+                className="incident-mark"
+                style={{ left: `${((incident.at - window_.startAt) / (window_.endAt - window_.startAt)) * 100}%` }}
+                title={`${INCIDENT_LABELS[incident.kind]} ${minutes(incident.at)} from kickoff`}
+              />
+            )}
+          </span>
+        </div>
+
         <div className="controls">
-          <label>
-            speed
-            <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-              {[1, 5, 10, 20, 60].map((s) => (
-                <option key={s} value={s}>
-                  {s}x
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="primary" onClick={() => setPlaying((p) => !p)} disabled={!loaded}>
-            {playing ? 'Pause all three' : 'Run all three'}
+          <button className="primary play" onClick={() => setPlaying((p) => !p)} disabled={!loaded || allDone}>
+            {allDone ? 'Finished' : playing ? '❚❚ Pause' : started ? '▶ Resume' : '▶ Run all three plans'}
           </button>
-          <button
-            onClick={() => {
-              setPlaying(false);
-              setScrub(null);
-              setBriefing(null);
-              setPicked(null);
-              setGeneration((g) => g + 1);
-            }}
-            disabled={!loaded}
-          >
-            Reset
+          <span className="speed" title="How fast the simulated clock runs">
+            {SPEEDS.map((s) => (
+              <button key={s} className={speed === s ? 'on' : undefined} onClick={() => setSpeed(s)}>
+                {s}×
+              </button>
+            ))}
+          </span>
+          <button onClick={restart} disabled={!loaded}>
+            Restart
           </button>
+          {!showHelp && (
+            <button className="ghost" onClick={() => setShowHelp(true)} title="How this works">
+              ?
+            </button>
+          )}
         </div>
       </header>
 
-      <p className="assumption">
-        Fan behavior in this tool is an <strong>assumption, not a forecast</strong>. It shows the tradeoffs between plans
-        on the same crowd and the same seed. The commander makes the call.
-      </p>
+      {showHelp && (
+        <div className="howto">
+          {STEPS_HELP.map((step, i) => (
+            <div key={step.title}>
+              <span className="num">{i + 1}</span>
+              <div>
+                <strong>{step.title}</strong>
+                <p>{step.text}</p>
+              </div>
+            </div>
+          ))}
+          <p className="howto-note">
+            Every plan gets the same {loaded ? fanCount(loaded.map).toLocaleString() : '100,000'} fans, arriving the same way. Only the
+            plan changes. Each fan's choices (follow the officer? head for cover?) come from an AI model of how people behave.
+          </p>
+          <button className="ghost" onClick={hideHelp} title="Hide">
+            ✕
+          </button>
+        </div>
+      )}
 
       {loadError && (
-        <p className="assumption error">
+        <p className="banner error">
           Could not reach the server: {loadError}. Start it with <code>npm run serve</code>.
         </p>
       )}
 
       <div className="layout">
-        <aside className="side">
-          <section className="panel">
-            <h2>Incident</h2>
-            {incidents.map((candidate, i) => (
-              <label key={candidate.id} className={`incident${i === incidentIndex ? ' on' : ''}`}>
-                <input type="radio" name="incident" checked={i === incidentIndex} onChange={() => setIncidentIndex(i)} />
-                <span>
-                  <strong>{INCIDENT_LABELS[candidate.kind]}</strong>
-                  <em>{minutes(candidate.at)} from kickoff</em>
-                  {candidate.note && <span className="note">{candidate.note}</span>}
-                </span>
-              </label>
-            ))}
-          </section>
-
-          <section className="panel">
-            <h2>Playbook</h2>
-            <p className="muted">Three plans, run side by side on the identical crowd. Edit the steps, then run again.</p>
-            {planStates.map((state, i) => (
-              <div className="plan" key={state.plan.id}>
-                <h3>
-                  <span className="label">{LABELS[i]}</span> {state.plan.name}
-                </h3>
-                <PlanEditor
-                  plan={state.plan}
-                  disabled={state.disabled}
-                  onChange={(plan, disabled) =>
-                    setPlanStates((prev) => prev.map((p, j) => (j === i ? { plan, disabled } : p)))
-                  }
-                />
-              </div>
-            ))}
-            <button
-              onClick={() => {
-                setPlaying(false);
-                setBriefing(null);
-                setScrub(null);
-                setGeneration((g) => g + 1);
-              }}
-              disabled={!loaded}
-            >
-              Apply edits and restart
-            </button>
-          </section>
-        </aside>
-
         <main>
           {loaded && (
-            <div className="compare">
-              <div className="view-tabs">
-                <button className={view === 'close' ? 'on' : undefined} onClick={() => setView('close')}>
-                  Close up
-                </button>
-                <button className={view === 'compare' ? 'on' : undefined} onClick={() => setView('compare')}>
-                  Side by side
-                </button>
-                {view === 'close' && (
-                  <span className="run-chips">
-                    {LABELS.map((label, i) => (
-                      <button
-                        key={label}
-                        className={closeRun === i ? 'on' : undefined}
-                        title={planStates[i]?.plan.name}
-                        onClick={() => {
-                          setCloseRun(i);
-                          if (picked) setPicked({ run: i, dot: picked.dot });
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                    <span className="muted">{planStates[closeRun]?.plan.name}</span>
-                  </span>
-                )}
-              </div>
+            <>
               <div className={`canvas-wrap${view === 'close' ? ' close' : ''}`}>
                 {/* Only one of these is mounted at a time, so the page holds a
                     single WebGL context. ComparisonMaps draws all three runs in
@@ -402,205 +540,232 @@ export function App() {
                     map={loaded.map}
                     runs={runs}
                     scrubIndex={scrub}
-                    dangerDensity={DEFAULT_DANGER_DENSITY}
+                    dangerDensity={DANGER}
                     incidentCells={incident?.cells}
                     onPickDot={(run, dot) => setPicked({ run, dot })}
                   />
                 ) : (
-                  <>
-                    <CrowdView
-                      map={loaded.map}
-                      run={runs[closeRun]!}
-                      types={FAN_TYPES}
-                      scrubIndex={scrub}
-                      dangerDensity={DEFAULT_DANGER_DENSITY}
-                      incidentCells={incident?.cells}
-                      selected={picked?.run === closeRun ? picked.dot : null}
-                      onPick={(dot) => setPicked(dot === null ? null : { run: closeRun, dot })}
-                      focusToken={focusToken}
-                    />
-                    {picked && pickedRun && (
-                      <Inspector
-                        map={loaded.map}
-                        types={FAN_TYPES}
-                        run={pickedRun}
-                        label={LABELS[picked.run]}
-                        dot={picked.dot}
-                        scrubbing={scrub !== null}
-                        appliedNote={appliedNote}
-                        onApply={applyEdit}
-                        onFocus={() => setFocusToken((n) => n + 1)}
-                        onClose={() => setPicked(null)}
-                      />
-                    )}
-                  </>
+                  <CrowdView
+                    map={loaded.map}
+                    run={runs[closeRun]!}
+                    types={FAN_TYPES}
+                    scrubIndex={scrub}
+                    dangerDensity={DANGER}
+                    incidentCells={incident?.cells}
+                    incidentLabel={incident ? `${INCIDENT_LABELS[incident.kind]} here` : undefined}
+                    selected={picked?.run === closeRun ? picked.dot : null}
+                    onPick={(dot) => setPicked(dot === null ? null : { run: closeRun, dot })}
+                    focusToken={focusToken}
+                  />
                 )}
-                {runs.some((r) => r.deciding !== null) && (
-                  <div className="deciding">
-                    deciding… {runs.reduce((n, r) => n + (r.deciding ?? 0), 0)} groups
-                  </div>
+                <div className="map-title">
+                  {view === 'close' ? (
+                    <>
+                      <span className="label">{LABELS[closeRun]}</span> {planStates[closeRun]?.plan.name}
+                    </>
+                  ) : (
+                    'Plans A, B and C side by side'
+                  )}
+                </div>
+                <div className="view-toggle">
+                  <button className={view === 'close' ? 'on' : undefined} onClick={() => setView('close')}>
+                    3D, one plan
+                  </button>
+                  <button className={view === 'compare' ? 'on' : undefined} onClick={() => setView('compare')}>
+                    All three
+                  </button>
+                </div>
+                {deciding > 0 && (
+                  <div className="deciding">AI is deciding what {deciding.toLocaleString()} groups of fans do… the clock waits</div>
                 )}
-                {scrub !== null && <div className="replaying">replay</div>}
-              </div>
-              <div className="runs">
-                {runs.map((run, i) => (
-                  <section className="run" key={LABELS[i]}>
-                    <h2>
-                      <span className="label">{LABELS[i]}</span>
-                      <span className="plan-name">{planStates[i]?.plan.name ?? 'no plan'}</span>
-                    </h2>
-                    <ScorecardView card={run.scorecard} live={run} />
-                    {run.error && <p className="error">{run.error}</p>}
-                  </section>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <section className="panel wide">
-            <h2>Replay</h2>
-            <div className="scrubber">
-              <input
-                type="range"
-                min={0}
-                max={Math.max(0, maxFrames - 1)}
-                value={scrub ?? Math.max(0, maxFrames - 1)}
-                disabled={maxFrames === 0}
-                onChange={(e) => setScrub(Number(e.target.value))}
-              />
-              <span className="muted">
-                {maxFrames === 0
-                  ? 'no frames yet'
-                  : scrub === null
-                    ? `live · ${maxFrames} frames, one every ${FRAME_EVERY_S}s`
-                    : `frame ${scrub + 1} of ${maxFrames}`}
-              </span>
-              {scrub !== null && (
-                <>
-                  <button
-                    onClick={() => {
-                      // Rewind the simulations themselves, not just the picture:
-                      // each worker restores its nearest checkpoint and steps
-                      // forward, so play resumes from this moment.
-                      const at = scrub;
-                      const frame = runs
-                        .map((r) => r.frames.current?.[at])
-                        .find((f) => f !== undefined);
-                      if (!frame) return;
-                      setPlaying(false);
-                      setBriefing(null);
-                      setSavedComparison(null);
-                      for (const run of runs) run.seekTo(frame.frame.t);
-                      setScrub(null);
-                    }}
-                    className="small"
-                  >
-                    Rewind runs to here
-                  </button>
-                  <button onClick={() => setScrub(null)} className="small">
-                    Back to live
-                  </button>
-                </>
-              )}
-            </div>
-          </section>
-
-          <div className="bottom">
-            <section className="panel">
-              <h2>Briefing</h2>
-              {briefingBusy && <p className="muted">asking the on-device model…</p>}
-              {!briefingBusy && !briefing && <p className="muted">Runs all three plans, then writes the briefing.</p>}
-              {briefing && (
-                <>
-                  <p className="briefing-text">{briefing.text}</p>
-                  <p className="muted">
-                    {briefing.canned
-                      ? 'Template — the model was unavailable or cited a number that is not on a scorecard.'
-                      : `Written by ${briefing.model}; every number checked against the scorecards.`}
-                  </p>
-                </>
-              )}
-            </section>
-
-            <section className="panel">
-              <h2>Why this group moved</h2>
-              {!picked && <p className="muted">Click a dot on any map.</p>}
-              {picked && view === 'compare' && (
-                <p>
-                  <button
-                    className="small"
-                    onClick={() => {
+                {scrub !== null && <div className="replaying">Replay</div>}
+                {view === 'close' && <Legend />}
+                {picked && pickedRun && (
+                  <Inspector
+                    map={loaded.map}
+                    types={FAN_TYPES}
+                    run={pickedRun}
+                    label={LABELS[picked.run]}
+                    dot={picked.dot}
+                    scrubbing={scrub !== null}
+                    appliedNote={appliedNote}
+                    onApply={applyEdit}
+                    onFocus={() => {
                       setCloseRun(picked.run);
                       setView('close');
-                      setFocusToken((n) => n + 1);
+                      setFocusToken((k) => k + 1);
                     }}
-                  >
-                    Zoom in on this group
-                  </button>
-                </p>
-              )}
-              {picked && !pickedRecord && (
-                <p className="muted">
-                  Dot {picked.dot} in run {LABELS[picked.run]} has not hit a decision yet — it is still walking its
-                  flow field.
-                </p>
-              )}
-              {picked && pickedRecord && (
-                <dl className="detail">
-                  <dt>dot</dt>
-                  <dd>
-                    {picked.dot} (run {LABELS[picked.run]}, {DOT_GROUP_SIZE} fans)
-                  </dd>
-                  <dt>fan type</dt>
-                  <dd>{pickedRecord.fanTypeId}</dd>
-                  <dt>situation</dt>
-                  <dd>{pickedRecord.situation.replace(/_/g, ' ')}</dd>
-                  <dt>chose</dt>
-                  <dd>
-                    <strong>{pickedRecord.picked}</strong>
-                  </dd>
-                  <dt>odds</dt>
-                  <dd>
-                    {Object.entries(pickedRecord.odds)
-                      .map(([key, value]) => `${key} ${Math.round(value * 100)}%`)
-                      .join(', ')}
-                  </dd>
-                  <dt>answered by</dt>
-                  <dd className={pickedRecord.source === 'default' ? 'warn' : undefined}>
-                    {pickedRecord.source === 'default' ? 'fallback defaults' : pickedRecord.source}
-                  </dd>
-                  <dt>group key</dt>
-                  <dd className="key">{pickedRecord.key}</dd>
-                </dl>
-              )}
-            </section>
-          </div>
-        </main>
-      </div>
+                    onClose={() => setPicked(null)}
+                  />
+                )}
+                {!started && !picked && (
+                  <div className="map-cta">
+                    <p>{incident && pitchFor(incident, zoneName)}</p>
+                    <button className="primary" onClick={() => setPlaying(true)} disabled={!runs.every((r) => r.ready)}>
+                      ▶ Run all three plans
+                    </button>
+                    <span className="muted">Then scroll to zoom in and click any fan to see why they move.</span>
+                  </div>
+                )}
+              </div>
 
-      <div className="legend">
-        <span>
-          <i style={{ background: '#9ece6a' }} /> walking
-        </span>
-        <span>
-          <i style={{ background: '#e0af68' }} /> queued
-        </span>
-        <span>
-          <i style={{ background: '#f7768e' }} /> sheltering
-        </span>
-        <span>
-          <i style={{ background: '#7dcfff' }} /> seated
-        </span>
-        <span>
-          <i style={{ background: '#c0caf5' }} /> leaving
-        </span>
-        <span>
-          <i style={{ background: '#58a6ff' }} /> officer
-        </span>
-        <span>
-          <i style={{ background: 'linear-gradient(90deg,#5ab45a,#ff4d28)' }} /> density, red at{' '}
-          {DEFAULT_DANGER_DENSITY}/m²
-        </span>
+              <div className="replay">
+                <span className="replay-label">{scrub === null ? 'Live' : clockText(scrubT ?? t)}</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, maxFrames - 1)}
+                  value={scrub ?? Math.max(0, maxFrames - 1)}
+                  disabled={maxFrames < 2}
+                  onChange={(e) => setScrub(Number(e.target.value))}
+                  aria-label="Replay"
+                />
+                {scrub === null ? (
+                  <span className="muted">drag to look back</span>
+                ) : (
+                  <>
+                    <button
+                      className="small"
+                      title="Rewind the simulations themselves to this moment and play on from here"
+                      onClick={() => {
+                        // Rewind the simulations themselves, not just the picture:
+                        // each worker restores its nearest checkpoint and steps
+                        // forward, so play resumes from this moment.
+                        const at = scrub;
+                        const frame = runs.map((r) => r.frames.current?.[at]).find((f) => f !== undefined);
+                        if (!frame) return;
+                        setPlaying(false);
+                        setBriefing(null);
+                        setSavedComparison(null);
+                        for (const run of runs) run.seekTo(frame.frame.t);
+                        setScrub(null);
+                      }}
+                    >
+                      Play on from here
+                    </button>
+                    <button onClick={() => setScrub(null)} className="small">
+                      Back to live
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </main>
+
+        <aside className="side">
+          <section className="panel">
+            <h2>1 · Situation</h2>
+            <div className="situations">
+              {incidents.map((candidate, i) => (
+                <button
+                  key={candidate.id}
+                  className={`situation${i === incidentIndex ? ' on' : ''}`}
+                  onClick={() => setIncidentIndex(i)}
+                >
+                  <strong>{INCIDENT_LABELS[candidate.kind]}</strong>
+                  <span>{clockText(candidate.at)}</span>
+                </button>
+              ))}
+            </div>
+            {incident && <p className="pitch">{pitchFor(incident, zoneName)}</p>}
+          </section>
+
+          <section className="panel">
+            <h2>
+              2 · Three plans, same crowd <Info>Click a plan to show it on the 3D map. The plans differ only in what you tell the crowd and staff to do.</Info>
+            </h2>
+            {loaded &&
+              incident &&
+              planStates.map((state, i) => (
+                <PlanCard
+                  key={state.plan.id}
+                  label={LABELS[i]}
+                  state={state}
+                  run={runs[i]!}
+                  map={loaded.map}
+                  incident={incident}
+                  seats={seats}
+                  totalFans={fanCount(loaded.map)}
+                  selected={view === 'close' && closeRun === i}
+                  rank={rankOf(i)}
+                  onSelect={() => {
+                    setCloseRun(i);
+                    setView('close');
+                    if (picked) setPicked({ run: i, dot: picked.dot });
+                  }}
+                  onEdit={(plan, disabled) => {
+                    setPlanStates((prev) => prev.map((p, j) => (j === i ? { plan, disabled } : p)));
+                    setPlansDirty(true);
+                  }}
+                />
+              ))}
+            {plansDirty && (
+              <button className="primary wide" onClick={restart}>
+                Restart with my changes
+              </button>
+            )}
+          </section>
+
+          <section className="panel verdict">
+            <h2>3 · Verdict</h2>
+            {!allDone && <p className="muted">Appears when all three plans finish.</p>}
+            {allDone && incident && (
+              <>
+                <p className="verdict-line">
+                  {verdictText(
+                    LABELS,
+                    planStates.map((p) => p.plan.name),
+                    cards.filter((c): c is Scorecard => c !== null),
+                    zoneName,
+                  )}
+                </p>
+                {briefingBusy && <p className="muted">Writing the commander's briefing…</p>}
+                {briefing && (
+                  <details className="briefing" open={!briefing.canned}>
+                    <summary>{briefing.canned ? 'Full numbers for every plan' : "Commander's briefing"}</summary>
+                    <p className="briefing-text">{briefing.text}</p>
+                    <p className="muted">
+                      {briefing.canned
+                        ? 'Filled in from a template, because the on-device AI writer was not running.'
+                        : 'Written by an on-device AI model. Every number in it is checked against the results.'}
+                    </p>
+                  </details>
+                )}
+              </>
+            )}
+          </section>
+
+          <details className="panel tech">
+            <summary>How the AI and the numbers work</summary>
+            <p>
+              {loaded ? fanCount(loaded.map).toLocaleString() : ''} fans are simulated as {loaded ? (fanCount(loaded.map) / DOT_GROUP_SIZE).toLocaleString() : ''}{' '}
+              groups of {DOT_GROUP_SIZE}, walking a real OpenStreetMap model of Ohio Stadium at 2 m resolution. When a group has to choose
+              (shelter or run to the car? follow the officer?), an AI model called Kev gives the odds of each choice for that kind of fan.
+            </p>
+            <dl className="detail">
+              <dt>fan choices made</dt>
+              <dd>{totalDecisions.toLocaleString()}</dd>
+              <dt>answered by the AI</dt>
+              <dd>{(totalDecisions - guessed).toLocaleString()}{kev > 0 && <span className="muted"> ({kev.toLocaleString()} live)</span>}</dd>
+              <dt>guessed from defaults</dt>
+              <dd className={guessed > 0 ? 'warn' : undefined}>{guessed.toLocaleString()}</dd>
+              {cards.some((c) => c) && (
+                <>
+                  <dt>crush-risk cell minutes</dt>
+                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.dangerMinutes) : '…'}`).join(' · ')}</dd>
+                  <dt>most packed spot</dt>
+                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? c.peakDensity.toFixed(1) : '…'}/m²`).join(' · ')}</dd>
+                </>
+              )}
+              <dt>random seed</dt>
+              <dd>{SEED}, the same for all three</dd>
+            </dl>
+            <p className="muted">
+              Fan behavior is an assumption, not a forecast. The tool shows the tradeoffs between plans. The commander makes the call.
+            </p>
+          </details>
+        </aside>
       </div>
     </>
   );

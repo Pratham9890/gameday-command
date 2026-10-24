@@ -11,6 +11,8 @@ export interface CrowdViewProps {
   scrubIndex: number | null;
   dangerDensity: number;
   incidentCells?: number[];
+  /** Shown over the incident zone, e.g. "Gate surge". */
+  incidentLabel?: string;
   selected: number | null;
   onPick: (dot: number | null) => void;
   /** Bumped by the parent to centre on the selected group. */
@@ -21,7 +23,7 @@ export interface CrowdViewProps {
  * One run, close up. Owns its own PixiJS Application, so the app mounts either
  * this or the side-by-side maps, never both: one WebGL context at a time.
  */
-export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incidentCells, selected, onPick, focusToken }: CrowdViewProps) {
+export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incidentCells, incidentLabel, selected, onPick, focusToken }: CrowdViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CrowdScene | null>(null);
@@ -65,8 +67,8 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
   }, [run, run.tick, scrubIndex, map, types, dangerDensity]);
 
   useEffect(() => {
-    sceneRef.current?.setZone(incidentCells);
-  }, [incidentCells, map, types, dangerDensity]);
+    sceneRef.current?.setZone(incidentCells, incidentLabel);
+  }, [incidentCells, incidentLabel, map, types, dangerDensity]);
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -93,6 +95,7 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
         <button title="Zoom in" onClick={() => sceneRef.current?.zoomBy(1.6)}>+</button>
         <button title="Zoom out" onClick={() => sceneRef.current?.zoomBy(1 / 1.6)}>−</button>
         <button title="Whole map" onClick={() => sceneRef.current?.fit()}>⤢</button>
+        <button title="Back to the incident" onClick={() => sceneRef.current?.showIncident()}>⚠</button>
       </div>
       <div className="crowd-toggles">
         <label>
@@ -112,7 +115,7 @@ export function CrowdView({ map, run, types, scrubIndex, dangerDensity, incident
           </label>
         )}
       </div>
-      <div className="crowd-hint">scroll to zoom · drag to pan · click a person</div>
+      <div className="crowd-hint">scroll to zoom · drag to move · click a fan</div>
     </div>
   );
 }

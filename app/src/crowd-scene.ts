@@ -316,6 +316,8 @@ export class CrowdScene {
   private pool: Person[] = [];
   private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean }[] = [];
   private nameTag: HTMLElement;
+  private zoneTag: HTMLElement;
+  private zoneAt: { sx: number; sy: number } | null = null;
 
   private cam = { scale: 1, x: 0, y: 0 };
   private fitScale = 1;
@@ -340,6 +342,10 @@ export class CrowdScene {
     this.nameTag.className = 'crowd-name';
     this.nameTag.style.display = 'none';
     init.overlay.appendChild(this.nameTag);
+    this.zoneTag = document.createElement('div');
+    this.zoneTag.className = 'crowd-label incident';
+    this.zoneTag.style.display = 'none';
+    init.overlay.appendChild(this.zoneTag);
     this.ready = this.start();
   }
 
@@ -391,6 +397,8 @@ export class CrowdScene {
     this.makeLabels();
     this.bindInput(app.canvas);
     this.fit();
+    // Open on the incident, close enough that the crowd already reads as people.
+    if (this.zoneAt) this.lookAt(this.zoneAt, PEOPLE_MIN_SCALE * 1.15);
     if (this.pendingFocus !== null) this.focus(this.pendingFocus);
     this.pendingFocus = null;
     app.ticker.add(() => this.tick());
@@ -506,6 +514,19 @@ export class CrowdScene {
     this.setFollow(false);
   }
 
+  private lookAt(p: { sx: number; sy: number }, scale: number): void {
+    const { w, h } = this.viewSize();
+    this.cam.scale = Math.min(MAX_SCALE, Math.max(this.cam.scale, scale));
+    this.cam.x = w / 2 - p.sx * this.cam.scale;
+    this.cam.y = h / 2 - p.sy * this.cam.scale;
+  }
+
+  /** Back to the incident, for the "incident" button. */
+  showIncident(): void {
+    if (this.zoneAt) this.lookAt(this.zoneAt, PEOPLE_MIN_SCALE * 1.15);
+    this.setFollow(false);
+  }
+
   /** Centre on a group and zoom in far enough to see them as a person. */
   focus(dot: number): void {
     if (!this.app) {
@@ -540,7 +561,20 @@ export class CrowdScene {
     if (this.heat) this.heat.sprite.visible = on;
   }
 
-  setZone(cells: number[] | undefined): void {
+  /** The incident zone, tinted on the ground and labelled so a first-time viewer knows where to look. */
+  setZone(cells: number[] | undefined, label?: string): void {
+    this.zoneTag.textContent = label ? `⚠ ${label}` : '';
+    this.zoneAt = null;
+    if (cells && cells.length > 0) {
+      const { width } = this.init.map;
+      let u = 0;
+      let v = 0;
+      for (const cell of cells) {
+        u += (cell % width) + 0.5;
+        v += Math.floor(cell / width) + 0.5;
+      }
+      this.zoneAt = isoProject((u / cells.length) * CELL_SIZE_M, (v / cells.length) * CELL_SIZE_M, 4);
+    }
     void this.ready.then(() => {
       const { width } = this.init.map;
       this.zone.clear();
@@ -754,6 +788,16 @@ export class CrowdScene {
       label.el.style.display = visible ? '' : 'none';
       if (visible) label.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
+    const zone = this.zoneAt;
+    if (zone && this.zoneTag.textContent) {
+      const x = zone.sx * s + this.cam.x;
+      const y = zone.sy * s + this.cam.y;
+      this.zoneTag.style.display = '';
+      // Lifted clear of the gate label that usually sits at the same spot.
+      this.zoneTag.style.transform = `translate(${x | 0}px, ${(y | 0) - 26}px) translate(-50%, -100%)`;
+    } else {
+      this.zoneTag.style.display = 'none';
+    }
   }
 
   private drawOfficers(s: number): void {
@@ -811,6 +855,7 @@ export class CrowdScene {
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
     this.nameTag.remove();
+    this.zoneTag.remove();
     const app = this.app;
     this.app = null;
     // Wait for init to settle before tearing down; see ComparisonMaps.
