@@ -91,7 +91,7 @@ Drive a headless browser with Chrome's own DevTools Protocol — Node has a buil
 
 A checkpoint is **not** just the contract's `Snapshot`. `Snapshot` is frozen and carries only what crosses the lane boundary, so it says nothing about arrival times, assigned seats and gates, who has already been admitted, or the gates' throughput budgets — nor about what the scorer has accumulated. A rewind that restored only `Snapshot` would drift: fans would forget which gate they were sent to, and officer minutes would be counted twice. So `MovementModel` has optional `capture()` / `restore()`, the `Scorer` has the same, and `Checkpoint` bundles all three. Two tests hold this down: a rewound run reproduces the crowd and the scorecard exactly, and a rewind does not inflate the accumulating totals.
 
-The app's replay scrubber draws the frames it kept rather than seeking, because that is instant and a seek has to re-simulate. `seek` is there for scrubbing beyond what the app holds.
+The app's replay scrubber draws kept frames while you drag, because that is instant. **Rewind runs to here** then sends `seek` to all three workers, so the simulations themselves go back and play resumes from that moment — measured in a browser: three workers at t=-3000 went to t=-3330 together, with the frames after it dropped.
 
 ## App screens
 
@@ -123,6 +123,10 @@ npm run warm      # runs all three incidents x three plans, then waits for the w
 Takes a few minutes and settles around 538 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
 
 `?autorun=1` starts the three runs without a click, and the app saves each finished comparison through `POST /api/comparisons` — which is how a run in an ordinary browser window can be checked from the server side, with no debugger attached.
+
+## Live model tests
+
+`server/src/live.test.ts` talks to the real Kev on :8009 and the real `fm serve` on :8080. Each block **skips itself when the service is not listening**, so `npm test` passes on a bare checkout; when the models are up they run as part of the suite. They are the guard against the mistake made earlier in this project — building a stand-in from the same wrong assumption as the client, so both agree and neither matches the real server.
 
 ## Commands
 

@@ -217,6 +217,8 @@ export function App() {
       runs: runs.map((r, i) => ({
         label: LABELS[i],
         ready: r.ready,
+        t: r.t,
+        frames: r.frameCount,
         scorecard: r.scorecard,
         snapshotAt: r.snapshotAt,
         snapshotDots: r.snapshotDots,
@@ -376,9 +378,31 @@ export function App() {
                     : `frame ${scrub + 1} of ${maxFrames}`}
               </span>
               {scrub !== null && (
-                <button onClick={() => setScrub(null)} className="small">
-                  Back to live
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      // Rewind the simulations themselves, not just the picture:
+                      // each worker restores its nearest checkpoint and steps
+                      // forward, so play resumes from this moment.
+                      const at = scrub;
+                      const frame = runs
+                        .map((r) => r.frames.current?.[at])
+                        .find((f) => f !== undefined);
+                      if (!frame) return;
+                      setPlaying(false);
+                      setBriefing(null);
+                      setSavedComparison(null);
+                      for (const run of runs) run.seekTo(frame.frame.t);
+                      setScrub(null);
+                    }}
+                    className="small"
+                  >
+                    Rewind runs to here
+                  </button>
+                  <button onClick={() => setScrub(null)} className="small">
+                    Back to live
+                  </button>
+                </>
               )}
             </div>
           </section>

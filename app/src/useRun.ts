@@ -43,6 +43,8 @@ export interface RunHandle extends RunState {
   decisionsByDot: React.RefObject<Map<number, DecisionRecord>>;
   recent: React.RefObject<DecisionRecord[]>;
   send: (message: WorkerIn) => void;
+  /** Rewind this plan's worker to a moment and drop the frames after it. */
+  seekTo: (t: number) => void;
 }
 
 export interface RunInit {
@@ -175,5 +177,17 @@ export function useRun(init: RunInit | null): RunHandle {
 
   const send = useCallback((message: WorkerIn) => workerRef.current?.postMessage(message), []);
 
-  return { ...state, latest, frames, decisionsByDot, recent, send };
+  /**
+   * Ask the worker to rewind. It restores its nearest checkpoint and steps
+   * forward, so the engine itself goes back — this is not the app redrawing an
+   * old frame. Frames after the target are dropped so the scrubber and the
+   * running simulation agree about where the run is.
+   */
+  const seekTo = useCallback((target: number) => {
+    frames.current = frames.current.filter((f) => f.frame.t <= target);
+    workerRef.current?.postMessage({ type: 'seek', t: target } satisfies WorkerIn);
+    setState((s) => ({ ...s, scorecard: null, frameCount: frames.current.length }));
+  }, []);
+
+  return { ...state, latest, frames, decisionsByDot, recent, send, seekTo };
 }
