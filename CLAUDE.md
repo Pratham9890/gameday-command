@@ -89,6 +89,18 @@ Drive a headless browser with Chrome's own DevTools Protocol — Node has a buil
 - `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
 - **All three runs draw into ONE PixiJS Application** (`ComparisonMaps.tsx`), as three panels of a single canvas with the base map texture shared between them. Three Applications meant three WebGL contexts and paying Pixi's GPU probe three times over. Dots are pixel bytes, the heatmap reuses one `ImageData`, the incident zone is drawn only when it changes, and the renderer is stopped and driven by hand — frames arrive every 15 sim seconds, so a running ticker redraws an unchanged scene sixty times a second.
 
+## Running the real Kev
+
+Kev is cloned at `/Users/nipun/Projects/kev` (Apache-2.0). Start it with the command from `GOAL.md`:
+
+```bash
+cd /Users/nipun/Projects/kev && uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
+```
+
+First run downloads the `jaredpalmer/kev-4b` LoRA (160 MB) and `Qwen/Qwen3.5-4B-Base` (9.3 GB) into `~/.cache/huggingface`; after that it starts in seconds. `GET /v1/models` reports what it loaded — on this Mac: *Kev pointer head on Qwen/Qwen3.5-4B-Base, serving jaredpalmer/kev-4b at temperature 2.41*, backend `mlx`, device `mps`, bfloat16.
+
+The first request pays MLX warm-up and will exceed the timeout; it falls back once and every request after is warm (~250 ms).
+
 ## Commands
 
 ```bash
@@ -122,6 +134,6 @@ On the real stadium map (800x800 cells, 100,000 fans as 20,000 dots), three plan
 
 **Open items, in order:**
 1. **Plans A and B for a lightning delay are identical** because opening already-open gates is a no-op and officers do not yet influence crowd movement. Only officer minutes differ.
-2. **Not yet run against the real Kev-4B**, though the client now speaks its actual protocol — read from the server's source at github.com/jaredpalmer/kev, not guessed. Kev is not installed on this machine (no `kev` module, nothing under `~/Projects`), so `uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009` has never been exercised here. The whole path *is* verified end to end over real HTTP against a stand-in on :8009 that answers in 150 ms serially — cold cache: 39.8 s wall for the full lightning run, 1.7 s of it paused on 135 keys, 16,381 model-backed dot decisions; warm: 16,381 from cache. Expect fewer keys answered with a slower model, by design.
+2. **Kev is slow enough that a cold burst mostly falls back, by design.** The real model answers in roughly 250 ms, so of the ~144 keys a lightning delay raises at once only a handful land inside the 2 s pause; the rest take the defaults and are counted as fallbacks, which is exactly what the contract asks for. The cache fills as a scenario is re-run. Raising `KEV_CONCURRENCY` makes it *worse* (16 got one key where 4 got five) because Kev serialises on one GPU — leave it at 4. Kev is not installed on this machine (no `kev` module, nothing under `~/Projects`), so `uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009` has never been exercised here. The whole path *is* verified end to end over real HTTP against a stand-in on :8009 that answers in 150 ms serially — cold cache: 39.8 s wall for the full lightning run, 1.7 s of it paused on 135 keys, 16,381 model-backed dot decisions; warm: 16,381 from cache. Expect fewer keys answered with a slower model, by design.
 3. `pick_gate` is assigned by walking distance rather than asked of Kev; it should become a live decision.
 4. The app has been seen rendering in Chrome, dev and production. It builds, mounts with no console errors, and `vite build` emits the worker chunk, but the in-app browser pane refuses to display and Playwright cannot reach DOMContentLoaded.

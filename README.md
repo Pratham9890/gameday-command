@@ -101,13 +101,14 @@ The commander view has the live map with a density heatmap, the incident panel, 
 | Same moment, same seed, three plans | yes, side by side |
 | Scorecard, checked against a hand count | yes, on the 3 gate test map |
 | Decisions grouped, cached, sim pauses, fallbacks counted | yes; **57,974 dot decisions to 135 model calls** |
+| Live decisions from the real Kev-4B on :8009 | **yes**, MLX on this Mac, `source: "kev"` end to end |
 | Fans actually get into the stadium | **18,185 of 20,000** by kickoff plus 30 |
 | DecisionTape replay gives identical scorecards | yes, proven by test |
-| Cold-cache lightning under 60 s | **39.8 s** against a stand-in, not the real model |
+| Cold-cache lightning under 60 s | **44.1 s** against the real Kev-4B |
 | Briefing from `fm serve`, numbers checked | yes, verified live; 399-token prompt |
 | App screens | all built and **seen rendering in Chrome** |
 | Runs with Kev off, every decision a fallback | yes, tested |
-| Full demo in a fresh browser | **driven end to end**: loaded, ran all three, scorecards and briefing |
+| Full demo in a fresh browser | **driven end to end** in a fresh Chrome profile, real Kev and `fm serve` live |
 
 Two things are genuinely unproven. The real **Kev-4B has never run here** — it is not installed on this machine, so the decision path is verified over real HTTP against a stand-in that answers in 150 ms. And the **app has not been seen rendering**: it builds, mounts with no console errors, and emits its worker chunk, but the in-app browser pane will not display and Playwright cannot reach DOMContentLoaded, so the browser demo needs a human to confirm. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
