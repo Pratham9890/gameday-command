@@ -8,6 +8,7 @@ import { bandOf, heatBands } from './heat.ts';
 import { STATE_RGB } from './people.ts';
 import type { RunHandle, RunSnapshotView } from './useRun.ts';
 import { drawVehicle } from './vehicleArt.ts';
+import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { readoutOf, ReadoutChips } from './Readouts.tsx';
 import { WeatherFx } from './WeatherFx.tsx';
 
@@ -31,7 +32,10 @@ const GAP_PX = 10;
 const MAX_ZOOM = 48;
 const FPS_MS = 1000 / 40;
 
-const pxPerCell = (map: MapBundle) => Math.max(1, Math.round(TARGET_PANEL_PX / map.width));
+/** A single large 2D plan gets about twice the pixels of one of three side-by-side panels. */
+const SINGLE_PANEL_PX = 1600;
+const pxPerCell = (map: MapBundle, panels: number) =>
+  Math.max(1, Math.round((panels === 1 ? SINGLE_PANEL_PX : TARGET_PANEL_PX) / map.width));
 
 /** Base map palette: lawns, asphalt, lots, buildings, the bowl. */
 const RGB: Record<CellKind, [number, number, number]> = {
@@ -55,9 +59,17 @@ function paintBase(map: MapBundle): HTMLCanvasElement {
   const image = ctx.createImageData(map.width, map.height);
   const data = image.data;
   const W = map.width;
+  const field = new Set(map.field ?? []);
+  let fieldY0 = Infinity;
+  for (const c of field) fieldY0 = Math.min(fieldY0, (c / W) | 0);
   for (let i = 0; i < map.cells.length; i++) {
     const kind = map.cells[i]!;
     let [r, g, b] = RGB[kind];
+    if (field.has(i)) {
+      // Turf in ten-yard stripes (about 4.6 cells), not a block of seating.
+      const stripe = Math.floor((((i / W) | 0) - fieldY0) / 4.57) % 2;
+      [r, g, b] = stripe ? [0x2f, 0x72, 0x36] : [0x36, 0x80, 0x3d];
+    }
     const x = i % W;
     const y = (i / W) | 0;
     if (kind === 'blocked') {
@@ -94,6 +106,7 @@ interface Layer {
 interface Panel {
   world: Container;
   heat: Layer;
+  flow: Layer;
   zone: Graphics;
 }
 
@@ -143,6 +156,10 @@ export interface ComparisonMapsProps {
   picked: MapPick | null;
   focus: FocusBox | null;
   onPick?: (pick: MapPick | null) => void;
+  /** Colour roads by how traffic is moving: green, amber, red. */
+  showFlow?: boolean;
+  /** The most congested areas for each run, pinned on its panel. */
+  hotspots?: PoliceHotspot[][];
 }
 
 interface Drawn {
@@ -223,10 +240,29 @@ const darkSky = (w?: WeatherState) =>
 
 export function ComparisonMaps(props: ComparisonMapsProps) {
   const { map, runs, scrubIndex, dangerDensity, incidentCells, selectedBand, vehicleFocus, showVehicles, picked, focus, onPick } = props;
-  const PX = pxPerCell(map);
+  // One panel per run handed in: three side by side, or one large 2D plan.
+  const N = Math.max(1, runs.length);
+  const PX = pxPerCell(map, N);
   const panelW = map.width * PX;
   const panelH = map.height * PX;
-  const totalW = panelW * 3 + GAP_PX * 2;
+  const totalW = panelW * N + GAP_PX * (N - 1);
+  const showFlow = props.showFlow ?? true;
+  const streetBoxes = useMemo(
+    () =>
+      (map.streets ?? [])
+        .filter((st) => st.name || /primary|secondary|tertiary|trunk|motorway/.test(st.kind))
+        .map((st) => {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (let i = 0; i < st.points.length; i += 2) {
+            x0 = Math.min(x0, st.points[i]!);
+            x1 = Math.max(x1, st.points[i]!);
+            y0 = Math.min(y0, st.points[i + 1]!);
+            y1 = Math.max(y1, st.points[i + 1]!);
+          }
+          return { ...st, major: /primary|secondary|tertiary|trunk|motorway/.test(st.kind), x0, y0, x1, y1 };
+        }),
+    [map],
+  );
   const bands = useMemo(() => heatBands(dangerDensity), [dangerDensity]);
   const net = useMemo(() => (map.width > 200 ? roadNetFor(map) : null), [map]);
 
@@ -285,7 +321,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
         const baseTexture = Texture.from(paintBase(map));
         baseTexture.source.scaleMode = 'nearest';
         const panels: Panel[] = [];
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < N; i++) {
           const group = new Container();
           group.x = i * (panelW + GAP_PX);
           const mask = new Graphics().rect(0, 0, panelW, panelH).fill(0xffffff);
@@ -297,11 +333,16 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           const heat = makeLayer(map.width, map.height, true);
           const heatSprite = new Sprite(heat.texture);
           heatSprite.setSize(panelW, panelH);
+          // Smoothed, so a jam reads as a red stretch of road rather than 2 m tiles.
+          const flow = makeLayer(map.width, map.height, true);
+          const flowSprite = new Sprite(flow.texture);
+          flowSprite.setSize(panelW, panelH);
+          flowSprite.alpha = 0.8;
           const zone = new Graphics();
-          world.addChild(base, heatSprite, zone);
+          world.addChild(base, heatSprite, flowSprite, zone);
           group.addChild(world);
           app.stage.addChild(group);
-          panels.push({ world, heat, zone });
+          panels.push({ world, heat, flow, zone });
         }
         panelsRef.current = panels;
         appRef.current = app;
@@ -315,7 +356,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
       appRef.current = null;
       void ready.catch(() => {}).then(() => app.destroy(true));
     };
-  }, [map, panelW, panelH, totalW, PX]);
+  }, [map, panelW, panelH, totalW, PX, N]);
 
   const ticks = runs.map((r) => r.tick).join(',');
 
@@ -332,14 +373,15 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
   // Heat bands, repainted when a frame lands or the selected band changes.
   useEffect(() => {
     const panels = panelsRef.current;
-    if (panels.length < 3) return;
+    if (panels.length < N) return;
     runs.forEach((run, index) => {
       const view = viewFor(run);
       const panel = panels[index]!;
       const data = panel.heat.image.data;
       data.fill(0);
       if (view?.density) {
-        const { peoplePerM2 } = view.density;
+        // Standing people only: a full section of seats is dense and safe.
+        const peoplePerM2 = standingDensity(map, view.frame, view.density.peoplePerM2);
         for (let i = 0; i < peoplePerM2.length; i++) {
           const b = bandOf(peoplePerM2[i]!, bands);
           if (b < 0) continue;
@@ -354,16 +396,35 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
       }
       panel.heat.canvas.getContext('2d')!.putImageData(panel.heat.image, 0, 0);
       panel.heat.texture.source.update();
+
+      // Traffic flow: the road under each moving vehicle, green to red.
+      const fd = panel.flow.image.data;
+      fd.fill(0);
+      if (showFlow && view?.frame.vehicles) {
+        const cells = trafficFlow(map, view.frame.vehicles);
+        for (let c = 0; c < cells.length; c++) {
+          const level = cells[c]!;
+          if (!level) continue;
+          const [r, g, b] = FLOW_RGB[level]!;
+          const o = c * 4;
+          fd[o] = r;
+          fd[o + 1] = g;
+          fd[o + 2] = b;
+          fd[o + 3] = 230;
+        }
+      }
+      panel.flow.canvas.getContext('2d')!.putImageData(panel.flow.image, 0, 0);
+      panel.flow.texture.source.update();
     });
     needsRef.current = true;
-  }, [ticks, scrubIndex, runs, bands, selectedBand, viewFor, pixiReady]);
+  }, [ticks, scrubIndex, runs, bands, selectedBand, viewFor, pixiReady, showFlow, N]);
 
   // The incident zone, outlined when it changes — and re-stroked after a zoom,
   // so the outline stays a hairline rather than thickening with the map.
   const settledZoom = Math.round(viewRef.current.z * 4) / 4;
   useEffect(() => {
     const panels = panelsRef.current;
-    if (panels.length < 3) return;
+    if (panels.length < N) return;
     for (const panel of panels) {
       panel.zone.clear();
       if (!incidentCells || incidentCells.length === 0) continue;
@@ -385,7 +446,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
   useEffect(() => {
     needsRef.current = true;
-  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked]);
+  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked, props.hotspots]);
 
   // ─── the draw loop ───
   useEffect(() => {
@@ -422,7 +483,8 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
         return false;
       });
       const due = now - lastDraw >= FPS_MS;
-      if ((needsRef.current || animating || anyFlashing || fly) && due) {
+      const pulsing = (p.hotspots ?? []).some((list) => list.some((h) => h.level === 'critical'));
+      if ((needsRef.current || animating || anyFlashing || pulsing || fly) && due) {
         lastDraw = now;
         needsRef.current = false;
         render(now);
@@ -437,7 +499,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
       const v = viewRef.current;
       const z = v.z;
       const m2px = (z * PX) / CELL_SIZE_M; // screen px per meter
-      if (app && panels.length === 3) {
+      if (app && panels.length === p.runs.length) {
         for (const panel of panels) {
           panel.world.scale.set(z);
           panel.world.position.set(panelW / 2 - v.cx * z, panelH / 2 - v.cy * z);
@@ -525,6 +587,29 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           ctx.stroke();
         }
 
+        // Lane markings, once a street is wide enough on screen to carry them.
+        if (z >= 3) {
+          const vx0 = ((v.cx - panelW / 2 / z) * CELL_SIZE_M) / PX;
+          const vx1 = ((v.cx + panelW / 2 / z) * CELL_SIZE_M) / PX;
+          const vy0 = ((v.cy - panelH / 2 / z) * CELL_SIZE_M) / PX;
+          const vy1 = ((v.cy + panelH / 2 / z) * CELL_SIZE_M) / PX;
+          ctx.setTransform(1, 0, 0, 1, ox, 0);
+          for (const major of [false, true]) {
+            ctx.beginPath();
+            for (const st of streetBoxes) {
+              if (st.major !== major || st.x1 < vx0 || st.x0 > vx1 || st.y1 < vy0 || st.y0 > vy1) continue;
+              const pts = st.points;
+              ctx.moveTo(toX(pts[0]!), toY(pts[1]!));
+              for (let k = 2; k < pts.length; k += 2) ctx.lineTo(toX(pts[k]!), toY(pts[k + 1]!));
+            }
+            ctx.strokeStyle = major ? 'rgba(245,197,24,0.85)' : 'rgba(232,232,226,0.55)';
+            ctx.lineWidth = Math.max(1, m2px * (major ? 0.3 : 0.18));
+            ctx.setLineDash(major ? [] : [3 * m2px, 4 * m2px]);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        }
+
         // Vehicles at their real size.
         const vf = d?.vehicles;
         if (vf && d?.vx && d.vy && d.vh && p.showVehicles) {
@@ -588,6 +673,54 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           }
         }
 
+        // Police pins: the most congested areas, numbered, the worst pulsing.
+        const spots = p.hotspots?.[index] ?? [];
+        if (spots.length > 0) {
+          ctx.setTransform(1, 0, 0, 1, ox, 0);
+          const pulse = (now % 1400) / 1400;
+          // Pins keep a readable size on screen however the canvas is scaled.
+          const k = Math.max(1, totalW / Math.max(1, live.clientWidth));
+          const R = 10 * k;
+          for (const h of spots) {
+            const colour = HOTSPOT_COLOUR[h.level];
+            const bx0 = toX(h.x0 * CELL_SIZE_M);
+            const by0 = toY(h.y0 * CELL_SIZE_M);
+            const bx1 = toX((h.x1 + 1) * CELL_SIZE_M);
+            const by1 = toY((h.y1 + 1) * CELL_SIZE_M);
+            if (h.level !== 'watch' && bx1 - bx0 > 10) {
+              ctx.strokeStyle = colour;
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([5, 4]);
+              ctx.strokeRect(bx0, by0, bx1 - bx0, by1 - by0);
+              ctx.setLineDash([]);
+            }
+            const sx = toX(h.cx);
+            const sy = toY(h.cy);
+            if (sx < -20 || sy < -20 || sx > panelW + 20 || sy > panelH + 20) continue;
+            if (h.level === 'critical') {
+              ctx.beginPath();
+              ctx.arc(sx, sy, R + pulse * 18 * k, 0, Math.PI * 2);
+              ctx.strokeStyle = colour;
+              ctx.globalAlpha = 1 - pulse;
+              ctx.lineWidth = 2;
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+            }
+            ctx.beginPath();
+            ctx.arc(sx, sy, R, 0, Math.PI * 2);
+            ctx.fillStyle = colour;
+            ctx.fill();
+            ctx.lineWidth = 2 * k;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            ctx.fillStyle = '#0b0f14';
+            ctx.font = `800 ${Math.round(12 * k)}px ui-sans-serif, system-ui`;
+            ctx.textAlign = 'center';
+            ctx.fillText(String(h.rank), sx, sy + 4 * k);
+            ctx.textAlign = 'left';
+          }
+        }
+
         // The picked fan.
         if (p.picked?.type === 'dot' && p.picked.run === index && d) {
           const i = p.picked.dot;
@@ -637,7 +770,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [map, net, PX, panelW, panelH, totalW, clampView, viewFor]);
+  }, [map, net, PX, panelW, panelH, totalW, clampView, viewFor, streetBoxes]);
 
   // ─── input: wheel zoom, drag pan, click to inspect ───
   const toCanvas = (event: { clientX: number; clientY: number }, el: HTMLElement) => {
@@ -645,7 +778,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
     const k = totalW / rect.width;
     const px = (event.clientX - rect.left) * k;
     const py = (event.clientY - rect.top) * k;
-    const index = Math.min(2, Math.max(0, Math.floor(px / (panelW + GAP_PX))));
+    const index = Math.min(N - 1, Math.max(0, Math.floor(px / (panelW + GAP_PX))));
     return { px, py, index, lx: px - index * (panelW + GAP_PX), k };
   };
 
@@ -783,7 +916,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
   const weathers = readouts.map((r) => r.weather);
   const z = viewRef.current.z;
-  const columns = `${panelW}fr ${GAP_PX}fr ${panelW}fr ${GAP_PX}fr ${panelW}fr`;
+  const columns = Array.from({ length: N }, () => `${panelW}fr`).join(` ${GAP_PX}fr `);
   void viewTick;
 
   const zoomBy = (factor: number) => {

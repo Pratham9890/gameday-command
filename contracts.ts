@@ -118,6 +118,10 @@ export interface MapBundle {
   /** Named edges that can be closed (a street segment, a gate door). */
   closables: { id: Id; name: string; cells: number[] }[];
   sources: { label: string; url: string }[]; // OSM export, public gate times
+  /** v2: street centrelines in meters, flat [x0, y0, x1, y1, ...], for drawing lanes and names. */
+  streets?: { name: string; kind: string; points: number[] }[];
+  /** v2: the playing field's cells, inside the bowl. Nobody is seated there. */
+  field?: number[];
 }
 
 // ─────────────────────────── Crowd [C] ─────────────────────────────

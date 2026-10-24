@@ -165,6 +165,13 @@ Traffic and weather were added with the contract bumped to `gameday.v2`. Every a
 
 The map is now zoomable (scroll, drag, double-click, or Fit / Stadium / Incident) and glides between frames. The heatmap is drawn in five density bands; **click a colour** in the legend or on the map to isolate it on all three runs and list where those areas are, with a zoom-to button for each. Click any vehicle for its type, size, state, speed and time stopped.
 
+### Congestion, police hotspots and the 3D stadium
+
+- **Three views:** a 3D close-up of one plan, a large **2D plan** of one plan, and all three side by side.
+- **Traffic flow:** roads under moving vehicles are coloured green (moving), amber (slow) or red (jammed), in 2D and 3D.
+- **Most congested right now:** a ranked list per plan, merging packed standing crowds and stopped traffic, with numbered pins on the map and a button to fly to each. Seated fans are left out.
+- **The Horseshoe in 3D:** tiered stands around a field with yard lines and end zones, the crowd sitting on the tiers, street centre lines and names from OpenStreetMap.
+
 ## Rules this project holds to
 
 - No Claude API and no paid API. Models run locally: Kev via MLX, the briefing via Apple's on-device `fm serve`.

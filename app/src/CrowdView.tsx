@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FanType, MapBundle, VehicleKind } from '../../contracts.ts';
+import type { PoliceHotspot } from './congestion.ts';
 import { CrowdScene } from './crowd-scene.ts';
 import { groupName } from './people.ts';
 import { readoutOf, ReadoutChips } from './Readouts.tsx';
@@ -27,6 +28,11 @@ export interface CrowdViewProps {
   selectedBand: number | null;
   /** Cells to frame, from the hotspot list; a new nonce means go there. */
   focusBox: { x0: number; y0: number; x1: number; y1: number; nonce: number } | null;
+  /** Colour the roads by how traffic is moving. */
+  showFlow: boolean;
+  onShowFlow: (on: boolean) => void;
+  /** The most congested areas, pinned on the map. */
+  hotspots: PoliceHotspot[];
 }
 
 /**
@@ -35,7 +41,7 @@ export interface CrowdViewProps {
  */
 export function CrowdView(props: CrowdViewProps) {
   const { map, run, types, scrubIndex, dangerDensity, incidentCells, incidentLabel, selected, onPick, focusToken } = props;
-  const { showVehicles, vehicleFocus, selectedVehicle, onPickVehicle, selectedBand, focusBox } = props;
+  const { showVehicles, vehicleFocus, selectedVehicle, onPickVehicle, selectedBand, focusBox, showFlow, onShowFlow, hotspots } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CrowdScene | null>(null);
@@ -132,6 +138,14 @@ export function CrowdView(props: CrowdViewProps) {
   }, [selectedBand, map, types, dangerDensity]);
 
   useEffect(() => {
+    sceneRef.current?.setFlow(showFlow);
+  }, [showFlow, map, types, dangerDensity]);
+
+  useEffect(() => {
+    sceneRef.current?.setHotspots(hotspots);
+  }, [hotspots, map, types, dangerDensity]);
+
+  useEffect(() => {
     if (focusBox) sceneRef.current?.lookAtCells(focusBox.x0, focusBox.y0, focusBox.x1, focusBox.y1);
   }, [focusBox]);
 
@@ -157,7 +171,10 @@ export function CrowdView(props: CrowdViewProps) {
       </div>
       <div className="crowd-toggles">
         <label>
-          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> density
+          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> crowd density
+        </label>
+        <label>
+          <input type="checkbox" checked={showFlow} onChange={(e) => onShowFlow(e.target.checked)} /> traffic flow
         </label>
         {selected !== null && (
           <label>

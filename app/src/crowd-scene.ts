@@ -5,6 +5,8 @@ import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands, type HeatBand } from './heat.ts';
 import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from './people.ts';
 import { paintFor } from './vehicleArt.ts';
+import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
+import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
 /**
  * The close-up: one run on an isometric map you can zoom into until the dots
@@ -359,12 +361,20 @@ export class CrowdScene {
   private vehicleFocus: VehicleKind | null = null;
   private selectedVehicle: number | null = null;
   private bands: HeatBand[];
+  private bowl: Bowl | null = null;
+  private standsCrowd = new Graphics();
+  private flow!: Layer;
+  private flowCells: Uint8Array | null = null;
+  private standing: Float32Array | null = null;
+  private seated: Float32Array | null = null;
+  private showFlow = true;
+  private pins: { el: HTMLElement; sx: number; sy: number }[] = [];
   private selectedBand: number | null = null;
   private heat!: Layer;
   private dots!: Layer;
   private parts!: Parts;
   private pool: Person[] = [];
-  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean }[] = [];
+  private labels: { el: HTMLElement; sx: number; sy: number; gate: boolean; street?: boolean }[] = [];
   private nameTag: HTMLElement;
   private zoneTag: HTMLElement;
   private zoneAt: { sx: number; sy: number } | null = null;
@@ -439,16 +449,26 @@ export class CrowdScene {
     this.heat = makeLayer(map.width, map.height);
     this.heat.sprite.alpha = 0.8;
     this.dots = makeLayer(map.width, map.height);
+    this.flow = makeLayer(map.width, map.height);
+    // Smoothed, so a jam reads as a red stretch of road rather than 2 m tiles.
+    this.flow.texture.source.scaleMode = 'linear';
+    this.flow.sprite.alpha = 0.72;
     this.cover.rect(0, 0, map.width, map.height).fill(0xffffff);
     this.cover.alpha = 0;
-    this.ground.addChild(new Sprite(baseTexture), this.cover, this.heat.sprite, this.zone, this.dots.sprite);
+    this.ground.addChild(new Sprite(baseTexture), this.cover, this.heat.sprite, this.flow.sprite, this.zone, this.dots.sprite);
+    this.bowl = buildBowl(map);
 
     this.people.sortableChildren = true;
     this.buildings = buildBuildings(map);
     this.buildingSnow = 0;
     // Beams and glows lie on the ground, under everything. Vehicles go above
     // buildings, as people do: a car beside a wall is never cut off by it.
-    this.world.addChild(slab, this.ground, this.beams, this.buildings, this.parked, this.moving, this.people, this.officers, this.marker);
+    const lanes = buildStreetLines(map);
+    this.world.addChild(slab, this.ground);
+    if (this.bowl) this.world.addChild(this.bowl.turf);
+    this.world.addChild(lanes, this.beams, this.buildings);
+    if (this.bowl) this.world.addChild(this.bowl.shell, this.standsCrowd);
+    this.world.addChild(this.parked, this.moving, this.people, this.officers, this.marker);
     app.stage.addChild(this.world);
 
     this.makeLabels();
@@ -473,12 +493,20 @@ export class CrowdScene {
         sy += Math.floor(cell / map.width) + 0.5;
       }
       const n = Math.max(1, place.cells.length);
-      const p = isoProject((sx / n) * CELL_SIZE_M, (sy / n) * CELL_SIZE_M, gate ? 6 : 0);
+      const p = isoProject((sx / n) * CELL_SIZE_M, (sy / n) * CELL_SIZE_M, gate ? 6 : 20);
       const el = document.createElement('div');
       el.className = `crowd-label${gate ? ' gate' : ''}`;
       el.textContent = gate ? place.name.replace(/\s*\(.*\)/, '') : place.kind === 'seating' ? 'Ohio Stadium' : place.name;
       overlay.appendChild(el);
       this.labels.push({ el, sx: p.sx, sy: p.sy, gate });
+    }
+    for (const street of streetLabels(map)) {
+      const p = isoProject(street.x, street.y, 0.5);
+      const el = document.createElement('div');
+      el.className = `crowd-label street${street.major ? ' major' : ''}`;
+      el.textContent = street.name;
+      overlay.appendChild(el);
+      this.labels.push({ el, sx: p.sx, sy: p.sy, gate: false, street: true });
     }
   }
 
@@ -614,7 +642,7 @@ export class CrowdScene {
     if (!pos) return;
     const { w, h } = this.viewSize();
     this.cam.scale = Math.max(this.cam.scale, 14);
-    const p = isoProject(pos.x, pos.y, FIG_H / 2);
+    const p = isoProject(pos.x, pos.y, FIG_H / 2 + this.liftAt(pos.x, pos.y));
     this.cam.x = w / 2 - p.sx * this.cam.scale;
     this.cam.y = h / 2 - p.sy * this.cam.scale;
     this.setFollow(true);
@@ -645,6 +673,38 @@ export class CrowdScene {
     if (this.selectedBand === band) return;
     this.selectedBand = band;
     if (this.cur) void this.ready.then(() => this.cur && this.paintFrame(this.cur));
+  }
+
+  setFlow(on: boolean): void {
+    this.showFlow = on;
+    if (this.flow) this.flow.sprite.visible = on;
+  }
+
+  /** Numbered pins on the most congested areas, from the police list. */
+  setHotspots(spots: PoliceHotspot[]): void {
+    for (const pin of this.pins) pin.el.remove();
+    this.pins = spots.map((spot) => {
+      const el = document.createElement('button');
+      el.className = `crowd-pin ${spot.level}`;
+      el.style.setProperty('--pin', HOTSPOT_COLOUR[spot.level]);
+      el.textContent = String(spot.rank);
+      el.title = `${spot.rank}. ${spot.where}`;
+      el.addEventListener('click', () => this.lookAtCells(spot.x0, spot.y0, spot.x1, spot.y1));
+      this.init.overlay.appendChild(el);
+      const p = isoProject(spot.cx, spot.cy, 4 + this.liftAt(spot.cx, spot.cy));
+      return { el, sx: p.sx, sy: p.sy };
+    });
+  }
+
+  /** How high the ground is here: the tier a fan in the stands is sitting on. */
+  private liftAt(x: number, y: number): number {
+    const bowl = this.bowl;
+    if (!bowl) return 0;
+    const { width, height } = this.init.map;
+    const u = Math.floor(x / CELL_SIZE_M);
+    const v = Math.floor(y / CELL_SIZE_M);
+    if (u < 0 || v < 0 || u >= width || v >= height) return 0;
+    return bowl.height[v * width + u]!;
   }
 
   setHeat(on: boolean): void {
@@ -695,12 +755,17 @@ export class CrowdScene {
     if (!this.app) return;
     const { map, dangerDensity } = this.init;
     void dangerDensity;
+    if (frame.density) {
+      const n = frame.density.length;
+      if (!this.seated || this.seated.length !== n) this.seated = new Float32Array(n);
+      this.standing = standingDensity(map, frame, frame.density, this.standing ?? undefined, this.seated);
+    }
     if (frame.density && this.showHeat) {
       // The same five bands as the side-by-side maps, so a colour means the
       // same thing in both views and the band picked in one stays picked.
       const data = this.heat.image.data;
       data.fill(0);
-      const rho = frame.density;
+      const rho = this.standing!;
       const bands = this.bands;
       const picked = this.selectedBand;
       for (let i = 0; i < rho.length; i++) {
@@ -717,6 +782,26 @@ export class CrowdScene {
       this.heat.texture.source.update();
     }
     this.paintWeather(frame.weather);
+    this.paintStands(frame);
+
+    if (this.showFlow) {
+      this.flowCells = trafficFlow(map, frame.vehicles, this.flowCells ?? undefined);
+      const fd = this.flow.image.data;
+      fd.fill(0);
+      const cells = this.flowCells;
+      for (let c = 0; c < cells.length; c++) {
+        const level = cells[c]!;
+        if (!level) continue;
+        const [r, g, b] = FLOW_RGB[level]!;
+        const o = c * 4;
+        fd[o] = r;
+        fd[o + 1] = g;
+        fd[o + 2] = b;
+        fd[o + 3] = 235;
+      }
+      this.flow.ctx.putImageData(this.flow.image, 0, 0);
+      this.flow.texture.source.update();
+    }
 
     const data = this.dots.image.data;
     data.fill(0);
@@ -740,6 +825,53 @@ export class CrowdScene {
   }
 
   /**
+   * The crowd in the stands, drawn on the tiers at the height it sits. The flat
+   * dot and heat layers are under the bowl, so without this a full stadium
+   * looked empty from above.
+   */
+  private paintStands(frame: SceneFrame): void {
+    const bowl = this.bowl;
+    const g = this.standsCrowd;
+    g.clear();
+    if (!bowl || !frame.density || !this.standing || !this.seated) return;
+    const { width } = this.init.map;
+    const rho = this.standing;
+    const seated = this.seated;
+    const bands = this.bands;
+    const picked = this.selectedBand;
+    const C = CELL_SIZE_M;
+    for (let k = 0; k < bowl.seats.length; k++) {
+      const c = bowl.seats[k]!;
+      const v = rho[c]!;
+      const sit = seated[c]!;
+      if (v < 0.08 && sit < 0.08) continue;
+      let colour: number;
+      let alpha: number;
+      if (v < 0.08) {
+        // Fans in their seats: a calm tint that fills in as the stadium does.
+        colour = 0xc9d6e8;
+        alpha = 0.18 + 0.42 * Math.min(1, sit / 5);
+      } else if (this.showHeat) {
+        const b = bandOf(v, bands);
+        const band = bands[b]!;
+        colour = (band.rgb[0] << 16) | (band.rgb[1] << 8) | band.rgb[2];
+        alpha = picked === null ? 0.55 + 0.3 * Math.min(1, v / 5) : picked === b ? 0.95 : 0.08;
+      } else {
+        colour = 0x7ddfff;
+        alpha = 0.25 + 0.6 * Math.min(1, v / 5);
+      }
+      const u = c % width;
+      const w = (c / width) | 0;
+      const h = bowl.height[c]! + 0.05;
+      const pts = [
+        isoProject(u * C + 0.2, w * C + 0.2, h), isoProject((u + 1) * C - 0.2, w * C + 0.2, h),
+        isoProject((u + 1) * C - 0.2, (w + 1) * C - 0.2, h), isoProject(u * C + 0.2, (w + 1) * C - 0.2, h),
+      ];
+      g.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
+    }
+  }
+
+  /**
    * What the weather does to the model itself, as opposed to the animated
    * layer over it: snow settles white on the ground and the roofs, rain leaves
    * the ground dark and wet, fog greys it out.
@@ -751,17 +883,17 @@ export class CrowdScene {
     switch (w?.kind) {
       case 'snow':
         colour = 0xeef3f8;
-        alpha = 0.3 + 0.4 * I;
+        alpha = 0.14 + 0.2 * I;
         break;
       case 'rain':
       case 'heavy_rain':
       case 'thunderstorm':
         colour = 0x0a1626;
-        alpha = 0.12 + 0.2 * I;
+        alpha = 0.07 + 0.12 * I;
         break;
       case 'fog':
         colour = 0xc9d0d6;
-        alpha = 0.12 + 0.15 * I;
+        alpha = 0.06 + 0.08 * I;
         break;
       case 'overcast':
         colour = 0x0d1118;
@@ -775,7 +907,7 @@ export class CrowdScene {
     this.cover.tint = colour;
     this.cover.alpha = alpha;
 
-    const snow = w?.kind === 'snow' ? Math.round((0.45 + 0.4 * I) * 10) / 10 : 0;
+    const snow = w?.kind === 'snow' ? Math.round((0.25 + 0.3 * I) * 10) / 10 : 0;
     if (snow !== this.buildingSnow && this.buildings) {
       const next = buildBuildings(this.init.map, snow);
       const index = this.world.getChildIndex(this.buildings);
@@ -1090,7 +1222,7 @@ export class CrowdScene {
     for (let i = 0; i < cur.x.length; i++) {
       const pos = this.positionOf(i, now);
       if (!pos) continue;
-      const p = isoProject(pos.x, pos.y, lift);
+      const p = isoProject(pos.x, pos.y, lift + this.liftAt(pos.x, pos.y));
       const dx = p.sx * s + this.cam.x - px;
       const dy = p.sy * s + this.cam.y - py;
       const sq = dx * dx + dy * dy;
@@ -1140,7 +1272,7 @@ export class CrowdScene {
     if (this.follow && this.selected !== null) {
       const pos = this.positionOf(this.selected, now);
       if (pos) {
-        const p = isoProject(pos.x, pos.y, FIG_H / 2);
+        const p = isoProject(pos.x, pos.y, FIG_H / 2 + this.liftAt(pos.x, pos.y));
         const tx = w / 2 - p.sx * this.cam.scale;
         const ty = h / 2 - p.sy * this.cam.scale;
         this.cam.x += (tx - this.cam.x) * 0.12;
@@ -1167,7 +1299,7 @@ export class CrowdScene {
       const show = (i: number) => {
         const pos = this.positionOf(i, now);
         if (!pos) return;
-        const p = isoProject(pos.x, pos.y);
+        const p = isoProject(pos.x, pos.y, this.liftAt(pos.x, pos.y));
         if (i !== this.selected && (p.sx < x0 || p.sx > x1 || p.sy < y0 || p.sy > y1)) return;
         const person = this.person(used++);
         person.c.visible = true;
@@ -1201,7 +1333,8 @@ export class CrowdScene {
     for (const label of this.labels) {
       const x = label.sx * s + this.cam.x;
       const y = label.sy * s + this.cam.y;
-      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && (!label.gate || s > this.fitScale * 1.6);
+      const near = label.street ? s > this.fitScale * 2.4 : !label.gate || s > this.fitScale * 1.6;
+      const visible = x > -80 && x < w + 80 && y > -20 && y < h + 20 && near;
       label.el.style.display = visible ? '' : 'none';
       if (visible) label.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
@@ -1214,6 +1347,13 @@ export class CrowdScene {
       this.zoneTag.style.transform = `translate(${x | 0}px, ${(y | 0) - 26}px) translate(-50%, -100%)`;
     } else {
       this.zoneTag.style.display = 'none';
+    }
+    for (const pin of this.pins) {
+      const x = pin.sx * s + this.cam.x;
+      const y = pin.sy * s + this.cam.y;
+      const visible = x > -40 && x < w + 40 && y > -40 && y < h + 40;
+      pin.el.style.display = visible ? '' : 'none';
+      if (visible) pin.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -100%)`;
     }
   }
 
@@ -1242,7 +1382,7 @@ export class CrowdScene {
       this.nameTag.style.display = 'none';
       return;
     }
-    const p = isoProject(pos.x, pos.y);
+    const p = isoProject(pos.x, pos.y, this.liftAt(pos.x, pos.y));
     const k = Math.max(1, PEOPLE_MIN_SCALE / s);
     const pulse = 1 + 0.15 * Math.sin(now / 220);
     this.marker
@@ -1271,6 +1411,7 @@ export class CrowdScene {
     this.destroyed = true;
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
+    for (const pin of this.pins) pin.el.remove();
     this.nameTag.remove();
     this.zoneTag.remove();
     const app = this.app;

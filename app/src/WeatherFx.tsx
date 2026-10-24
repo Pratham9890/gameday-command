@@ -109,12 +109,12 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
 
         // Sky tint first: storms darken, snow brightens, heat warms.
         const tint =
-          w.kind === 'thunderstorm' ? `rgba(4,8,22,${0.18 + 0.2 * I})` :
-          w.kind === 'heavy_rain' ? `rgba(6,12,26,${0.12 + 0.18 * I})` :
+          w.kind === 'thunderstorm' ? `rgba(4,8,22,${0.1 + 0.12 * I})` :
+          w.kind === 'heavy_rain' ? `rgba(6,12,26,${0.07 + 0.1 * I})` :
           w.kind === 'rain' ? `rgba(8,14,28,${0.08 + 0.1 * I})` :
           w.kind === 'overcast' ? `rgba(12,16,24,${0.1 + 0.12 * I})` :
-          w.kind === 'snow' ? `rgba(225,235,250,${0.1 + 0.16 * I})` :
-          w.kind === 'fog' ? `rgba(196,204,212,${0.14 + 0.26 * I})` :
+          w.kind === 'snow' ? `rgba(225,235,250,${0.04 + 0.06 * I})` :
+          w.kind === 'fog' ? `rgba(196,204,212,${0.08 + 0.14 * I})` :
           w.kind === 'heat' ? `rgba(255,120,30,${0.04 + 0.06 * I})` : null;
         if (tint) {
           ctx.fillStyle = tint;
@@ -124,7 +124,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
         const wet = w.kind === 'rain' || w.kind === 'heavy_rain' || w.kind === 'thunderstorm';
         if (wet) {
           active = true;
-          const want = Math.round(((pw * ph) / 1300) * (0.35 + I));
+          const want = Math.round(((pw * ph) / 3200) * (0.3 + I));
           while (fx.drops.length < want) {
             fx.drops.push({ x: Math.random() * pw, y: Math.random() * ph, len: (6 + Math.random() * 10) * k, speed: (500 + Math.random() * 500) * k });
           }
@@ -134,7 +134,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
           const norm = Math.hypot(dx, dy) || 1;
           const ux = dx / norm;
           const uy = dy / norm;
-          ctx.strokeStyle = `rgba(170,200,235,${0.28 + 0.25 * I})`;
+          ctx.strokeStyle = `rgba(170,200,235,${0.18 + 0.16 * I})`;
           ctx.lineWidth = Math.max(1, 0.9 * k);
           ctx.beginPath();
           for (const d of fx.drops) {
@@ -166,12 +166,12 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
 
         if (w.kind === 'snow') {
           active = true;
-          const want = Math.round(((pw * ph) / 1000) * (0.4 + I));
+          const want = Math.round(((pw * ph) / 4200) * (0.3 + I));
           while (fx.flakes.length < want) {
-            fx.flakes.push({ x: Math.random() * pw, y: Math.random() * ph, r: (1.1 + Math.random() * 2.6) * k, drift: Math.random() * 2 - 1, phase: Math.random() * 6, speed: (25 + Math.random() * 45) * k });
+            fx.flakes.push({ x: Math.random() * pw, y: Math.random() * ph, r: (0.8 + Math.random() * 1.6) * k, drift: Math.random() * 2 - 1, phase: Math.random() * 6, speed: (25 + Math.random() * 45) * k });
           }
           fx.flakes.length = Math.min(fx.flakes.length, want);
-          ctx.fillStyle = 'rgba(245,248,255,0.85)';
+          ctx.fillStyle = 'rgba(245,248,255,0.7)';
           ctx.beginPath();
           for (const f of fx.flakes) {
             if (!still) {
@@ -200,7 +200,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
               if (b.x + b.r < 0) b.x = pw + b.r;
             }
             const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
-            g.addColorStop(0, `rgba(210,216,222,${0.22 * I})`);
+            g.addColorStop(0, `rgba(210,216,222,${0.12 * I})`);
             g.addColorStop(1, 'rgba(210,216,222,0)');
             ctx.fillStyle = g;
             ctx.fillRect(b.x - b.r, b.y - b.r, b.r * 2, b.r * 2);
@@ -236,7 +236,7 @@ export function WeatherFx({ weathers, panelW, panelH, gap, totalW }: WeatherFxPr
             f.second = 0;
           }
           if (f.alpha > 0.01) {
-            ctx.fillStyle = `rgba(225,232,255,${f.alpha * 0.45})`;
+            ctx.fillStyle = `rgba(225,232,255,${f.alpha * 0.3})`;
             ctx.fillRect(0, 0, pw, ph);
             if (f.bolt && f.alpha > 0.2) {
               ctx.strokeStyle = `rgba(240,245,255,${Math.min(1, f.alpha * 1.6)})`;

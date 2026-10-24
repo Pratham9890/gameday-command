@@ -14,6 +14,7 @@ import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
+import { HOTSPOT_COLOUR, policeHotspots, standingDensity, type PoliceHotspot } from './congestion.ts';
 import { bandTotals, heatBands, hotspots, makePlaceIndex, type Hotspot } from './heat.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
 import { vehicleIcon } from './vehicleArt.ts';
@@ -281,7 +282,11 @@ export function App() {
   const [selectedBand, setSelectedBand] = useState<number | null>(null);
   const [focusBox, setFocusBox] = useState<FocusBox | null>(null);
   /** The 3D close-up of one plan (the default) or all three maps side by side. */
-  const [view, setView] = useState<'close' | 'compare'>(params.get('view') === 'compare' ? 'compare' : 'close');
+  /** The 3D close-up of one plan (the default), a large 2D plan of one, or all three maps side by side. */
+  const [view, setView] = useState<'close' | 'plan' | 'compare'>(
+    params.get('view') === 'compare' ? 'compare' : params.get('view') === 'plan' ? 'plan' : 'close',
+  );
+  const [showFlow, setShowFlow] = useState(true);
   const [closeRun, setCloseRun] = useState(0);
   const [focusToken, setFocusToken] = useState(0);
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
@@ -517,26 +522,35 @@ export function App() {
     return scrub === null ? run.latest.current : (kept[Math.min(scrub, kept.length - 1)] ?? run.latest.current);
   };
   const ticks = runs.map((r) => r.tick).join(',');
-  const totals = useMemo(
+  // People on their feet per run, which every colour and count below is built
+  // from: seated fans are dense and safe, as in the scorecard's danger minutes.
+  const standing = useMemo(
     () =>
       runs.map((run) => {
-        const density = shown(run)?.density;
-        return density ? bandTotals(density.peoplePerM2, bands) : null;
+        const view = shown(run);
+        return view?.density && loaded ? standingDensity(loaded.map, view.frame, view.density.peoplePerM2) : null;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ticks, scrub, bands],
+    [ticks, scrub, loaded],
+  );
+  const totals = useMemo(
+    () => standing.map((rho) => (rho ? bandTotals(rho, bands) : null)),
+    [standing, bands],
   );
   const spots = useMemo<(Hotspot[] | null)[]>(() => {
     if (selectedBand === null || !loaded || !placeIndex) return [null, null, null];
-    return runs.map((run) => {
-      const density = shown(run)?.density;
-      return density ? hotspots(density.peoplePerM2, loaded.map, bands[selectedBand]!, placeIndex, 4) : null;
-    });
+    return standing.map((rho) => (rho ? hotspots(rho, loaded.map, bands[selectedBand]!, placeIndex, 4) : null));
+  }, [standing, selectedBand, loaded, placeIndex, bands]);
+  // The most congested places in each run, for the police list and the map pins.
+  const police = useMemo<PoliceHotspot[][]>(() => {
+    if (!loaded || !placeIndex) return [[], [], []];
+    return runs.map((run, i) => policeHotspots(loaded.map, standing[i] ?? undefined, shown(run)?.frame.vehicles, placeIndex, DANGER, 6));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticks, scrub, selectedBand, loaded, placeIndex, bands]);
+  }, [standing, loaded, placeIndex]);
+
   const vehicleCounts = useMemo(() => {
     const counts = new Map<VehicleKind, number>();
-    const v = shown(runs[view === 'close' ? closeRun : 0]!)?.frame.vehicles;
+    const v = shown(runs[view === 'compare' ? 0 : closeRun]!)?.frame.vehicles;
     if (!v) return counts;
     for (let i = 0; i < v.kind.length; i++) {
       const state = VEHICLE_STATES[v.state[i]!];
@@ -662,14 +676,17 @@ export function App() {
         <main>
           {loaded && (
             <>
-              <div className={`canvas-wrap${view === 'close' ? ' close' : ''}`}>
+              <div className={`canvas-wrap${view === 'close' ? ' close' : view === 'plan' ? ' plan' : ''}`}>
                 {/* Only one of these is mounted at a time, so the page holds a
                     single WebGL context. ComparisonMaps draws all three runs in
                     one PixiJS Application for the same reason. */}
-                {view === 'compare' ? (
+                {view !== 'close' ? (
                   <ComparisonMaps
+                    key={view}
                     map={loaded.map}
-                    runs={runs}
+                    runs={view === 'plan' ? [runs[closeRun]!] : runs}
+                    showFlow={showFlow}
+                    hotspots={view === 'plan' ? [police[closeRun] ?? []] : police}
                     scrubIndex={scrub}
                     dangerDensity={DANGER}
                     incidentCells={incident?.cells}
@@ -677,9 +694,11 @@ export function App() {
                     selectedBand={selectedBand}
                     vehicleFocus={vehicleFocus}
                     showVehicles={showVehicles}
-                    picked={mapPicked}
+                    picked={view === 'plan' ? (mapPicked && mapPicked.run === closeRun ? { ...mapPicked, run: 0 } : null) : mapPicked}
                     focus={focusBox}
-                    onPick={(pick) => {
+                    onPick={(raw) => {
+                      // The 2D plan has one panel; its index 0 is the plan on show.
+                      const pick = raw && view === 'plan' ? { ...raw, run: closeRun } : raw;
                       setPicked(pick?.type === 'dot' ? { run: pick.run, dot: pick.dot } : null);
                       setPickedVehicle(pick?.type === 'vehicle' ? { run: pick.run, vehicle: pick.vehicle } : null);
                       setPickedCell(pick?.type === 'cell' ? pick : null);
@@ -710,10 +729,13 @@ export function App() {
                     }}
                     selectedBand={selectedBand}
                     focusBox={focusBox}
+                    showFlow={showFlow}
+                    onShowFlow={setShowFlow}
+                    hotspots={police[closeRun] ?? []}
                   />
                 )}
                 <div className="map-title">
-                  {view === 'close' ? (
+                  {view !== 'compare' ? (
                     <>
                       <span className="label">{LABELS[closeRun]}</span> {planStates[closeRun]?.plan.name}
                     </>
@@ -723,7 +745,10 @@ export function App() {
                 </div>
                 <div className="view-toggle">
                   <button className={view === 'close' ? 'on' : undefined} onClick={() => setView('close')}>
-                    3D, one plan
+                    3D
+                  </button>
+                  <button className={view === 'plan' ? 'on' : undefined} onClick={() => setView('plan')}>
+                    2D plan
                   </button>
                   <button className={view === 'compare' ? 'on' : undefined} onClick={() => setView('compare')}>
                     All three
@@ -859,6 +884,14 @@ export function App() {
               </div>
 
               <div className="band-bar">
+                {traffic && (
+                  <button className={`flow-key${showFlow ? ' on' : ''}`} onClick={() => setShowFlow((v) => !v)} title="Show or hide traffic flow on the roads">
+                    <span className="legend-title">Traffic</span>
+                    <span><i style={{ background: '#2ed573' }} /> moving</span>
+                    <span><i style={{ background: '#ffb020' }} /> slow</span>
+                    <span><i style={{ background: '#ff3040' }} /> jammed</span>
+                  </button>
+                )}
                 <span className="legend-title">How packed</span>
                 {bands.map((band) => {
                   const total = totals.reduce((sum, t) => sum + (t?.[band.id]?.people ?? 0), 0) / 3;
@@ -943,6 +976,49 @@ export function App() {
         </main>
 
         <aside className="side">
+          <section className="panel police">
+            <h2>
+              🚨 Most congested right now <Info>Ranked by people standing packed at 3 or more per m² and by vehicles stopped or crawling. Seated fans are left out: a full section is dense but safe. This ranks places to look at; where to send officers stays your call.</Info>
+            </h2>
+            <div className="police-tabs">
+              {LABELS.map((l, i) => (
+                <button
+                  key={l}
+                  className={closeRun === i ? 'on' : undefined}
+                  onClick={() => {
+                    setCloseRun(i);
+                    if (view === 'compare') setView('plan');
+                  }}
+                >
+                  Plan {l}
+                  {(police[i]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && <b className="crit-count">{police[i]!.filter((h) => h.level === 'critical').length}</b>}
+                </button>
+              ))}
+            </div>
+            {(police[closeRun] ?? []).length === 0 ? (
+              <p className="muted">{started ? 'Nothing congested at the moment.' : 'Run the plans to see where it gets congested.'}</p>
+            ) : (
+              <ol className="hotspots">
+                {(police[closeRun] ?? []).map((h) => (
+                  <li key={h.rank} className={h.level}>
+                    <button onClick={() => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() })} title="Show on the map">
+                      <span className="rank" style={{ background: HOTSPOT_COLOUR[h.level] }}>{h.rank}</span>
+                      <span className="what">
+                        <strong>{h.where}</strong>
+                        <em>
+                          {h.kind !== 'traffic' && `👥 ${n(h.crowdedPeople)} packed, peak ${h.peakDensity.toFixed(1)}/m²`}
+                          {h.kind === 'both' && ' · '}
+                          {h.kind !== 'crowd' && `🚗 ${h.stoppedVehicles} stopped${h.slowVehicles ? `, ${h.slowVehicles} slow` : ''}`}
+                        </em>
+                      </span>
+                      <span className={`level ${h.level}`}>{h.level}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
           <section className="panel">
             <h2>1 · Situation</h2>
             <div className="situations">
@@ -975,7 +1051,7 @@ export function App() {
                   map={loaded.map}
                   incident={incident}
                   totalFans={fanCount(loaded.map)}
-                  selected={view === 'close' && closeRun === i}
+                  selected={view !== 'compare' && closeRun === i}
                   rank={rankOf(i)}
                   onSelect={() => {
                     setCloseRun(i);

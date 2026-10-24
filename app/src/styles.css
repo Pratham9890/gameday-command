@@ -436,3 +436,51 @@ main > .areas-panel, main > .vehicles-panel { margin-top: 12px; }
 .controls label.toggle input { accent-color: var(--scarlet); }
 .vehicle-inspector section .vehicle-icon { height: 34px; margin-bottom: 8px; }
 .vehicle-inspector { bottom: auto; }
+
+/* ─── streets, police pins ─── */
+.crowd-label.street {
+  background: rgba(20, 24, 30, 0.72); color: #e6e9ee; border-color: #ffffff22;
+  font-size: 10.5px; font-style: italic; font-weight: 500; letter-spacing: 0.01em; padding: 1px 6px;
+}
+.crowd-label.street.major { color: #ffe27a; border-color: #f5c51855; }
+.crowd-pin {
+  position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; z-index: 3;
+  width: 26px; height: 32px; padding: 0; border: 0; background: transparent; color: #0b0f14;
+  font-weight: 800; font-size: 13px; line-height: 26px; text-align: center;
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,0.6));
+}
+.crowd-pin::before {
+  content: ''; position: absolute; inset: 0 0 6px 0; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+  background: var(--pin); border: 2px solid #fff; z-index: -1;
+}
+.crowd-pin.critical::after {
+  content: ''; position: absolute; left: 50%; top: 13px; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  border-radius: 50%; border: 2px solid var(--pin); animation: pin-pulse 1.4s ease-out infinite; z-index: -2;
+}
+@keyframes pin-pulse { from { transform: scale(0.4); opacity: 0.9; } to { transform: scale(1.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .crowd-pin.critical::after { animation: none; } }
+
+/* ─── 2D plan, traffic key, police list ─── */
+.canvas-wrap.plan { background: #05070a; }
+.canvas-wrap.plan .maps-stack { width: min(100%, calc(100vh - 230px)); margin: 0 auto; }
+.flow-key { display: inline-flex; align-items: center; gap: 10px; padding: 4px 10px; border-radius: 999px; margin-right: 8px; font-size: 11.5px; color: var(--dim); }
+.flow-key span { display: inline-flex; align-items: center; gap: 4px; }
+.flow-key i { width: 18px; height: 5px; border-radius: 3px; display: inline-block; }
+.flow-key.on { border-color: #3d4854; color: var(--ink); }
+.flow-key:not(.on) { opacity: 0.5; }
+.panel.police { border-color: #5a1f2a; background: linear-gradient(180deg, #1b1216, var(--panel)); }
+.police-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.police-tabs button { flex: 1; padding: 4px 6px; font-size: 11.5px; position: relative; }
+.police-tabs button.on { border-color: #e6edf3; background: #222a35; }
+.police-tabs .crit-count { position: absolute; top: -6px; right: -4px; background: #ff3b5c; color: #fff; border-radius: 999px; font-size: 10px; padding: 0 5px; line-height: 15px; }
+.hotspots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.hotspots button { width: 100%; display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 8px; text-align: left; padding: 6px 8px; }
+.hotspots .rank { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: #0b0f14; font-weight: 800; font-size: 12px; border: 2px solid #fff; }
+.hotspots .what { display: flex; flex-direction: column; min-width: 0; }
+.hotspots .what strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hotspots .what em { font-style: normal; color: var(--dim); font-size: 11px; }
+.hotspots .level { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+.hotspots .level.critical { background: #ff3b5c33; color: #ff8aa0; }
+.hotspots .level.high { background: #ff9b2b33; color: #ffbf73; }
+.hotspots .level.watch { background: #f5d54726; color: #f5d547; }
+.hotspots li.critical button { border-color: #ff3b5c88; }
