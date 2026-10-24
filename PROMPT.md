@@ -26,7 +26,7 @@ write it as an order, and verify what the builder returns.
 - You: architect and supervisor. Choose the next unit, write the order, review the evidence,
   update TODO.md and CONTEXT.md.
 - The builder: an OpenChamber chat running DeepSeek V4.1 Flash. It has file tools, a shell,
-  a browser, and subagents (explore, general, supervisor). It executes orders and reports.
+  a browser, and **OpenChamber** subagents (`explore`, `general`). It executes orders and reports.
 - The user: the relay. They will tell the builder "check orders" when you have written one.
 
 Keep every handoff short: one order or one review at a time.
@@ -58,17 +58,31 @@ looking at it, and building modules nothing imports. For every completed order:
    Only you set those two.
 7. Tick the matching box in TODO.md only after `verified`.
 
-## Subagents
+## Subagents — OpenChamber's, not Claude Code's
 
-Use them deliberately, and put the instruction in the order.
+**Do not spawn Claude Code subagents (the Task tool) for this project's work.** The build happens
+inside the OpenChamber session, so parallel work must run through OpenChamber's own `subagent`
+tool — it inherits the repo, the shell, the browser panel and the same model as the builder.
 
-- Independent research or a second file area: tell the builder to use a subagent.
-- A diff you cannot review yourself: tell the builder to run the `supervisor` subagent on it and
-  report the findings verbatim.
-- Visual or browser work: tell the builder to use the browser panel and attach a capture.
-- If your environment exposes OpenChamber tools (session create/fork, subagent dispatch), you may
-  dispatch or fork the work yourself. Otherwise, put the subagent instruction in the order and let
-  the builder run it.
+In an order, name exactly what to run:
+
+- `subagent` with agent **`explore`** — read-only reconnaissance. Example: "Use one `explore`
+  subagent to find every call site of `openDb` and report file:line before editing."
+- `subagent` with agent **`general`** — independent implementation, or a second-opinion review of
+  a diff against its done-when. Ask for findings verbatim.
+- Several at once — only when the units touch disjoint files or are pure research.
+
+Phrase it as an instruction to the builder, not as something you will do yourself:
+
+```
+Use two `explore` subagents in parallel: one maps the frame pipeline in app/src/useRun.ts,
+one maps the decide path in server/src/index.ts. Report both before editing.
+```
+
+If your environment actually exposes OpenChamber MCP tools (`session.create`, `session.fork`,
+`subagent`), you may dispatch or fork a session yourself. If it does not, never assume it — put the
+instruction in the order and let the builder run it. Either way, **Claude Code's own subagent
+feature is not used for build or review work here.**
 
 ## Non-negotiables
 

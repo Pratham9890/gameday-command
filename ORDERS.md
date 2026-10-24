@@ -14,6 +14,8 @@ user says **"check orders"**, executes open orders, and reports evidence.
 5. **The builder may not edit the order text**, and may not set `verified` or `rejected`.
 6. **Priority:** `high` first; within a priority, lowest id first.
 7. If an order contradicts `CONTEXT.md` or the frozen contract, stop and say so.
+8. The `subagents` field names **OpenChamber** agents only (`explore`, `general`). Claude Code's
+   own Task/subagent feature is not used for build or review work here.
 
 ## Status values
 
@@ -35,6 +37,7 @@ user says **"check orders"**, executes open orders, and reports evidence.
 priority: high
 status: open
 files: path/a.ts, path/b.tsx
+subagents: none        # or: explore × 2 · general × 1  (OpenChamber agents only)
 do: what to change, in two or three sentences.
 done-when: the check that proves it.
 depends-on: ORD-000 (optional)
@@ -48,6 +51,7 @@ result:
 priority: high
 status: open
 files: server/src/db.ts, package.json, server/src/index.ts, server/src/db.test.ts
+subagents: explore × 1 (inventory every sqlite use before editing)
 do: Replace `better-sqlite3` with the built-in `node:sqlite` (`DatabaseSync`). Keep the schema,
 the `user_version` cache reset and `seedDecisions()` behaviour identical. Remove
 `better-sqlite3` from `package.json` and from `allowScripts`. Make the `decision-seed.json` path
@@ -64,6 +68,7 @@ result:
 priority: normal
 status: open
 files: app/src/App.tsx, app/src/styles.css (plus a small component if needed)
+subagents: none
 do: Show `1 dot = 5 fans · 20,000 dots · 100,000 fans`, with the numbers derived from the map and
 the live dot count, not typed literals. Add a dismissible strip that says crowd, traffic and
 sensors are synthetic, and that the forecast is a model output, not an observation. Do not
@@ -80,6 +85,7 @@ result:
 priority: normal
 status: open
 files: world/src/osm/stadium.ts, world/src/osm/stadium.test.ts
+subagents: explore × 1 (map how OSM lots become places)
 do: Derive reserved tailgate zones from OSM parking areas near the stadium and emit places with
 `kind: 'tailgate'` in the map bundle. Keep their cells walkable and reachable from a gate.
 Do not change `contracts.ts`.
