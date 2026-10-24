@@ -35,6 +35,8 @@ export interface CrowdViewProps {
   onShowFlow: (on: boolean) => void;
   /** The most congested areas, pinned on the map. */
   hotspots: PoliceHotspot[];
+  /** A road cell was clicked (not a fan, officer or vehicle), for placing a barricade or sending officers there. */
+  onPickStreet?: (cell: number) => void;
 }
 
 /**
