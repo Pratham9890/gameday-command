@@ -6,32 +6,48 @@ export const DIR_DY = [0, 0, 1, 1, 1, 0, -1, -1, -1] as const;
 export const UNREACHABLE = 0xffff;
 
 /**
- * What one step onto a cell of this kind costs a route, in whole units.
+ * Base cost of one step on this kind, before the sidewalk discount.
  * Must be at least 1 and at most MAX_STEP_COST. Only the ratios matter: a
  * cheaper kind draws routes onto it, at the price of a longer walk.
  */
 export function stepCost(kind: CellKind): number {
-  // A street is two thirds the price of open ground: enough to pull a crowd
-  // onto it when it runs the right way, not so much that everyone walks a long
-  // way round to stay on asphalt. Lots are open ground for this purpose.
+  // Roads are where the cars are (traffic.ts drives them), so a walker pays
+  // well over double to stand on one: crossing a street costs a few steps,
+  // walking down the middle of it is never worth it. Before this a street was
+  // the cheapest kind and 43% of every on-foot dot-step was spent on asphalt.
   switch (kind) {
     case 'road':
-      return 2;
+      return 32;
     case 'blocked':
       return MAX_STEP_COST;
     default:
-      return 3;
+      return 12;
   }
 }
 
+/**
+ * A walk cell this close to a road (in cells, any direction) is sidewalk.
+ * Two cells is 4 m, which covers a stadium-district sidewalk and its verge.
+ */
+export const SIDEWALK_REACH = 2;
+
+/**
+ * One step on sidewalk. Only a twelfth cheaper than open ground, on purpose:
+ * a strong discount (2 against 3) funnelled whole crowds into the strip beside
+ * each street, and gate admissions by half an hour after kickoff fell from
+ * 76,835 to 54,070. At this ratio a route still keeps to the sidewalk along a
+ * street, but a crowd spreads across open ground the way it did before.
+ */
+export const SIDEWALK_STEP = 11;
+
 /** The ceiling on `stepCost`, which sizes the bucket queue below. */
-export const MAX_STEP_COST = 4;
+export const MAX_STEP_COST = 32;
 
 /** Distance units of one step on open ground, for thresholds written in steps. */
 export const WALK_STEP = stepCost('walk');
 
 export interface FlowField {
-  /** Route cost to the destination (see `stepCost`), UNREACHABLE where there is no route. */
+  /** Route cost including sidewalk discounts, UNREACHABLE where there is no route. */
   dist: Uint16Array;
   /** Which way to walk from this cell, as a DIR_* index. */
   dir: Uint8Array;
@@ -40,9 +56,9 @@ export interface FlowField {
 /**
  * One distance field per destination, built outward from the destination's
  * own cells, then frozen into a direction byte per cell. Steps are weighted by
- * `stepCost`, so a route prefers roads over open ground the way a game-day
- * crowd does — with plain BFS every route was the straight line across lawns
- * and lots, and nobody walked down a street.
+ * precomputed cell costs: sidewalks beside roads are cheapest, open ground
+ * is normal, and roads cost more so pedestrians cross them without following
+ * vehicle lanes. Cell kinds never change, so neighbourhoods are scanned once.
  *
  * Precomputing the direction is what keeps the step loop cheap: moving a dot is
  * one array read, not eight comparisons. Fields are built lazily and thrown away
@@ -50,11 +66,31 @@ export interface FlowField {
  */
 export class FlowFields {
   private readonly map: MapBundle;
+  private readonly costs: Uint8Array;
   private readonly cache = new Map<number, FlowField>();
   private closedCells: Set<number> = new Set();
 
   constructor(map: MapBundle) {
     this.map = map;
+    const { width, height, cells } = map;
+    this.costs = Uint8Array.from(cells, stepCost);
+    // Only open ground becomes sidewalk: lots and the bowl keep their cost.
+    const r = SIDEWALK_REACH;
+    for (let cell = 0; cell < cells.length; cell++) {
+      if (cells[cell] !== 'walk') continue;
+      const x = cell % width;
+      const y = (cell / width) | 0;
+      let nearRoad = false;
+      for (let ny = Math.max(0, y - r); ny <= Math.min(height - 1, y + r) && !nearRoad; ny++) {
+        for (let nx = Math.max(0, x - r); nx <= Math.min(width - 1, x + r); nx++) {
+          if (cells[ny * width + nx] === 'road') {
+            nearRoad = true;
+            break;
+          }
+        }
+      }
+      if (nearRoad) this.costs[cell] = SIDEWALK_STEP;
+    }
   }
 
   /** Recompute which cells are shut, and drop every cached field if it changed. */
@@ -144,7 +180,7 @@ export class FlowFields {
           if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
           const neighbour = ny * width + nx;
           if (!this.open(neighbour, avoidInterior, seeds)) continue;
-          const next = at + stepCost(cells[neighbour]!);
+          const next = at + this.costs[neighbour]!;
           if (next >= UNREACHABLE || dist[neighbour]! <= next) continue;
           dist[neighbour] = next;
           buckets[next % buckets.length]!.push(neighbour);
