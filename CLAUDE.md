@@ -43,6 +43,14 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **Hot reload of a 2D view can wedge the dev page** (main thread blocked; navigation then times out). A fresh tab runs fine. Reload rather than trust a page that has taken many HMR updates.
 - `window.gamedayMap.lookAt(xM, yM, zoom)`, `window.gamedayScene` (the 3D scene) and `window.gameday.vehiclesIn(run, state)` exist for unattended checks.
 
+## Commander's brief (feat/command-brief)
+
+- `app/src/command.ts` is the pure core: `levelOf` (history ratio over 1.3x is high, under 0.75x low, with absolute floors so tiny numbers stay low), `readings`, `suggestPlans`, `rankByPriority`, `noneAchieve`. `CommandPanel.tsx` is the UI; `StartScreen.tsx` the empty start.
+- History is recorded in the app once per sim minute per run (only moments later than that run's last, so a rewind does not double-count) and POSTed when all three plans finish (`/api/history`). The server averages by map, kind, subject and minute.
+- Real conditions are compared with history only when the feed gives `minuteToKickoff`; the simulation's clock says nothing about when real scans were taken.
+- Stadium import: `world/src/osm/fetch.ts` (Nominatim search, Overpass extract) is shared by `npm run fetch-map` and `/api/stadiums/import`. The server process can reach both; the Claude Code sandbox shell cannot reach Overpass. `buildStadiumMap(extract, options)` takes the stadium's OSM id, name and capacity; Ohio Stadium is the default, unchanged.
+- Kev on a 16 GB Mac: the first answer took 3 minutes (MLX warm-up plus swap), then about 1.2 s. Warm it before a demo.
+
 ## The OSM map
 
 `world/data/ohio-stadium.osm.json` is a committed 2.5 MB Overpass extract (6,291 elements) around Ohio Stadium, OSM way 119153498. Refetch with `npm run fetch-map`.

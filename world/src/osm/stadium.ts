@@ -92,7 +92,20 @@ function ringsOf(element: OsmElement): OsmGeometryPoint[][] {
  * subtracting buildings and walls models the real space far better than
  * starting from 'blocked' and only adding mapped paths.
  */
-export function buildStadiumMap(extract: OsmExtract): MapBundle {
+/** Which stadium to build, for maps imported from anywhere. Ohio Stadium when left out. */
+export interface StadiumOptions {
+  id?: string;
+  name?: string;
+  /** The OSM id of the leisure=stadium way or relation to build around. */
+  stadiumOsmId?: number;
+  capacity?: number;
+}
+
+const OHIO_CAPACITY = 104_944;
+/** Ohio Stadium has 12 gates for about 105,000; other stadiums scale from that. */
+const SEATS_PER_GATE = OHIO_CAPACITY / GATE_COUNT;
+
+export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {}): MapBundle {
   const projection = makeProjection(extract.center, extract.radiusM, CELL_SIZE_M);
   const { width, height } = projection;
   const cells: CellKind[] = new Array(width * height).fill('walk');
@@ -144,9 +157,13 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
   // The extract holds more than one leisure=stadium (St John Arena is next
   // door). Take the one actually named Ohio Stadium, else the biggest — picking
   // the last match silently gave us the arena and a bowl a third of the size.
+  // An imported stadium names its own OSM id.
   const stadium =
-    stadiumCandidates.find((e) => /Ohio Stadium/i.test(e.tags?.name ?? '')) ??
+    (options.stadiumOsmId !== undefined ? stadiumCandidates.find((e) => e.id === options.stadiumOsmId) : undefined) ??
+    stadiumCandidates.find((e) => (e.tags?.name ?? '').toLowerCase().includes((options.name ?? 'Ohio Stadium').toLowerCase())) ??
     stadiumCandidates.sort((a, b) => ringExtent(ringsOf(b)[0] ?? []) - ringExtent(ringsOf(a)[0] ?? []))[0];
+  const capacity = options.capacity ?? (Number(stadium?.tags?.capacity) || OHIO_CAPACITY);
+  const gateCount = Math.max(4, Math.min(16, Math.round(capacity / SEATS_PER_GATE)));
 
   // 3. Buildings win over the ways that pass beside them. Any other stadium or
   // arena in the extract is just a building as far as the crowd is concerned.
@@ -206,9 +223,9 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
   const gates: Place[] = [];
   const closables: { id: Id; name: string; cells: number[] }[] = [];
 
-  for (let g = 0; g < GATE_COUNT; g++) {
+  for (let g = 0; g < gateCount; g++) {
     // Screen bearing: y grows south, so negative y is north.
-    const bearing = (g / GATE_COUNT) * Math.PI * 2;
+    const bearing = (g / gateCount) * Math.PI * 2;
     const want = { x: Math.sin(bearing), y: -Math.cos(bearing) };
 
     let best = stadiumRing[0]!;
@@ -346,7 +363,7 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
 
   const places: Place[] = [...gates];
   if (standsCells.length > 0) {
-    places.push({ id: 'stands', name: 'Stands', kind: 'seating', cells: standsCells, capacity: 104_944 });
+    places.push({ id: 'stands', name: 'Stands', kind: 'seating', cells: standsCells, capacity });
   }
   if (concourseCells.length > 0) {
     places.push({ id: 'concourse', name: 'Concourse', kind: 'concourse', cells: concourseCells, capacity: 40_000 });
@@ -369,8 +386,8 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
 
   return {
     version: CONTRACT_VERSION,
-    id: STADIUM_MAP_ID,
-    name: 'Ohio Stadium + 0.5 mi',
+    id: options.id ?? STADIUM_MAP_ID,
+    name: `${options.name ?? stadium?.tags?.name ?? 'Ohio Stadium'} + 0.5 mi`,
     width,
     height,
     cells,
@@ -379,9 +396,9 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
     streets,
     field,
     sources: [
-      { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: 'https://www.openstreetmap.org/way/119153498' },
+      { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: `https://www.openstreetmap.org/${stadium.type}/${stadium.id}` },
       { label: `Fetched ${extract.fetchedAt.slice(0, 10)} via Overpass API`, url: 'https://overpass-api.de/' },
-      { label: `Assumption, not mapped data: ${GATE_COUNT} gates placed at even bearings, ${GATE_THROUGHPUT_PER_MIN} people/min each`, url: 'local' },
+      { label: `Assumption, not mapped data: ${gateCount} gates placed at even bearings, ${GATE_THROUGHPUT_PER_MIN} people/min each`, url: 'local' },
     ],
   };
 }

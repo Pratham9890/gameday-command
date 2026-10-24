@@ -9,6 +9,7 @@ import { makeTestMap } from '../../world/src/test-map.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from '../../world/src/osm/stadium.ts';
 import { openDb, type Db } from './db.ts';
+import { addCommandRoutes, importedMap } from './command.ts';
 import { askKev } from './kev.ts';
 import { briefingIsSupported, templateBriefing } from './briefing.ts';
 import { askFm, briefingFrom } from './fm.ts';
@@ -51,6 +52,7 @@ function mapById(id: string): MapBundle | undefined {
   let map: MapBundle | undefined;
   if (id === TEST_MAP_ID) map = makeTestMap();
   else if (id === STADIUM_MAP_ID && extractExists()) map = buildStadiumMap(loadExtract());
+  else map = importedMap(id);
   if (map) built.set(id, map);
   return map;
 }
@@ -139,6 +141,13 @@ export function createApp(db: Db): Hono {
   });
 
   app.get('/api/decision-defaults', (c) => c.json(DECISION_DEFAULTS));
+
+  addCommandRoutes(
+    app,
+    db,
+    [...(extractExists() ? [{ id: STADIUM_MAP_ID, name: 'Ohio Stadium + 0.5 mi' }] : []), { id: TEST_MAP_ID, name: 'Three-gate test map' }],
+    (id) => built.delete(id),
+  );
 
   /**
    * Cache first, then Kev, then defaults. Never fails: a dead Kev just means

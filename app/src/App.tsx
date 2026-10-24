@@ -12,6 +12,9 @@ import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.ts
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
+import { CommandPanel } from './CommandPanel.tsx';
+import { StartScreen } from './StartScreen.tsx';
+import { rankByPriority, stoppedPerStreet, streetIndex, type HistorySample, type Priority } from './command.ts';
 import { OfficerPanel } from './OfficerPanel.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
 import { stepStatus } from './live-steps.ts';
@@ -30,7 +33,8 @@ const params = new URLSearchParams(window.location.search);
  * The server serves the stadium map when it has been fetched, else the test
  * map. `?map=test-3gate` forces the small one, which is handy for a quick look.
  */
-const MAP_ID = params.get('map') ?? 'default';
+/** `?map=` picks a stadium; with none (and no autorun) the app starts empty, on the stadium chooser. */
+const MAP_PARAM = params.get('map');
 /** `?autorun=1` starts the three runs without a click, for an unattended demo. */
 const AUTORUN = params.get('autorun') === '1';
 /** `?weather=thunderstorm` and `?traffic=0` set the scenario from the URL. */
@@ -42,7 +46,9 @@ const OFFICERS = 24;
 const SPEEDS = [5, 20, 60] as const;
 const DANGER = DEFAULT_DANGER_DENSITY;
 
-const fanCount = (map: MapBundle) => (map.width > 200 ? STADIUM_FANS : TEST_FANS);
+/** A stadium's crowd is its capacity, up to the 100,000 the engine is sized for. */
+const fanCount = (map: MapBundle) =>
+  map.width > 200 ? Math.min(STADIUM_FANS, Math.round((map.places.find((p) => p.kind === 'seating')?.capacity ?? STADIUM_FANS) / 5) * 5) : TEST_FANS;
 /** The test map is a gate wall and a lot with no streets between them. */
 const hasRoads = (map: MapBundle) => map.width > 200;
 const minutes = (seconds: number) => `${seconds < 0 ? '−' : '+'}${Math.abs(Math.round(seconds / 60))} min`;
@@ -294,6 +300,9 @@ function VehicleIcon({ kind }: { kind: VehicleKind }) {
 }
 
 export function App() {
+  const [mapId, setMapId] = useState<string | null>(MAP_PARAM ?? (AUTORUN ? 'default' : null));
+  const [priority, setPriority] = useState<Priority>('clear');
+  const [history, setHistory] = useState<{ runs: number; samples: HistorySample[] }>({ runs: 0, samples: [] });
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [incidentIndex, setIncidentIndex] = useState(0);
@@ -335,16 +344,28 @@ export function App() {
   });
 
   useEffect(() => {
+    if (!mapId) return;
+    setLoaded(null);
     void (async () => {
       try {
-        const map = await getMap(MAP_ID);
+        const map = await getMap(mapId);
         const defaults = await getDecisionDefaults();
         setLoaded({ map, defaults });
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, []);
+  }, [mapId]);
+
+  // What "usual" means for this stadium: every past run's gate queues and stopped traffic.
+  const loadHistory = (id: string) =>
+    void fetch(`/api/history?map=${encodeURIComponent(id)}`)
+      .then((r) => r.json())
+      .then(setHistory)
+      .catch(() => {});
+  useEffect(() => {
+    if (loaded) loadHistory(loaded.map.id);
+  }, [loaded]);
 
   const incidents = useMemo<Incident[]>(() => (loaded ? incidentsFor(loaded.map) : []), [loaded]);
   const incident = incidents[incidentIndex];
@@ -436,8 +457,52 @@ export function App() {
 
   const cards = runs.map((r) => r.scorecard);
   const allDone = cards.every((c) => c !== null);
-  const order = allDone ? rankPlans(cards) : null;
+  // "Best" is best for the priority the commander picked.
+  const order = allDone ? rankByPriority(cards, priority) : null;
+  void rankPlans;
   const rankOf = (i: number) => (order ? order.indexOf(i) : null);
+
+  // Record this run's gate queues and stopped traffic by minute to kickoff, so
+  // the next run of this stadium has a "usual" to compare against. Each run
+  // only adds moments later than its last, so a rewind does not count twice.
+  const recorded = useRef<{ generation: number; lastT: number[]; samples: { kind: string; subject: string; minute: number; value: number }[]; sent: boolean }>({
+    generation: -1,
+    lastT: [],
+    samples: [],
+    sent: false,
+  });
+  const streets = useMemo(() => (loaded ? streetIndex(loaded.map) : null), [loaded]);
+  useEffect(() => {
+    if (!loaded || !streets) return;
+    const rec = recorded.current;
+    if (rec.generation !== generation) recorded.current = { generation, lastT: [-Infinity, -Infinity, -Infinity], samples: [], sent: false };
+    runs.forEach((run, i) => {
+      const scene = run.scene.current;
+      const frame = run.latest.current?.frame;
+      if (!scene || !frame || scene.t <= recorded.current.lastT[i]! || scene.t % 60 !== 0) return;
+      recorded.current.lastT[i] = scene.t;
+      const minute = Math.round(scene.t / 60);
+      for (const g of scene.gates) {
+        const place = loaded.map.places[g.place];
+        if (place) recorded.current.samples.push({ kind: 'gate_waiting', subject: place.id, minute, value: g.waiting });
+      }
+      stoppedPerStreet(loaded.map, streets, frame.vehicles).forEach((value, k) => {
+        recorded.current.samples.push({ kind: 'street_stopped', subject: streets.streets[k]!.id, minute, value });
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runA.tick, runB.tick, runC.tick, loaded, streets, generation]);
+  useEffect(() => {
+    const rec = recorded.current;
+    if (!allDone || !loaded || rec.sent || rec.samples.length === 0) return;
+    rec.sent = true;
+    void fetch('/api/history', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mapId: loaded.map.id, runId: `gen-${generation}-${Date.now()}`, samples: rec.samples }),
+    }).then(() => loadHistory(loaded.map.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDone, loaded, generation]);
 
   // Start without a click when asked, once all three workers are ready. Only
   // once: `playing` is not a dependency, so this effect never sees a pause,
@@ -624,12 +689,37 @@ export function App() {
     }
   };
 
+  if (!mapId) {
+    return (
+      <StartScreen
+        onPick={(id) => {
+          const url = new URL(window.location.href);
+          url.searchParams.set('map', id);
+          window.history.replaceState(null, '', url);
+          setMapId(id);
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <header className="top">
         <div className="brand">
           <h1>Gameday Command</h1>
-          <span className="sub">Test crowd plans for Ohio Stadium before game day, not during it.</span>
+          <span className="sub">
+            Test crowd plans for {loaded ? loaded.map.name.replace(/ \+ 0\.5 mi$/, '') : '…'} before game day, not during it.{' '}
+            <button
+              className="link"
+              onClick={() => {
+                setPlaying(false);
+                setLoaded(null);
+                setMapId(null);
+              }}
+            >
+              Change stadium
+            </button>
+          </span>
         </div>
 
         <div className="clock">
@@ -1031,6 +1121,26 @@ export function App() {
         </main>
 
         <aside className="side">
+          {loaded && incident && planStates.length === 3 && (
+            <CommandPanel
+              map={loaded.map}
+              incident={incident}
+              run={runs[closeRun]!}
+              label={LABELS[closeRun]!}
+              labels={LABELS}
+              planNames={planStates.map((p) => p.plan.name)}
+              cards={cards}
+              allDone={allDone}
+              history={history}
+              priority={priority}
+              onPriority={setPriority}
+              onSuggest={(plans) => {
+                if (plans.length < 3) return;
+                setPlanStates(plans.slice(0, 3).map((plan) => ({ plan, disabled: new Set<number>() })));
+                restart();
+              }}
+            />
+          )}
           <section className="panel police">
             <h2>
               🚨 Most congested right now <Info>Ranked by people standing packed at 3 or more per m² and by vehicles stopped or crawling. Seated fans are left out: a full section is dense but safe. This ranks places to look at; where to send officers stays your call.</Info>
