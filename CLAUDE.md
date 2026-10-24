@@ -59,6 +59,13 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **Everyone is assigned a seat before they arrive**, and walks to it in a straight line once inside the bowl. Without it they stopped at whichever stands cell sat just inside their gate. Settling early is also wrong: fans sat down in the gate mouth and corked the gate behind them.
 - **`safeCountFor()` sets "clear" at 2 people/m², not zero.** A zone never empties while fans are still arriving, so `safeCount: 0` read as "never cleared" for every plan alike and the scorecard could not tell them apart.
 
+## App screens
+
+`app/src/App.tsx` holds the whole commander view: incident panel, playbook with a per-step plan editor, three runs side by side, scorecards, replay scrubber, briefing, and dot detail. Two things worth knowing:
+
+- `useRun` keeps frames and decision records in **refs**, not state. A frame carries five typed arrays and a lightning delay emits ~58,000 decision records in one step; re-rendering the tree per record would cost far more than drawing it. Counters are surfaced on the next frame instead.
+- `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
+
 ## Commands
 
 ```bash
@@ -93,5 +100,5 @@ On the real stadium map (800x800 cells, 100,000 fans as 20,000 dots), three plan
 **Open items, in order:**
 1. **Entry throughput.** Gate load is now even (roughly 750-1,900 fans per gate, was 160-4,195) and admissions roughly doubled, but gates still run at about 14% of their rated throughput: around 5,000 of 20,000 dots are inside by kickoff plus 15, with the rest queued on the approach. Ruled out as causes: OSM barriers (no measurable difference), gate geometry, and banked throughput. The remaining suspect is approach width around the bowl once routes through the interior are correctly forbidden. Measure where non-admitted dots sit relative to their gate before changing anything else.
 2. Live Kev decisions end to end (the client, server, cache, tape and fallback all work and are tested; it has not yet been run against a live Kev on :8009).
-3. App screens still missing: incident panel, plan editor, replay scrubber, dot detail.
-4. `pick_gate` is assigned by seat rather than asked of Kev; it should become a live decision.
+3. `pick_gate` is assigned by seat rather than asked of Kev; it should become a live decision.
+4. The app has not been seen rendering in a browser. It builds, mounts with no console errors, and `vite build` emits the worker chunk, but the in-app browser pane refuses to display and Playwright cannot reach DOMContentLoaded.

@@ -62,7 +62,7 @@ describe('briefing prompt', () => {
 
 describe('askFm', () => {
   it('asks for a non-streaming completion', async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       Response.json({ choices: [{ message: { content: 'Plan A clears in 4 minutes.' } }], model: 'system' }),
     );
     vi.stubGlobal('fetch', fetchMock);
@@ -71,11 +71,12 @@ describe('askFm', () => {
     expect(result?.text).toBe('Plan A clears in 4 minutes.');
     expect(result?.model).toBe('system');
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(String(calledInit!.body));
     // stream:false matters: the whole briefing is checked before anyone sees it
     expect(body.stream).toBe(false);
     expect(body.model).toBe('system');
-    expect(String(fetchMock.mock.calls[0]![0])).toContain('/v1/chat/completions');
+    expect(String(calledUrl)).toContain('/v1/chat/completions');
   });
 
   it('returns null when fm serve is not running', async () => {

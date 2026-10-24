@@ -87,7 +87,9 @@ Refetch the map with `npm run fetch-map` (it is committed, so you only need this
 
 All three incidents work — a lightning delay, a gate surge at a north gate at kickoff, and a suspicious package closing a street as the game lets out — each with three editable plans. The commander briefing comes from Apple's on-device model through `fm serve`, and every number in it is checked against the scorecard before it is shown; one invented figure and you get the template instead.
 
-Still to come: live Kev decisions end to end, and the remaining app screens (incident panel, plan editor, replay scrubber, dot detail). Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
+The commander view has the live map with a density heatmap, the incident panel, a plan editor that edits each step's timing and size, the three runs side by side, a scorecard each, the briefing, a replay scrubber over the kept frames, a deciding indicator while sim time waits on Kev, and dot detail — click any dot to see which group it belonged to, what it was deciding, the odds it was given, and whether a model or the fallback table answered.
+
+Still to come: live Kev decisions end to end. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
 ## Rules this project holds to
 

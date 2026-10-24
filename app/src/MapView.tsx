@@ -40,22 +40,30 @@ function paintBase(map: MapBundle): HTMLCanvasElement {
 export interface MapViewProps {
   map: MapBundle;
   latest: React.RefObject<RunSnapshotView | null>;
+  frames: React.RefObject<RunSnapshotView[]>;
   /** Changes whenever a new frame arrives. */
   tick: number;
   dangerDensity: number;
+  /** Replay frame to draw, or null to follow the live run. */
+  scrubIndex: number | null;
+  /** Cells the incident covers, outlined on the map. */
+  incidentCells?: number[];
+  onPickDot?: (dot: number) => void;
 }
 
 /**
  * Density heatmap under dots, both at one pixel per 2 m cell and scaled up, so
  * the whole redraw is one texture upload plus a handful of batched fills.
  */
-export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
+export function MapView({ map, latest, frames, tick, dangerDensity, scrubIndex, incidentCells, onPickDot }: MapViewProps) {
   const PX_PER_CELL = pxPerCell(map);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<Application | null>(null);
   const heatRef = useRef<{ canvas: HTMLCanvasElement; texture: Texture } | null>(null);
   const dotsRef = useRef<Graphics | null>(null);
   const officersRef = useRef<Graphics | null>(null);
+  const zoneRef = useRef<Graphics | null>(null);
+  const shownRef = useRef<RunSnapshotView | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -93,9 +101,11 @@ export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
         app.stage.addChild(heat);
         heatRef.current = { canvas: heatCanvas, texture: heatTexture };
 
+        const zone = new Graphics();
         const dots = new Graphics();
         const officers = new Graphics();
-        app.stage.addChild(dots, officers);
+        app.stage.addChild(zone, dots, officers);
+        zoneRef.current = zone;
         dotsRef.current = dots;
         officersRef.current = officers;
         appRef.current = app;
@@ -108,12 +118,15 @@ export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
       heatRef.current = null;
       dotsRef.current = null;
       officersRef.current = null;
+      zoneRef.current = null;
     };
   }, [map, PX_PER_CELL]);
 
   useEffect(() => {
     const app = appRef.current;
-    const view = latest.current;
+    const kept = frames.current ?? [];
+    const view = scrubIndex === null ? latest.current : (kept[Math.min(scrubIndex, kept.length - 1)] ?? latest.current);
+    shownRef.current = view;
     const dots = dotsRef.current;
     const officers = officersRef.current;
     const heat = heatRef.current;
@@ -159,7 +172,48 @@ export function MapView({ map, latest, tick, dangerDensity }: MapViewProps) {
       officers.rect(cx - badge / 2, cy - badge / 2, badge, badge);
     }
     officers.stroke({ color: 0x58a6ff, width: 1.5 });
-  }, [tick, latest, map, dangerDensity, PX_PER_CELL]);
+    // The incident zone, outlined once per redraw so it reads over the heatmap.
+    const zone = zoneRef.current;
+    if (zone) {
+      zone.clear();
+      if (incidentCells && incidentCells.length > 0) {
+        for (const cell of incidentCells) {
+          const cx = (cell % map.width) * PX_PER_CELL;
+          const cy = Math.floor(cell / map.width) * PX_PER_CELL;
+          zone.rect(cx, cy, PX_PER_CELL, PX_PER_CELL);
+        }
+        zone.stroke({ color: 0xffd166, width: 1, alpha: 0.5 });
+      }
+    }
+  }, [tick, latest, frames, scrubIndex, map, dangerDensity, PX_PER_CELL, incidentCells]);
 
-  return <canvas ref={canvasRef} />;
+  /** Click the map to pick the nearest dot, for the dot detail panel. */
+  const handleClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const view = shownRef.current;
+    if (!view || !onPickDot) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const scale = (map.width * PX_PER_CELL) / rect.width;
+    const px = (event.clientX - rect.left) * scale;
+    const py = (event.clientY - rect.top) * scale;
+    const mx = (px / PX_PER_CELL) * CELL_SIZE_M;
+    const my = (py / PX_PER_CELL) * CELL_SIZE_M;
+
+    const { x, y, state } = view.frame;
+    let best = -1;
+    let bestSq = Infinity;
+    for (let i = 0; i < x.length; i++) {
+      if (x[i]! < 0 || state[i] === DOT_STATES.length - 1) continue;
+      const dx = x[i]! - mx;
+      const dy = y[i]! - my;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = i;
+      }
+    }
+    // Only count it as a pick if they clicked within about 10 m of a dot.
+    if (best >= 0 && bestSq < 100) onPickDot(best);
+  };
+
+  return <canvas ref={canvasRef} onClick={handleClick} style={{ cursor: onPickDot ? 'crosshair' : 'default' }} />;
 }

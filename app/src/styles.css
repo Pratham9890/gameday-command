@@ -94,3 +94,92 @@ header.top .sub { color: var(--dim); font-size: 13px; }
 .legend { display: flex; gap: 12px; padding: 0 20px 18px; color: var(--dim); font-size: 12px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* ─── layout: controls and playbook on the left, the three runs on the right ─── */
+
+header.top .controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+header.top .controls label { color: var(--dim); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+
+button {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #3d4854; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--scarlet); border-color: #8a0000; font-weight: 600; }
+button.small { padding: 3px 8px; font-size: 11.5px; }
+
+select, input[type='number'] {
+  background: #0d1117;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font: inherit;
+  font-size: 12px;
+}
+input[type='number'] { width: 54px; }
+
+.layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; padding: 16px 20px; align-items: start; }
+.side { display: flex; flex-direction: column; gap: 14px; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.panel.wide { margin-top: 14px; }
+.panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); margin: 0 0 10px; }
+.panel h3 { font-size: 12.5px; margin: 0 0 6px; display: flex; align-items: center; gap: 7px; }
+.muted { color: var(--dim); font-size: 12px; margin: 0 0 8px; }
+.warn { color: var(--warn); }
+.error { color: #ff6b6b; font-size: 12px; }
+.tag { font-size: 10.5px; margin-left: 6px; padding: 1px 5px; border-radius: 3px; }
+.tag.kev { background: #10351f; color: var(--ok); }
+
+.incident { display: flex; gap: 8px; padding: 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+.incident:hover { background: #1b2230; }
+.incident.on { border-color: var(--scarlet); background: #1d1416; }
+.incident span { display: flex; flex-direction: column; gap: 2px; }
+.incident em { color: var(--dim); font-style: normal; font-size: 11.5px; }
+.incident .note { color: var(--dim); font-size: 11.5px; }
+
+.plan { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+.plan-editor { display: flex; flex-direction: column; gap: 4px; }
+.step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.step.off { opacity: 0.4; text-decoration: line-through; }
+.step-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-at, .step-n { color: var(--dim); display: flex; align-items: center; gap: 3px; }
+.step-at input, .step-n input { width: 48px; }
+
+.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.briefing-text { font-size: 13px; line-height: 1.55; margin: 0 0 8px; white-space: pre-wrap; }
+
+.scrubber { display: flex; align-items: center; gap: 10px; }
+.scrubber input[type='range'] { flex: 1; accent-color: var(--scarlet); }
+
+.detail { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+.detail dt { color: var(--dim); }
+.detail dd { margin: 0; }
+.detail dd.key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; word-break: break-all; color: var(--dim); }
+
+.replaying {
+  position: absolute;
+  inset: 8px auto auto 8px;
+  background: rgba(88, 166, 255, 0.9);
+  color: #04121f;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.scorecard dd .tag { vertical-align: middle; }
+
+@media (max-width: 1200px) {
+  .layout { grid-template-columns: 1fr; }
+  .runs { grid-template-columns: 1fr; }
+  .bottom { grid-template-columns: 1fr; }
+}
