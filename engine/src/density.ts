@@ -5,6 +5,7 @@ import { STATE_INDEX } from './dots.ts';
 
 const CELL_AREA_M2 = CELL_SIZE_M * CELL_SIZE_M;
 const GONE = STATE_INDEX.gone;
+const SEATED = STATE_INDEX.seated;
 
 /**
  * Per-cell people counts and people per square metre.
@@ -15,6 +16,14 @@ const GONE = STATE_INDEX.gone;
 export class DensityField {
   readonly counts: Int32Array;
   readonly peoplePerM2: Float32Array;
+  /**
+   * The same, leaving out fans sitting in their seats. Scoring reads this one:
+   * a full stand sits at the density cap by design, and counting it as crush
+   * danger made every plan score alike. Fans walking or queueing through the
+   * stands still count, because a crush in the aisles is the real thing.
+   */
+  readonly standingPerM2: Float32Array;
+  private readonly standingCounts: Int32Array;
 
   readonly width: number;
   readonly height: number;
@@ -24,6 +33,8 @@ export class DensityField {
     this.height = height;
     this.counts = new Int32Array(width * height);
     this.peoplePerM2 = new Float32Array(width * height);
+    this.standingCounts = new Int32Array(width * height);
+    this.standingPerM2 = new Float32Array(width * height);
   }
 
   static forMap(map: MapBundle): DensityField {
@@ -32,6 +43,7 @@ export class DensityField {
 
   update(dots: DotStore): void {
     this.counts.fill(0);
+    this.standingCounts.fill(0);
     const { x, y, state, count } = dots;
     for (let i = 0; i < count; i++) {
       if (state[i] === GONE) continue;
@@ -42,10 +54,13 @@ export class DensityField {
       const cx = (x[i]! / CELL_SIZE_M) | 0;
       const cy = (y[i]! / CELL_SIZE_M) | 0;
       if (cx < 0 || cy < 0 || cx >= this.width || cy >= this.height) continue;
-      this.counts[cy * this.width + cx]!++;
+      const cell = cy * this.width + cx;
+      this.counts[cell]!++;
+      if (state[i] !== SEATED) this.standingCounts[cell]!++;
     }
     for (let i = 0; i < this.counts.length; i++) {
       this.peoplePerM2[i] = (this.counts[i]! * DOT_GROUP_SIZE) / CELL_AREA_M2;
+      this.standingPerM2[i] = (this.standingCounts[i]! * DOT_GROUP_SIZE) / CELL_AREA_M2;
     }
   }
 

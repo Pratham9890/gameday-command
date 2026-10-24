@@ -4,10 +4,11 @@ import type { CellKind, MapBundle, VehicleFrame, VehicleKind, WeatherState } fro
 import { CELL_SIZE_M, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import { roadNetFor } from '../../engine/src/traffic.ts';
 import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
-import { WEATHER_LABELS } from '../../world/src/weather.ts';
 import { bandOf, heatBands } from './heat.ts';
+import { STATE_RGB } from './people.ts';
 import type { RunHandle, RunSnapshotView } from './useRun.ts';
 import { drawVehicle } from './vehicleArt.ts';
+import { readoutOf, ReadoutChips } from './Readouts.tsx';
 import { WeatherFx } from './WeatherFx.tsx';
 
 /**
@@ -42,18 +43,6 @@ const RGB: Record<CellKind, [number, number, number]> = {
   shelter: [0x2c, 0x40, 0x38],
   parking: [0x2c, 0x30, 0x37],
 };
-
-/** Dot colour by DotState, in the contract's own order. The last state is 'gone'. */
-const STATE_RGB: [number, number, number][] = [
-  [0x7a, 0xa2, 0xf7], // arriving
-  [0xbb, 0x9a, 0xf7], // tailgating
-  [0xff, 0xc4, 0x5c], // queued
-  [0xb4, 0xf0, 0x7a], // walking
-  [0x7d, 0xdf, 0xff], // seated
-  [0xff, 0x7a, 0xa8], // sheltering
-  [0xd4, 0xdb, 0xff], // leaving
-  [0x00, 0x00, 0x00], // gone, never drawn
-];
 
 const VS = Object.fromEntries(VEHICLE_STATES.map((s, i) => [s, i])) as Record<(typeof VEHICLE_STATES)[number], number>;
 
@@ -231,10 +220,6 @@ function blend(prev: RunSnapshotView | null, latest: RunSnapshotView, alpha: num
 const darkSky = (w?: WeatherState) =>
   !!w && (w.kind === 'rain' || w.kind === 'heavy_rain' || w.kind === 'thunderstorm' || w.kind === 'fog' || w.kind === 'snow' || (w.kind === 'overcast' && w.intensity > 0.4));
 
-const WEATHER_ICON: Record<WeatherState['kind'], string> = {
-  clear: '☀', overcast: '☁', rain: '🌧', heavy_rain: '🌧', thunderstorm: '⛈', snow: '❄', fog: '🌫', heat: '🌡',
-};
-const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 export function ComparisonMaps(props: ComparisonMapsProps) {
   const { map, runs, scrubIndex, dangerDensity, incidentCells, selectedBand, vehicleFocus, showVehicles, picked, focus, onPick } = props;
@@ -791,28 +776,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
   // ─── per-panel readouts ───
   const readouts = useMemo(
-    () =>
-      runs.map((run) => {
-        const view = viewFor(run);
-        const weather = view?.frame.weather;
-        const v = view?.frame.vehicles;
-        let moving = 0;
-        let stopped = 0;
-        let parked = 0;
-        let ems = '';
-        if (v) {
-          for (let i = 0; i < v.state.length; i++) {
-            const s = v.state[i]!;
-            if (s === VS.driving || s === VS.departing || s === VS.parking) moving++;
-            else if (s === VS.stopped) stopped++;
-            else if (s === VS.parked) parked++;
-            if (v.kind[i] === VEHICLE_KINDS.indexOf('ambulance')) {
-              ems = s === VS.responding ? 'Ambulance en route' : s === VS.on_scene ? 'Ambulance on scene' : s === VS.stopped ? 'Ambulance blocked' : '';
-            }
-          }
-        }
-        return { weather, moving, stopped, parked, ems, hasVehicles: !!v };
-      }),
+    () => runs.map((run) => readoutOf(viewFor(run)?.frame)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ticks, scrubIndex, runs, viewFor],
   );
@@ -872,37 +836,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
       <div className="hud" style={{ gridTemplateColumns: columns }}>
         {readouts.map((r, i) => (
           <div key={i} className="hud-panel" style={{ gridColumn: i * 2 + 1 }}>
-            {r.weather && (
-              <div className={`chip weather-chip wx-${r.weather.kind}`}>
-                <span className="wx-icon">{WEATHER_ICON[r.weather.kind]}</span>
-                <span>
-                  <strong>{WEATHER_LABELS[r.weather.kind]}</strong>
-                  {r.weather.lightning && <span className="strike"> · lightning</span>}
-                  <em>
-                    {Math.round(r.weather.tempC)}°C · wind {Math.round(r.weather.windMps * 2.237)} mph{' '}
-                    {COMPASS[Math.round(r.weather.windFromDeg / 45) % 8]} · vis{' '}
-                    {r.weather.visibilityM >= 5000 ? '5+ km' : r.weather.visibilityM >= 1000 ? `${(r.weather.visibilityM / 1000).toFixed(1)} km` : `${Math.round(r.weather.visibilityM)} m`}
-                  </em>
-                </span>
-              </div>
-            )}
-            {r.hasVehicles && (
-              <div className="chip traffic-chip">
-                <span title="moving">
-                  <i className="dot moving" />
-                  {r.moving.toLocaleString()} moving
-                </span>
-                <span title="stopped in traffic or for a crowd" className={r.stopped > 40 ? 'hot' : undefined}>
-                  <i className="dot stopped" />
-                  {r.stopped.toLocaleString()} stopped
-                </span>
-                <span title="parked">
-                  <i className="dot parked" />
-                  {r.parked.toLocaleString()} parked
-                </span>
-                {r.ems && <span className={`ems ${r.ems.includes('blocked') ? 'hot' : ''}`}>🚑 {r.ems}</span>}
-              </div>
-            )}
+            <ReadoutChips readout={r} />
           </div>
         ))}
       </div>

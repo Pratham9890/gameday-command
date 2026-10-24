@@ -24,7 +24,10 @@ describe('plan editor', () => {
       expect(text).not.toContain('undefined');
     }
     expect(describeAction(actions[2]!)).toBe('Send 6 officers to gate-1');
-    expect(describeAction(actions[4]!)).toBe('PA alert, 70% reached');
+    expect(describeAction(actions[4]!)).toBe('PA announcement reaching 70% of fans');
+    // With the map, ids become the names a commander reads.
+    expect(describeAction({ at: 0, type: 'send_officers', count: 6, toPlaceId: 'test-gate-a' }, map)).toBe('Send 6 officers to Gate 1');
+    expect(describeAction({ at: 0, type: 'close', closableId: 'test-gate-a-door' }, map)).toBe('Close Gate 1');
   });
 
   it('removes only the steps the commander switched off', () => {

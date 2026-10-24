@@ -22,7 +22,7 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - `server/src/index.ts` → `POST /api/decide` — cache, then Kev, then defaults, **biggest groups first under one shared deadline**. A cold lightning delay raises ~135 keys at once and a single GPU answers them one at a time, so they cannot all fit inside the engine's 2 s pause. Asking for everything in parallel timed out into defaults for nearly all of it (2,203 model-backed dot decisions); asking the biggest groups first gets 16,381 with the same 1.7 s pause. The long tail of small groups takes the default on purpose.
 - `brain/src/client.ts` — the only thing that talks to the server about decisions. Every failure path (timeout, refused, bad JSON, odds that do not sum to 1) returns defaults with `source: 'default'`. Nothing here is allowed to throw.
 - `world/src/scoring.ts` — a plain accumulator. Same samples in, same scorecard out, which is what makes replay-from-tape scoring match a live run.
-- `server/src/kev.ts` — **Kev is not a chat model.** It exposes a TypeSafe-compatible `POST /v1/systemone`: a state plus typed questions in, one prefill pass, typed answers out, and no text generation at all. A `choice` question comes back with `probabilities` keyed by the option names we sent, which is exactly the contract's `Odds` — nothing to parse out of prose. The first version of this client posted OpenAI chat completions and scraped JSON from the reply; against the real server that would have 404'd and turned every decision into a fallback. `GET /v1/models` lists the model names it accepts (`kev-latest` by default).
+- `server/src/kev.ts` — **Kev is not a chat model.** It exposes a TypeSafe-compatible `POST /v1/systemone`: a state plus typed questions in, one prefill pass, typed answers out, and no text generation at all. A `choice` question comes back with `probabilities` keyed by the option names we sent, which is exactly the contract's `Odds` — nothing to parse out of prose. The first version of this client posted OpenAI chat completions and scraped JSON from the reply; against the real server that would have 404'd and turned every decision into a fallback. `GET /v1/models` lists the model names it accepts (`kev-latest` by default). The state carries each fan type's `compliance` trait as `how_readily_they_follow_instructions`; before that Kev only had the type's name to go on.
 - `server/src/fm.ts` — the commander briefing through Apple's on-device model via `fm serve` (a Chat Completions server; model `system`, always `stream: false`). The prompt measures **399 tokens** by `fm count-tokens` against a 4,000 budget. Keep it that small: an overflow comes back as a safety-looking error, not a length error.
 - `server/src/briefing.ts` — `briefingIsSupported()` is the guard on the briefing: any number the model writes must already be on a scorecard (or in a name the request supplied). One invented figure throws the whole briefing away for the template.
 
@@ -35,7 +35,9 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - Traffic has its **own RNG** (`TrafficConfig.seed`) and only reads dots. `traffic.test.ts` asserts the crowd and its scorecard are identical with traffic on; keep it that way.
 - `world/src/weather.ts` — clear weather multiplies speeds by exactly 1 and maps to decision weather `'clear'`, which is why v1 runs reproduce bit for bit.
 - `app/src/ComparisonMaps.tsx` — Pixi draws map, banded heat and zone (zoomable via a world container per masked panel); a 2D canvas on top draws fans (pixel bytes) and vehicles (`app/src/vehicleArt.ts`, LOD by on-screen length); `WeatherFx.tsx` animates on its own clock. Wheel zoom uses a native non-passive listener — React's onWheel is passive and the page scrolled under the map. The stack uses `overflow: clip`, because a hidden overflow scrolled itself when a zoom button took focus.
-- `window.gamedayMap.lookAt(xM, yM, zoom)` and `window.gameday.vehiclesIn(run, state)` exist for unattended checks.
+- **The 3D close-up (`app/src/crowd-scene.ts`) draws vehicles as extruded boxes**: a body, a glass cabin for car shapes, an open bed for pickups, window bands and roof units on buses and RVs, light bars that strobe on emergency units, headlight beams on the ground in bad weather and brake glow when stopped. Heights are `VEHICLE_HEIGHT`; footprints come from `VEHICLE_TYPES`. Only faces with an east- or south-facing normal are drawn, since the viewer stands off the south-east corner. Parked vehicles are their own layer, rebuilt only when the parked set, the detail level or the highlight changes, or the camera leaves the padded window it was drawn for: rebuilding it per frame cost 25-70 ms, now 6-7 ms when it happens and 0.3-3.5 ms per normal frame.
+- Weather in 3D: the same `WeatherFx` layer laid out in CSS pixels, plus a ground cover (snow white, rain dark) and roofs rebuilt whiter in snow — a Pixi tint can only darken, so the building Graphics is rebuilt rather than tinted.
+- `window.gamedayMap.lookAt(xM, yM, zoom)`, `window.gamedayScene` (the 3D scene) and `window.gameday.vehiclesIn(run, state)` exist for unattended checks.
 
 ## The OSM map
 
@@ -113,6 +115,56 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 - `useRun` is called three times unconditionally in `App`, one per comparison slot, so the scorecards live in one place and the briefing can be built from all three.
 - **All three runs draw into ONE PixiJS Application** (`ComparisonMaps.tsx`), as three panels of a single canvas with the base map texture shared between them. Three Applications meant three WebGL contexts and paying Pixi's GPU probe three times over. Dots are pixel bytes, the heatmap reuses one `ImageData`, the incident zone is drawn only when it changes, and the renderer is stopped and driven by hand — frames arrive every 15 sim seconds, so a running ticker redraws an unchanged scene sixty times a second.
 
+## The commander screen
+
+`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The map takes the left and one story runs down the right, as **1 · Situation**, **2 · Three plans, same crowd** and **3 · Verdict**. A dismissible "how it works" strip sits under the top bar. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+
+- **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
+- **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
+- **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work". See "Danger scoring" below for why they still barely separate the plans.
+- **Plan edits no longer restart the runs on every keystroke.** `inits` depends on `[loaded, generation]` only, and edits show **Restart with my changes**.
+- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The ⚠ button goes back there and ⤢ shows the whole map.
+- The canned briefing (template, used whenever `fm serve` is down) is folded under "Full numbers for every plan". It is a wall of raw figures, and the verdict sentence says the same thing in one line.
+
+## Danger scoring
+
+`dangerMinutes` and `peakDensity` used to read ~175,000 and 5.0/m² for every plan. Two separate causes, both fixed in `world/src/scoring.ts`:
+
+1. **Seated fans counted as crush danger.** A full stand sits at `MAX_DOTS_PER_CELL` by design. `DensityField` now also keeps `standingPerM2`, which leaves out dots in the `seated` state, and `Simulation` passes it to the scorer. Fans walking or queueing *through* the stands still count, because an aisle crush during an evacuation is real. The app's live "dangerously packed" count uses the same rule, from the frame's dot states.
+2. **The hour before the incident was counted.** A diagnostic run on the stadium map found ~1,000-1,400 cells over 4/m² at any moment before kickoff, almost all `walking` or `queued` fans at the twelve gates, and ~2,400 admitted fans jammed on the way to their seats. No plan acts before the incident, so that hour is identical in every plan. Danger and peak are now counted from `incident.at` onward, like time to clear.
+
+Measured after both fixes, at 60× in the app with the shipped cache:
+
+| | A | B | C |
+| --- | --- | --- | --- |
+| gate surge | 36,837 | 36,987 | 37,884 |
+| lightning delay | 128,461 | 124,068 | 129,313 |
+| suspicious package | 108,707 | 108,781 | 110,321 |
+
+The plans now differ, but only by 1-4%. The danger is counted map-wide, and the queues at the eleven gates no plan touches still make up most of it. Counting only near the incident would separate the plans far more, but it would also hide a plan that moves the crush to another gate, which is exactly the tradeoff the tool exists to show. Not decided. Peak density is 5.0 everywhere because some queue somewhere is always at the cap.
+
+**Also found:** lightning and the suspicious package never clear their zones under any plan.
+
+## The close-up view
+
+`app/src/CrowdView.tsx` + `app/src/crowd-scene.ts` are the default map: one run on an isometric map you can zoom into until dots become people, click one, and change them. The look follows the operator view in Cryplo/MHacks26. The A/B/C chips pick the run; **Side by side** brings back `ComparisonMaps`.
+
+- **Only one of the two map views is mounted at a time**, so the page still holds one WebGL context. `ComparisonMaps` now redraws when its Application comes up, or switching back while paused showed a blank canvas.
+- **Level of detail keeps 20,000 dots cheap.** Zoomed out, the crowd is one 800x800 cell texture, the same trick as the side-by-side maps. Past `PEOPLE_MIN_SCALE` only groups inside the viewport get a pooled figure (five sprites from five shared white textures, tinted), capped at `MAX_PEOPLE`. Cost follows the screen, not the crowd.
+- **Unlike `ComparisonMaps`, this one runs Pixi's ticker.** People tween between the last two frames over the measured gap between arrivals, so they walk instead of hopping every 15 sim seconds. A replayed frame is drawn exactly, with no tween.
+- **Buildings are extruded polygons**, one roof per run of at most 6 blocked cells and a wall on every south or east face (the two this viewpoint sees), sorted by x + y. Height and roof colour come from the connected building; pieces under 40 cells are walls and fences and stay 2.5 m. Runs are short because a long run sorted by one key paints over buildings in front of it. People always draw over buildings.
+- **Shirt colour is the fan type, ring colour is the state.** Names come from `groupName(dot)`, so the person you clicked is someone you can find again.
+- **Pixi does start under SwiftShader in this Linux container** (Playwright's Chromium with `--use-angle=swiftshader --enable-unsafe-swiftshader`), unlike headless Chrome on the Mac. That is how the close-up was checked: canvas up in 2.4 s, zoom, click, edit, zero page errors.
+
+### Editing fans
+
+The inspector sends an edit (`fanType`, `sendTo`, for one group or everyone within 10 or 25 m) to **all three workers for the same sim second**, two frames ahead of the furthest plan, so the runs still differ only by their plans. The extra worker messages (`edit`, `inspect`, `types`) live in `engine/src/edits.ts`, **not** in the frozen `contracts.ts`: only the app and the engine's own worker speak them.
+
+- `Simulation` keeps every edit for the life of the run and applies it when the clock reaches its second. A rewind to before an edit replays it; `seek` drops edits after the target, like the frames after it. `edits.test.ts` holds both down.
+- `seek` now also drops checkpoints after the restart point. They were taken on a timeline an edit can rewrite, and a later seek would have restored one that lies.
+- `FlowMovement.sendTo` will not walk an un-admitted fan straight into the bowl: "their seat" or the concourse sends them to their gate first. A new gate resets `admitted`; heading for the car marks them through, because on the way out a gate is a door.
+- Fan types ride to the app in a `types` message only when they change (spawn, edit, rewind), never per frame.
+
 ## Running the real Kev
 
 Kev is cloned at `/Users/nipun/Projects/kev` (Apache-2.0). Start it with the command from `GOAL.md`:
@@ -127,9 +179,11 @@ The first request pays MLX warm-up and will exceed the timeout; it falls back on
 
 ## The cache ships warm
 
-`server/data/decision-seed.json` holds 544 answers the real Kev-4B already gave (84 KB). `openDb()` loads them into an empty `decision_cache`, so a fresh clone is model-driven from the first click rather than guessing its way through the first run of every scenario. Measured on a brand-new database: a lightning delay runs **54,253 decisions, all from the model, zero fallbacks**, with the pause down to 0.4 s.
+`server/data/decision-seed.json` holds 666 answers the real Kev-4B already gave (104 KB). `openDb()` loads them into an empty `decision_cache`, so a fresh clone is model-driven from the first click rather than guessing its way through the first run of every scenario. Measured on a brand-new database with the earlier 544-answer seed: a lightning delay runs **54,253 decisions, all from the model, zero fallbacks**, with the pause down to 0.4 s.
 
-Regenerate after changing fan types, situations or the `decisionKey` context — those change the keys and the old ones stop matching:
+Regenerate after changing fan types, situations or the `decisionKey` context — those change the keys and the old ones stop matching.
+
+Changing what Kev is *told* without changing the key (a new field in `buildSystemOneRequest`, like each fan type's compliance) is the dangerous case: every old answer still matches, so Kev never sees the new field. Bump `DECISION_CACHE_VERSION` in `server/src/db.ts`: a database stamped older (SQLite `user_version`) empties its cache on open. Regenerate the seed in the same change, or the stale seed reloads straight into the emptied cache.
 
 ```bash
 npm run warm                      # against a live Kev
@@ -145,7 +199,7 @@ npm run warm      # runs all three incidents x three plans, then waits for the w
 
 Only needed if you have changed the decision vocabulary; otherwise the shipped seed covers it.
 
-Takes a few minutes and settles around 538 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
+Takes a few minutes and settles around 666 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
 
 `?autorun=1` starts the three runs without a click, and the app saves each finished comparison through `POST /api/comparisons` — which is how a run in an ordinary browser window can be checked from the server side, with no debugger attached.
 
@@ -170,7 +224,7 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 
 ## Current state
 
-Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 105 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
+Everything in `GOAL.md` is built and running. The repo is five npm workspaces around the frozen `contracts.ts`, 120 tests and `tsc` pass, and the demo runs end to end on the real Ohio Stadium map with the real models.
 
 Measured on the stadium map (800x800 cells at 2 m, 100,000 fans as 20,000 dots):
 

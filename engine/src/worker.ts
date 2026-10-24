@@ -1,6 +1,7 @@
 import type { DensityGrid, TickFrame, WorkerIn, WorkerOut } from '../../contracts.ts';
 import { FlowMovement } from './movement-flow.ts';
 import { Simulation, type Checkpoint } from './sim.ts';
+import type { EditIn, EditOut } from './edits.ts';
 import { FRAME_EVERY_S } from '../../contracts.ts';
 
 /**
@@ -10,11 +11,11 @@ import { FRAME_EVERY_S } from '../../contracts.ts';
  * needs DOM.
  */
 const host = globalThis as unknown as {
-  postMessage(message: WorkerOut, transfer?: Transferable[]): void;
-  onmessage: ((event: { data: WorkerIn }) => void) | null;
+  postMessage(message: WorkerOut | EditOut, transfer?: Transferable[]): void;
+  onmessage: ((event: { data: WorkerIn | EditIn }) => void) | null;
 };
 
-const send = (message: WorkerOut, transfer?: Transferable[]) => host.postMessage(message, transfer);
+const send = (message: WorkerOut | EditOut, transfer?: Transferable[]) => host.postMessage(message, transfer);
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 let sim: Simulation | null = null;
@@ -55,8 +56,17 @@ function sendFrame(frame: TickFrame, density: DensityGrid): void {
   send({ type: 'frame', frame, density }, transfer);
 }
 
+let typesSent = -1;
+
 function emitFrame(): void {
   if (!sim) return;
+  // Fan types ride alongside frames only when they changed: they are fixed at
+  // spawn and move only with a commander edit or a rewind.
+  if (sim.typesVersion !== typesSent) {
+    typesSent = sim.typesVersion;
+    const typeIndex = sim.ctx.dots.typeIndex.slice();
+    send({ type: 'types', typeIndex }, [typeIndex.buffer]);
+  }
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));
 }
 
@@ -133,6 +143,7 @@ host.onmessage = (event) => {
           movement: new FlowMovement(),
           emit: send,
         });
+        typesSent = -1;
         checkpoints = [];
         lastCheckpointAt = Number.NEGATIVE_INFINITY;
         maybeCheckpoint();
@@ -164,6 +175,13 @@ host.onmessage = (event) => {
         }
         playing = false;
         sim.rewind(best.point);
+        // Restart points after this one were taken on a timeline that is now
+        // being rewritten — an edit dropped below, or a new one made after the
+        // rewind, would make them lie. Keep only what is still true.
+        const restartAt = best.t;
+        checkpoints = checkpoints.filter((entry) => entry.t <= restartAt);
+        lastCheckpointAt = restartAt;
+        sim.dropEditsAfter(target);
         // Step forward to the moment asked for. Decisions on the way come from
         // the client's cache or its tape, so this repeats rather than re-asks.
         void (async () => {
@@ -175,6 +193,14 @@ host.onmessage = (event) => {
       case 'snapshot':
         if (sim) send({ type: 'snapshot', snapshot: sim.snapshot() });
         return;
+      case 'edit':
+        sim?.queueEdit(message.edit);
+        return;
+      case 'inspect': {
+        const info = sim?.inspect(message.dot);
+        if (info) send({ type: 'inspect', info });
+        return;
+      }
     }
   } catch (error) {
     send({ type: 'error', message: error instanceof Error ? error.message : String(error) });

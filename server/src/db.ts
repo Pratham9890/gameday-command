@@ -4,6 +4,16 @@ import { dirname, resolve } from 'node:path';
 
 export type Db = Database.Database;
 
+/**
+ * Bump whenever what Kev is told changes without changing the decisionKey
+ * (see `buildSystemOneRequest`). The key is frozen in the contract, so old
+ * answers would otherwise keep matching and Kev would never see the new state.
+ * Regenerate `decision-seed.json` in the same change, or the stale seed is
+ * reloaded into the freshly emptied cache.
+ * 2: added each fan type's compliance.
+ */
+export const DECISION_CACHE_VERSION = 2;
+
 /** Plans, saved comparisons and the decision cache. The cache is what makes a warm run fast. */
 export function openDb(path = process.env.DB_PATH ?? './data/gameday.db'): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -28,6 +38,10 @@ export function openDb(path = process.env.DB_PATH ?? './data/gameday.db'): Db {
       created_at integer not null
     );
   `);
+  if ((db.pragma('user_version', { simple: true }) as number) < DECISION_CACHE_VERSION) {
+    db.exec('delete from decision_cache');
+    db.pragma(`user_version = ${DECISION_CACHE_VERSION}`);
+  }
   seedDecisions(db);
   return db;
 }
