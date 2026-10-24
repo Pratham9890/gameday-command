@@ -280,7 +280,10 @@ export function createApp(db: Db): Hono {
 }
 
 if (process.argv[1]?.includes('server/src/index.ts')) {
-  const app = createApp(openDb());
+  const db = openDb();
+  const app = createApp(db);
+  const cached = (db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n;
   serve({ fetch: app.fetch, port: PORT });
-  console.log(`gameday server on http://127.0.0.1:${PORT} (kev ${KEV_URL})`);
+  console.log(`gameday server on http://127.0.0.1:${PORT} (kev ${KEV_URL}, fm ${FM_URL})`);
+  console.log(`${cached} decisions cached — fan decisions come from the model, not the fallback table`);
 }

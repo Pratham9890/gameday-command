@@ -39,6 +39,8 @@ export interface SimContext {
   readonly closed: Set<Id>;
   /** Redirects set by a plan: place index -> place index. */
   readonly redirects: Map<number, number>;
+  /** Where each dispatched officer has been posted: officer id -> place index. */
+  readonly officerPost: Map<Id, number>;
   t: SimSeconds;
 }
 
@@ -113,6 +115,7 @@ export class Simulation {
       officers: config.officers.map((o) => ({ ...o })),
       closed: new Set<Id>(),
       redirects: new Map<number, number>(),
+      officerPost: new Map<Id, number>(),
       t: config.startAt,
     };
     this.alerted = new Uint8Array(population.dots);
@@ -180,6 +183,10 @@ export class Simulation {
       },
       moveOfficer: (officerId, toCell) => {
         this.officerTargets.set(officerId, toCell);
+        // Remember what the officer was sent to manage, so fans who do as
+        // they are told have somewhere to be told to go.
+        const place = this.ctx.map.places.findIndex((p) => p.cells.includes(toCell));
+        if (place >= 0) this.ctx.officerPost.set(officerId, place);
       },
       raiseSituation: (situation, cells, reachShare) => {
         this.raised.push({ situation, cells, reachShare });
@@ -207,12 +214,31 @@ export class Simulation {
         pos.y = goal.y;
         officer.cell = target;
         this.officerTargets.delete(officer.id);
+        // An officer reaching their post starts giving instructions to the
+        // people around them. Raised once, on arrival: sending officers has to
+        // change what the crowd does, or dispatching them is just a number on
+        // the scorecard and two plans that differ only in officers score alike.
+        this.raised.push({ situation: 'officer_instruction', cells: this.cellsAround(target, officer.radiusCells) });
       } else {
         pos.x += (dx / dist) * stride;
         pos.y += (dy / dist) * stride;
         officer.cell = ((pos.y / CELL_SIZE_M) | 0) * this.ctx.map.width + ((pos.x / CELL_SIZE_M) | 0);
       }
     }
+  }
+
+  /** Cells within a square of `radius` of this one, clipped to the map. */
+  private cellsAround(cell: number, radius: number): number[] {
+    const { width, height } = this.ctx.map;
+    const cx = cell % width;
+    const cy = Math.floor(cell / width);
+    const out: number[] = [];
+    for (let y = Math.max(0, cy - radius); y <= Math.min(height - 1, cy + radius); y++) {
+      for (let x = Math.max(0, cx - radius); x <= Math.min(width - 1, cx + radius); x++) {
+        out.push(y * width + x);
+      }
+    }
+    return out;
   }
 
   private officerNear(cell: number): boolean {

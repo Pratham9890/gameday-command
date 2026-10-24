@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 export type Db = Database.Database;
 
@@ -28,5 +28,47 @@ export function openDb(path = process.env.DB_PATH ?? './data/gameday.db'): Db {
       created_at integer not null
     );
   `);
+  seedDecisions(db);
   return db;
+}
+
+interface SeedRow {
+  key: string;
+  odds: string;
+  model: string | null;
+  ms: number | null;
+}
+
+/**
+ * Answers the real Kev-4B already gave, shipped with the repo.
+ *
+ * Kev answers in roughly 250 ms, so a scenario met for the very first time
+ * cannot have more than a handful of its keys answered inside the engine's 2 s
+ * pause, and the rest fall back. That is the contract working as written, but
+ * it means a fresh clone's first run is mostly guesses. Seeding the cache from
+ * real answers means the demo is model-driven from the first click instead,
+ * and the fallback path is still there for anything these do not cover.
+ *
+ * Regenerate with `npm run warm` against a live Kev, then `npm run seed:export`.
+ */
+export function seedDecisions(db: Db): number {
+  const already = (db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n;
+  if (already > 0) return 0;
+
+  let rows: SeedRow[];
+  try {
+    rows = JSON.parse(readFileSync(resolve(import.meta.dirname, '../data/decision-seed.json'), 'utf8')) as SeedRow[];
+  } catch {
+    return 0; // no seed shipped, or unreadable: start cold, which still works
+  }
+
+  const insert = db.prepare(
+    'insert or ignore into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
+  );
+  const now = Date.now();
+  const load = db.transaction((all: SeedRow[]) => {
+    for (const row of all) insert.run(row.key, row.odds, row.model, row.ms, now);
+  });
+  load(rows);
+  return rows.length;
 }

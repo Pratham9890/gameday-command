@@ -514,6 +514,32 @@ export class FlowMovement implements MovementModel {
     this.closedKey = String((s as Record<string, unknown>).closedKey ?? '');
   }
 
+  /** The post of the closest officer within earshot of this dot, or -1. */
+  private nearestOfficerPost(ctx: SimContext, dot: number): number {
+    const cell = this.cellOf(ctx, dot);
+    if (cell < 0) return -1;
+    const width = ctx.map.width;
+    const cx = cell % width;
+    const cy = (cell / width) | 0;
+    let best = -1;
+    let bestSq = Infinity;
+    for (const officer of ctx.officers) {
+      const post = ctx.officerPost.get(officer.id);
+      if (post === undefined) continue;
+      const ox = officer.cell % width;
+      const oy = (officer.cell / width) | 0;
+      const dx = ox - cx;
+      const dy = oy - cy;
+      if (Math.abs(dx) > officer.radiusCells || Math.abs(dy) > officer.radiusCells) continue;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = post;
+      }
+    }
+    return best;
+  }
+
   /** True when this cell is inside the stadium bowl. */
   private insideBowl(ctx: SimContext, cell: number): boolean {
     const kind = ctx.map.cells[cell];
@@ -564,9 +590,23 @@ export class FlowMovement implements MovementModel {
         return;
 
       case 'alert_received':
-      case 'officer_instruction':
         // Only fans an alert actually reached, who choose to follow it, get redirected.
         if (option === 'follow') {
+          const moved = ctx.redirects.get(dots.targetPlace[dot]!);
+          if (moved !== undefined) this.retarget(ctx, dot, moved);
+        }
+        return;
+
+      case 'officer_instruction':
+        // An officer standing in front of you is more specific than a PA: they
+        // send you where they were posted. Falling back to the plan's redirect
+        // covers an officer sent somewhere that is not a destination itself.
+        if (option === 'follow') {
+          const post = this.nearestOfficerPost(ctx, dot);
+          if (post >= 0 && post !== dots.targetPlace[dot]) {
+            this.retarget(ctx, dot, post);
+            return;
+          }
           const moved = ctx.redirects.get(dots.targetPlace[dot]!);
           if (moved !== undefined) this.retarget(ctx, dot, moved);
         }

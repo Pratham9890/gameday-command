@@ -113,12 +113,25 @@ First run downloads the `jaredpalmer/kev-4b` LoRA (160 MB) and `Qwen/Qwen3.5-4B-
 
 The first request pays MLX warm-up and will exceed the timeout; it falls back once and every request after is warm (~250 ms).
 
-## Before a demo: warm the cache
+## The cache ships warm
+
+`server/data/decision-seed.json` holds 544 answers the real Kev-4B already gave (84 KB). `openDb()` loads them into an empty `decision_cache`, so a fresh clone is model-driven from the first click rather than guessing its way through the first run of every scenario. Measured on a brand-new database: a lightning delay runs **54,253 decisions, all from the model, zero fallbacks**, with the pause down to 0.4 s.
+
+Regenerate after changing fan types, situations or the `decisionKey` context — those change the keys and the old ones stop matching:
+
+```bash
+npm run warm                      # against a live Kev
+DB_PATH=./data/gameday.db npm run seed:export
+```
+
+## Warming a cache yourself
 
 ```bash
 npm run serve     # with Kev on :8009
 npm run warm      # runs all three incidents x three plans, then waits for the warmer
 ```
+
+Only needed if you have changed the decision vocabulary; otherwise the shipped seed covers it.
 
 Takes a few minutes and settles around 538 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
 
