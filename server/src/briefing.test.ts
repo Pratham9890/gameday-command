@@ -4,7 +4,7 @@ import { makeTestMap } from '../../world/src/test-map.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { briefingIsSupported, numbersIn, templateBriefing } from './briefing.ts';
-import { buildPrompt, parseOdds } from './kev.ts';
+import { buildSystemOneRequest, parseSystemOne, QUESTION_ID } from './kev.ts';
 import { SITUATIONS } from '../../brain/src/situations.ts';
 
 const map = makeTestMap();
@@ -54,7 +54,7 @@ describe('briefing', () => {
   });
 });
 
-describe('kev client', () => {
+describe('kev client speaks /v1/systemone', () => {
   const ask = {
     key: 'k',
     fanTypeId: 'student-section',
@@ -70,19 +70,43 @@ describe('kev client', () => {
     dotIds: [1],
   };
 
-  it('builds a prompt far under the context limit', () => {
-    const prompt = buildPrompt(ask, SITUATIONS.gate_jammed);
-    expect(prompt).toContain('hold_place');
-    // 4k tokens is roughly 16k characters; this must stay nowhere near it
-    expect(prompt.length).toBeLessThan(1200);
+  it('asks one choice question whose options are the engine\u2019s own option keys', () => {
+    const req = buildSystemOneRequest(ask, SITUATIONS.gate_jammed, 'kev-latest');
+    const question = req.questions[QUESTION_ID]!;
+    expect(question.type).toBe('choice');
+    // Probabilities come back keyed by these names, which is exactly Odds.
+    expect(Object.keys(question.criteria)).toEqual(['hold_place', 'try_other_gate', 'back_off']);
+    expect(question.criteria.hold_place).toBe('Hold my place in line');
   });
 
-  it('pulls odds out of a reply that has chatter around the JSON', () => {
-    const odds = parseOdds('Sure! {"hold_place": 0.5, "try_other_gate": 0.3, "back_off": 0.2} hope that helps');
+  it('sends the rounded context as the state, so one call answers the whole group', () => {
+    const state = buildSystemOneRequest(ask, SITUATIONS.gate_jammed, 'kev-latest').state as Record<string, unknown>;
+    expect(state.minutes_to_kickoff).toBe(15);
+    expect(state.weather).toBe('clear');
+    expect(state.crowd_where_they_are_headed).toBe('high');
+    expect(state.an_officer_nearby_gave_an_instruction).toBe(false);
+    expect(String(state.who)).toContain('student section');
+  });
+
+  it('reads the probabilities straight out of a choice answer', () => {
+    const odds = parseSystemOne({
+      model: 'kev-4b',
+      answers: {
+        [QUESTION_ID]: {
+          type: 'choice',
+          choice: 'hold_place',
+          confidence: 0.3,
+          probabilities: { hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 },
+        },
+      },
+    });
     expect(odds).toEqual({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 });
   });
 
-  it('returns null when there is no JSON at all', () => {
-    expect(parseOdds('I cannot help with that.')).toBeNull();
+  it('refuses an answer of the wrong type or with no probabilities', () => {
+    expect(parseSystemOne({ answers: { [QUESTION_ID]: { type: 'noul' } } })).toBeNull();
+    expect(parseSystemOne({ answers: { [QUESTION_ID]: { type: 'choice', probabilities: {} } } })).toBeNull();
+    expect(parseSystemOne({ answers: {} })).toBeNull();
+    expect(parseSystemOne({})).toBeNull();
   });
 });

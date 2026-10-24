@@ -14,7 +14,8 @@ import { briefingIsSupported, templateBriefing } from './briefing.ts';
 import { askFm, briefingFrom } from './fm.ts';
 
 const KEV_URL = process.env.KEV_URL ?? 'http://127.0.0.1:8009';
-const KEV_MODEL = process.env.KEV_MODEL ?? 'jaredpalmer/kev-4b';
+/** What Kev's /v1/systemone accepts as a model name; GET /v1/models lists them. */
+const KEV_MODEL = process.env.KEV_MODEL ?? 'kev-latest';
 /**
  * Deliberately tighter than the engine's DECISION_TIMEOUT_MS.
  *

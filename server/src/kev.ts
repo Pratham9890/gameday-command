@@ -13,55 +13,79 @@ export interface KevResult {
 }
 
 /**
- * Prompt for one decision key. Short on purpose: it answers for a whole group of
- * dots sharing the key, and it must stay well under the context limit even when
- * a step raises dozens of keys at once.
+ * Kev's TypeSafe-compatible request shape (POST /v1/systemone).
+ *
+ * Kev is not a chat model and generates no text: it takes a state and typed
+ * questions, does one prefill pass, and returns a probability per option. A
+ * `choice` question answers with `probabilities` keyed by the option names we
+ * send, which is exactly the contract's Odds — no parsing of prose, and
+ * nothing to go wrong between the model and the engine.
  */
-export function buildPrompt(ask: DecisionAsk, situation: DecisionSituation): string {
-  const { context: c } = ask;
-  const when =
-    c.minToKickoffBucket > 0 ? `${c.minToKickoffBucket} minutes before kickoff` : `${-c.minToKickoffBucket} minutes after kickoff`;
-  const options = situation.options.map((o) => `- ${o.key}: ${o.label}`).join('\n');
-  return [
-    `You model how a group of college football fans behaves. Answer with probabilities only.`,
-    ``,
-    `Group: ${ask.fanTypeId}`,
-    `Situation: ${situation.description}`,
-    `It is ${when}. Weather is ${c.weather}. The crowd around them is ${c.crowdAtTarget}.`,
-    `Wait so far: about ${c.waitMinBucket} minutes.`,
-    `An officer is giving instructions nearby: ${c.officerOrder ? 'yes' : 'no'}.`,
-    `They heard a PA or phone alert: ${c.alertHeard ? 'yes' : 'no'}.`,
-    ``,
-    `Options:`,
-    options,
-    ``,
-    `Reply with one JSON object mapping every option key to a probability. The values must add up to 1. No other text.`,
-  ].join('\n');
+export interface SystemOneRequest {
+  state: Record<string, unknown>;
+  model: string;
+  questions: Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }>;
 }
 
-/** First JSON object in a model reply, since small models like to add a sentence. */
-export function parseOdds(text: string): Odds | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    const parsed = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
-    const odds: Odds = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const n = typeof value === 'string' ? Number(value) : value;
-      if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-      odds[key] = n;
-    }
-    return odds;
-  } catch {
-    return null;
+interface SystemOneResponse {
+  model?: string;
+  answers?: Record<string, { type?: string; choice?: string; confidence?: number; probabilities?: Record<string, number> }>;
+  latency_ms?: number;
+}
+
+/** The question id we ask under; Kev echoes answers back under the same key. */
+export const QUESTION_ID = 'decision';
+
+/**
+ * The state Kev reasons over: the rounded facts behind this decisionKey, named
+ * so they read as plain fields. Everything here is already part of the key, so
+ * one call still answers the whole group of dots.
+ */
+export function buildSystemOneRequest(ask: DecisionAsk, situation: DecisionSituation, model: string): SystemOneRequest {
+  const c = ask.context;
+  const criteria: Record<string, string> = {};
+  for (const option of situation.options) criteria[option.key] = option.label;
+
+  return {
+    model,
+    state: {
+      who: `a group of ${ask.fanTypeId.replace(/-/g, ' ')} fans at Ohio Stadium on game day`,
+      situation: situation.description,
+      minutes_to_kickoff: c.minToKickoffBucket,
+      weather: c.weather,
+      crowd_where_they_are_headed: c.crowdAtTarget,
+      minutes_waited_so_far: c.waitMinBucket,
+      an_officer_nearby_gave_an_instruction: c.officerOrder,
+      they_heard_a_pa_or_phone_alert: c.alertHeard,
+    },
+    questions: {
+      [QUESTION_ID]: {
+        type: 'choice',
+        instructions: 'What does this group of fans do next?',
+        criteria,
+      },
+    },
+  };
+}
+
+/** Probabilities out of a /v1/systemone answer, or null if it is not usable. */
+export function parseSystemOne(body: SystemOneResponse): Odds | null {
+  const answer = body.answers?.[QUESTION_ID];
+  if (!answer || answer.type !== 'choice') return null;
+  const probabilities = answer.probabilities;
+  if (!probabilities || Object.keys(probabilities).length === 0) return null;
+  const odds: Odds = {};
+  for (const [key, value] of Object.entries(probabilities)) {
+    const n = typeof value === 'string' ? Number(value) : value;
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+    odds[key] = n;
   }
+  return odds;
 }
 
 /**
- * Ask the local Kev server. Assumes an OpenAI-compatible /v1/chat/completions,
- * which is what `kev.serve` exposes; everything about that assumption is
- * contained in this file. Any failure returns null and the caller uses defaults.
+ * Ask the local Kev server. Any failure returns null and the caller uses the
+ * defaults, counting it as a fallback on the scorecard.
  */
 export async function askKev(
   ask: DecisionAsk,
@@ -72,26 +96,19 @@ export async function askKev(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   try {
-    const res = await fetch(`${opts.url}/v1/chat/completions`, {
+    const res = await fetch(`${opts.url}/v1/systemone`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: opts.model,
-        stream: false,
-        temperature: 0,
-        max_tokens: 200,
-        messages: [{ role: 'user', content: buildPrompt(ask, situation) }],
-      }),
+      body: JSON.stringify(buildSystemOneRequest(ask, situation, opts.model)),
       signal: controller.signal,
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const text = body.choices?.[0]?.message?.content;
-    if (!text) return null;
-    const odds = parseOdds(text);
+    const body = (await res.json()) as SystemOneResponse;
+    const odds = parseSystemOne(body);
     if (!odds) return null;
-    return { odds, ms: Date.now() - started, model: opts.model };
+    return { odds, ms: Date.now() - started, model: body.model ?? opts.model };
   } catch {
+    // Timeout, connection refused, bad JSON: all the same answer — use defaults.
     return null;
   } finally {
     clearTimeout(timer);

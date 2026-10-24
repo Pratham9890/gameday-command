@@ -21,9 +21,20 @@ const ask: DecisionAsk = {
   dotIds: [1, 2, 3],
 };
 
-/** A reply shaped like the one `kev.serve` returns: Chat Completions with JSON in the content. */
-function kevReply(content: string) {
-  return Response.json({ choices: [{ message: { content } }] });
+/** A reply shaped like the one `kev.serve` returns from POST /v1/systemone. */
+function kevReply(probabilities: Record<string, number>) {
+  const best = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+  return Response.json({
+    model: 'kev-4b',
+    answers: { decision: { type: 'choice', choice: best, confidence: 0.4, probabilities } },
+    usage: { input_tokens: 128, output_tokens: 24 },
+    latency_ms: 12.3,
+  });
+}
+
+/** Anything that is not a usable choice answer. */
+function kevJunk(body: unknown) {
+  return Response.json(body);
 }
 
 let db: Db;
@@ -53,7 +64,7 @@ afterEach(() => {
 describe('POST /decide', () => {
   it('asks Kev, returns its odds, and says so', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
-      kevReply('{"hold_place":0.5,"try_other_gate":0.3,"back_off":0.2}'),
+      kevReply({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -61,11 +72,11 @@ describe('POST /decide', () => {
     expect(answer!.source).toBe('kev');
     expect(answer!.odds).toEqual({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 });
     expect(answer!.key).toBe(ask.key);
-    expect(String(fetchMock.mock.calls[0]![0])).toContain('/v1/chat/completions');
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/v1/systemone');
   });
 
   it('serves the same key from the cache next time, without asking again', async () => {
-    const fetchMock = vi.fn(async () => kevReply('{"hold_place":0.5,"try_other_gate":0.3,"back_off":0.2}'));
+    const fetchMock = vi.fn(async () => kevReply({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 }));
     vi.stubGlobal('fetch', fetchMock);
 
     await decide();
@@ -76,7 +87,7 @@ describe('POST /decide', () => {
   });
 
   it('answers one call per distinct key, however many dots are waiting', async () => {
-    const fetchMock = vi.fn(async () => kevReply('{"hold_place":0.5,"try_other_gate":0.3,"back_off":0.2}'));
+    const fetchMock = vi.fn(async () => kevReply({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 }));
     vi.stubGlobal('fetch', fetchMock);
 
     // Same key twice plus a different one: two calls, not three, and not one per dot.
@@ -100,19 +111,25 @@ describe('POST /decide', () => {
   });
 
   it('falls back when the odds do not add up to 1', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => kevReply('{"hold_place":0.9,"try_other_gate":0.9,"back_off":0.9}')));
+    vi.stubGlobal('fetch', vi.fn(async () => kevReply({ hold_place: 0.9, try_other_gate: 0.9, back_off: 0.9 })));
     const [answer] = await decide();
     expect(answer!.source).toBe('default');
   });
 
   it('falls back when Kev names an option that does not exist', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => kevReply('{"sprint_the_fence":1.0}')));
+    vi.stubGlobal('fetch', vi.fn(async () => kevReply({ sprint_the_fence: 1.0 })));
     const [answer] = await decide();
     expect(answer!.source).toBe('default');
   });
 
-  it('falls back when Kev replies with prose instead of JSON', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => kevReply('I am not able to help with that request.')));
+  it('falls back when Kev answers a different question type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => kevJunk({ answers: { decision: { type: 'noul', noul: 0.7 } } })));
+    const [answer] = await decide();
+    expect(answer!.source).toBe('default');
+  });
+
+  it('falls back when the answer carries no probabilities at all', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => kevJunk({ answers: {} })));
     const [answer] = await decide();
     expect(answer!.source).toBe('default');
   });
@@ -123,7 +140,7 @@ describe('POST /decide', () => {
       vi.fn((_url: string | URL | Request, init?: RequestInit) =>
         new Promise<Response>((resolve, reject) => {
           const timer = setTimeout(
-            () => resolve(kevReply('{"hold_place":0.5,"try_other_gate":0.3,"back_off":0.2}')),
+            () => resolve(kevReply({ hold_place: 0.5, try_other_gate: 0.3, back_off: 0.2 })),
             DECISION_TIMEOUT_MS + 500,
           );
           init?.signal?.addEventListener('abort', () => {
@@ -141,7 +158,7 @@ describe('POST /decide', () => {
   }, 10_000);
 
   it('never caches a bad answer', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => kevReply('{"hold_place":2}')));
+    vi.stubGlobal('fetch', vi.fn(async () => kevReply({ hold_place: 2 })));
     await decide();
     const row = db.prepare<[string], { odds: string }>('select odds from decision_cache where key = ?').get(ask.key);
     expect(row).toBeUndefined();
