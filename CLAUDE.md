@@ -60,6 +60,20 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **Everyone is assigned a seat before they arrive**, and walks to it in a straight line once inside the bowl. Without it they stopped at whichever stands cell sat just inside their gate. Settling early is also wrong: fans sat down in the gate mouth and corked the gate behind them.
 - **`safeCountFor()` sets "clear" at 2 people/m², not zero.** A zone never empties while fans are still arriving, so `safeCount: 0` read as "never cleared" for every plan alike and the scorecard could not tell them apart.
 
+## Verifying the app in a browser
+
+`app/bench.html` + `app/src/bench.ts` measure requirement 3 where it has to hold: 20,000 dots in **one real browser Web Worker** with a warm cache. It deliberately contains no PixiJS (see below). Measured in headless Chrome: **156.5x real time**, 5,400 sim seconds in 34.5 s, 362 frames, 454 decisions from cache, 1 fallback.
+
+Drive a headless browser with Chrome's own DevTools Protocol — Node has a built-in `WebSocket`, so this needs no dependencies:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --use-angle=swiftshader --enable-unsafe-swiftshader --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/gd-chrome about:blank
+```
+
+**PixiJS cannot start under software GL.** `Application.init` calls Pixi's own `checkMaxIfStatementsInShader`, which compiles shaders in a loop to find the GPU's `if` limit. On real hardware that is instant; under SwiftShader (and so in any headless browser here, including with `--use-angle=metal`, which falls back) it never finishes, and it pegs the renderer hard enough that Chrome stops answering DevTools requests. A stack dump via `Debugger.pause` shows exactly that frame. The app's DOM renders fine before it — a probe at 2.5 s finds every panel, all three plan names, the editor steps and the scrubber, with zero page errors — so the map canvas is the only part that cannot be checked this way.
+
 ## App screens
 
 `app/src/App.tsx` holds the whole commander view: incident panel, playbook with a per-step plan editor, three runs side by side, scorecards, replay scrubber, briefing, and dot detail. Two things worth knowing:
