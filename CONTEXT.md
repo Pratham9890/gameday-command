@@ -214,8 +214,16 @@ From our old repo:
 
 ---
 
-## 11. How this chat is directed
+## 11. How this is directed
 
-The Claude on this PC reads this file and `TODO.md`, then writes orders into `ORDERS.md`.
-The active chat session reads `ORDERS.md`, executes open orders in order, and appends results.
-See `ORDERS.md` for the exact format and rules.
+Three roles:
+
+- **Supervisor** — Claude on this PC. Reads `CONTEXT.md`, `TODO.md` and `ORDERS.md`, decides the
+  next small unit of work, writes orders, and verifies results. Its paste-ready role prompt is
+  `PROMPT.md`.
+- **Builder** — the OpenChamber chat (DeepSeek V4.1 Flash). Executes open orders, attaches
+  evidence, and uses subagents when an order says so.
+- **User** — the relay. Tells the builder "check orders" when the supervisor has written one.
+
+Only the supervisor sets `verified` or `rejected`. The builder sets `done` with evidence.
+See `ORDERS.md` for the format, status values and review protocol.
