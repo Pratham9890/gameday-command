@@ -85,7 +85,7 @@ The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153
 
 Refetch the map with `npm run fetch-map` (it is committed, so you only need this to update it).
 
-Still to come: live Kev decisions end to end, the other two incidents, the briefing through Apple's on-device model, and the replay scrubber. Gate load is still uneven — see the open items in `CLAUDE.md`.
+Still to come: live Kev decisions end to end, the other two incidents, the briefing through Apple's on-device model, and the replay scrubber. Gate throughput is still below what the gates are rated for — see the open items in `CLAUDE.md`.
 
 ## Rules this project holds to
 

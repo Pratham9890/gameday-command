@@ -54,21 +54,40 @@ export class FlowFields {
     return this.map.cells[cell] !== 'blocked' && !this.closedCells.has(cell);
   }
 
-  field(placeIndex: number): FlowField {
-    const cached = this.cache.get(placeIndex);
+  /** Passability for one field, which may refuse to route through the bowl. */
+  private open(cell: number, avoidInterior: boolean, seeds: Set<number>): boolean {
+    if (!this.passable(cell)) return false;
+    if (!avoidInterior || seeds.has(cell)) return true;
+    const kind = this.map.cells[cell];
+    return kind !== 'stands' && kind !== 'concourse';
+  }
+
+  /**
+   * `avoidInterior` keeps a route from cutting through the stadium bowl.
+   *
+   * The deck and concourse are walkable, so a plain field happily routes a fan
+   * in the north lot to an east gate straight through the Horseshoe and out the
+   * other side — which is not a thing you can do, and which jammed every gate
+   * mouth with people who did not want that gate. Gates are approached from
+   * outside; routes that start inside (leaving for the lots) use the plain field.
+   */
+  field(placeIndex: number, avoidInterior = false): FlowField {
+    const key = placeIndex * 2 + (avoidInterior ? 1 : 0);
+    const cached = this.cache.get(key);
     if (cached) return cached;
-    const field = this.build(placeIndex);
-    this.cache.set(placeIndex, field);
+    const field = this.build(placeIndex, avoidInterior);
+    this.cache.set(key, field);
     return field;
   }
 
-  private build(placeIndex: number): FlowField {
+  private build(placeIndex: number, avoidInterior: boolean): FlowField {
     const { width, height, cells } = this.map;
     const size = width * height;
     const dist = new Uint16Array(size).fill(UNREACHABLE);
     const dir = new Uint8Array(size);
     const place = this.map.places[placeIndex];
     if (!place) return { dist, dir };
+    const seeds = new Set(place.cells);
 
     // Multi-source BFS: every cell of the destination starts at distance 0.
     let head = 0;
@@ -92,7 +111,7 @@ export class FlowFields {
         const ny = cy + DIR_DY[d]!;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
         const neighbour = ny * width + nx;
-        if (!this.passable(neighbour)) continue;
+        if (!this.open(neighbour, avoidInterior, seeds)) continue;
         if (dist[neighbour]! <= next) continue;
         dist[neighbour] = next;
         this.queue[tail++] = neighbour;
@@ -110,10 +129,11 @@ export class FlowFields {
         const ny = cy + DIR_DY[d]!;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
         const neighbour = ny * width + nx;
-        if (!this.passable(neighbour)) continue;
+        if (!this.open(neighbour, avoidInterior, seeds)) continue;
         // No cutting a wall corner on the diagonal.
         if (DIR_DX[d] !== 0 && DIR_DY[d] !== 0) {
-          if (!this.passable(cy * width + nx) || !this.passable(ny * width + cx)) continue;
+          if (!this.open(cy * width + nx, avoidInterior, seeds)) continue;
+          if (!this.open(ny * width + cx, avoidInterior, seeds)) continue;
         }
         if (dist[neighbour]! < best) {
           best = dist[neighbour]!;

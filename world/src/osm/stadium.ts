@@ -41,6 +41,8 @@ const GATE_COUNT = 12;
 const CONCOURSE_RADIUS_CELLS = 2;
 /** Half-width of a gate mouth in cells, so a gate is this*2+1 cells across. */
 const GATE_HALF_WIDTH_CELLS = 3;
+/** How deep the queue block outside a gate runs, in cells. */
+const GATE_DEPTH_CELLS = 4;
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
 export function loadExtract(path = EXTRACT_PATH): OsmExtract {
@@ -201,20 +203,25 @@ export function buildStadiumMap(extract: OsmExtract): MapBundle {
     // nobody who actually wants this gate can reach the turnstile.
     strokeLine(outside, inside, GATE_HALF_WIDTH_CELLS, width, height, set('walk'));
 
-    // The gate itself is the arc across the OUTSIDE of the mouth, where the
-    // queue forms. Admitted fans walk inward and leave it, instead of standing
-    // on the admission point.
+    // The gate is a block of cells outside the mouth, not a single arc: the
+    // queue standing on it is what gets admitted. A one-cell-deep arc fills with
+    // fans who have ALREADY been admitted and are walking inward, so no waiting
+    // fan can ever stand on the turnstile and admission ends up limited by the
+    // geometry instead of by the gate's throughput.
     const px = -ny;
     const py = nx;
-    const mouth = { x: best.x + nx * (CONCOURSE_RADIUS_CELLS + 2), y: best.y + ny * (CONCOURSE_RADIUS_CELLS + 2) };
     const gateCells: number[] = [];
-    for (let k = -GATE_HALF_WIDTH_CELLS; k <= GATE_HALF_WIDTH_CELLS; k++) {
-      const x = Math.round(mouth.x + px * k);
-      const y = Math.round(mouth.y + py * k);
-      if (x < 0 || y < 0 || x >= width || y >= height) continue;
-      const cell = y * width + x;
-      cells[cell] = 'walk';
-      if (!gateCells.includes(cell)) gateCells.push(cell);
+    for (let depth = 0; depth < GATE_DEPTH_CELLS; depth++) {
+      const cx = best.x + nx * (CONCOURSE_RADIUS_CELLS + 2 + depth);
+      const cy = best.y + ny * (CONCOURSE_RADIUS_CELLS + 2 + depth);
+      for (let k = -GATE_HALF_WIDTH_CELLS; k <= GATE_HALF_WIDTH_CELLS; k++) {
+        const x = Math.round(cx + px * k);
+        const y = Math.round(cy + py * k);
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        const cell = y * width + x;
+        cells[cell] = 'walk';
+        if (!gateCells.includes(cell)) gateCells.push(cell);
+      }
     }
     if (gateCells.length === 0) continue;
 

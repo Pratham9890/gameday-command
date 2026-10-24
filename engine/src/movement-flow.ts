@@ -24,6 +24,12 @@ export function densityFactor(peoplePerM2: number): number {
  * cell is what makes a queue back up along the approach instead, which is the
  * behaviour every number on the scorecard depends on.
  */
+/** How close to a gate's centre a fan must be to be served by it, in cells. */
+const GATE_REACH_CELLS = 10;
+
+/** How far over an even share a single gate may be assigned. */
+const GATE_QUOTA_SLACK = 1.15;
+
 /** Seconds of unused throughput a gate may hold over, so a lull is not banked. */
 const GATE_BURST_S = 5;
 
@@ -41,6 +47,8 @@ export class FlowMovement implements MovementModel {
   private gateIndexes: number[] = [];
   private gateDoor = new Map<number, Id>();
   private gateBudget!: Float32Array;
+  private gateAssigned!: Int32Array;
+  private gateCentre = new Map<number, { x: number; y: number }>();
   private seatingIndex = -1;
   private shelterIndex = -1;
   private parkingIndex = -1;
@@ -96,10 +104,22 @@ export class FlowMovement implements MovementModel {
 
     this.gateIndexes = map.places.map((p, i) => (p.kind === 'gate' ? i : -1)).filter((i) => i >= 0);
     this.gateBudget = new Float32Array(map.places.length);
+    this.gateAssigned = new Int32Array(map.places.length);
     for (const gate of this.gateIndexes) {
       const place = map.places[gate]!;
       const door = map.closables.find((c) => c.cells.some((cell) => place.cells.includes(cell)));
       if (door) this.gateDoor.set(gate, door.id);
+    }
+    this.gateCentre.clear();
+    for (const gate of this.gateIndexes) {
+      const cells = map.places[gate]!.cells;
+      let sx = 0;
+      let sy = 0;
+      for (const cell of cells) {
+        sx += cell % map.width;
+        sy += (cell / map.width) | 0;
+      }
+      this.gateCentre.set(gate, { x: sx / cells.length, y: sy / cells.length });
     }
     this.seatingIndex = this.indexOfKind(map, 'seating');
     this.shelterIndex = this.indexOfKind(map, 'shelter');
@@ -135,6 +155,9 @@ export class FlowMovement implements MovementModel {
     this.occupancy = new Int32Array(map.width * map.height);
 
     const seatCells = this.seatingIndex >= 0 ? (map.places[this.seatingIndex]?.cells ?? []) : [];
+    // A little slack over an even split, so proximity still wins most of the time.
+    const gateQuota =
+      this.gateIndexes.length > 0 ? Math.ceil((n / this.gateIndexes.length) * GATE_QUOTA_SLACK) : n;
 
     for (let i = 0; i < n; i++) {
       const roll = rng.next();
@@ -157,33 +180,45 @@ export class FlowMovement implements MovementModel {
       this.seatCell[i] = seat;
 
       // Your gate is the one by your seat, the way a ticket assigns it — not the
-      // one nearest your car. Picking by car funnels the whole crowd through
-      // the two or three gates facing the big lots and leaves the rest idle.
+      // one nearest your car, which funnels the whole crowd through the two or
+      // three gates facing the big lots. Each gate also carries a quota, so the
+      // bowl's horseshoe geometry cannot hand one gate a third of the stadium
+      // while others stand idle; past quota a fan is sent to their next-nearest.
       let bestGate = this.gateIndexes[0] ?? -1;
       if (seat >= 0) {
         const sx = seat % map.width;
         const sy = (seat / map.width) | 0;
         let bestSq = Infinity;
+        let fallbackSq = Infinity;
+        let fallbackGate = bestGate;
+        bestGate = -1;
         for (const gate of this.gateIndexes) {
           const gc = map.places[gate]!.cells[0]!;
           const dx = (gc % map.width) - sx;
           const dy = ((gc / map.width) | 0) - sy;
           const sq = dx * dx + dy * dy;
+          if (sq < fallbackSq) {
+            fallbackSq = sq;
+            fallbackGate = gate;
+          }
+          if (this.gateAssigned[gate]! >= gateQuota) continue;
           if (sq < bestSq) {
             bestSq = sq;
             bestGate = gate;
           }
         }
+        if (bestGate < 0) bestGate = fallbackGate;
       } else {
         let bestDist = UNREACHABLE;
         for (const gate of this.gateIndexes) {
-          const d = this.fields.field(gate).dist[cell]!;
+          const d = this.fields.field(gate, true).dist[cell]!;
           if (d < bestDist) {
             bestDist = d;
             bestGate = gate;
           }
         }
       }
+      this.gateAssigned[bestGate]!++;
       this.homeGate[i] = bestGate;
       dots.targetPlace[i] = bestGate;
 
@@ -225,6 +260,8 @@ export class FlowMovement implements MovementModel {
       if (cell >= 0) occupancy[cell]!++;
     }
 
+    this.admitAtGates(ctx);
+
     for (let i = 0; i < dots.count; i++) {
       const state = dots.stateOf(i);
       if (state === 'gone' || state === 'seated' || state === 'sheltering') continue;
@@ -256,7 +293,7 @@ export class FlowMovement implements MovementModel {
         continue;
       }
 
-      const field = this.fields.field(target);
+      const field = this.fields.field(target, map.places[target]?.kind === 'gate');
       const best = field.dir[cell]!;
       if (best === 0) {
         // No route: a closed gate or a sealed street. They wait where they are.
@@ -306,6 +343,47 @@ export class FlowMovement implements MovementModel {
       }
       // Nowhere to go: every way forward is full. This is the queue.
       if (!moved) dots.setState(i, 'queued');
+    }
+  }
+
+  /**
+   * Admit fans at each gate, up to that gate's throughput.
+   *
+   * A turnstile serves the queue in front of it; which exact 2 m square each
+   * fan stands on should not decide whether the gate works. Requiring a waiting
+   * fan to occupy a specific cell deadlocked every gate: those cells filled
+   * with fans walking past to the next gate and fans already admitted walking
+   * inward, so nobody waiting could reach the turnstile and gates sat idle with
+   * thousands queued and their whole throughput unspent.
+   *
+   * Dots are considered in index order, so admission stays deterministic.
+   */
+  private admitAtGates(ctx: SimContext): void {
+    const { dots, map } = ctx;
+    for (const gate of this.gateIndexes) {
+      let budget = Math.floor(this.gateBudget[gate]!);
+      if (budget < 1) continue;
+      const door = this.gateDoor.get(gate);
+      if (door !== undefined && ctx.closed.has(door)) continue;
+      const centre = this.gateCentre.get(gate)!;
+
+      for (let i = 0; i < dots.count && budget > 0; i++) {
+        if (this.admitted[i] === 1) continue;
+        if (dots.targetPlace[i] !== gate) continue;
+        const state = dots.stateOf(i);
+        if (state !== 'walking' && state !== 'queued') continue;
+        const cell = this.cellOf(ctx, i);
+        if (cell < 0) continue;
+        const dx = (cell % map.width) - centre.x;
+        const dy = ((cell / map.width) | 0) - centre.y;
+        if (Math.abs(dx) > GATE_REACH_CELLS || Math.abs(dy) > GATE_REACH_CELLS) continue;
+
+        this.admitted[i] = 1;
+        dots.targetPlace[i] = this.seatingIndex >= 0 ? this.seatingIndex : -1;
+        dots.setState(i, 'walking');
+        budget--;
+        this.gateBudget[gate]!--;
+      }
     }
   }
 
@@ -367,18 +445,10 @@ export class FlowMovement implements MovementModel {
     const { dots, map } = ctx;
     const kind = map.places[target]?.kind;
 
+    // Reaching your gate means you are in the queue; admitAtGates lets people
+    // through at the gate's own rate.
     if (kind === 'gate') {
-      if (this.admitted[i] === 1) return;
-      const door = this.gateDoor.get(target);
-      const shut = door !== undefined && ctx.closed.has(door);
-      if (!shut && this.gateBudget[target]! >= 1) {
-        this.gateBudget[target]! -= 1;
-        this.admitted[i] = 1;
-        dots.targetPlace[i] = this.seatingIndex >= 0 ? this.seatingIndex : -1;
-        dots.setState(i, 'walking');
-      } else {
-        dots.setState(i, 'queued');
-      }
+      dots.setState(i, 'queued');
       return;
     }
     if (kind === 'seating') {
@@ -404,7 +474,7 @@ export class FlowMovement implements MovementModel {
     let bestDist = UNREACHABLE;
     for (const index of candidates) {
       if (index === exclude) continue;
-      const d = this.fields.field(index).dist[cell]!;
+      const d = this.fields.field(index, ctx.map.places[index]?.kind === 'gate').dist[cell]!;
       if (d < bestDist) {
         bestDist = d;
         best = index;
