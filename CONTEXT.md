@@ -70,7 +70,9 @@ Windows 11, PowerShell. Use the portable toolkit; never install system-wide.
 | | |
 |---|---|
 | Node | 24.22.1 (toolkit) |
-| `npm install` | **currently fails** — `better-sqlite3@13.0.3` has no prebuilt for Node 24, falls back to `node-gyp`, no Visual Studio C++ toolchain. First task is replacing it with built-in `node:sqlite`. |
+| `npm install` | **works** (ORD-001) — the server uses built-in `node:sqlite`; no native modules. |
+| Baseline | `npm test`: 20 passed + 1 skipped files, 149 passed + 3 skipped tests (live Kev/`fm` absent), ~62 s. Typecheck silent. |
+| Builder | DeepSeek V4.1 Flash in OpenChamber session `ses_e916d8daaffefBqcGfvqbGVCo8`; the supervisor sends orders with `opencode run --session <id>`. |
 | Kev | not available (macOS/MLX). The app must run on defaults and label fallbacks. |
 | `fm serve` | not available (macOS). Briefing falls back to the template. |
 | Ports | app `5173`, API `8787` (their defaults). Kill stale dev servers before starting. |
@@ -158,7 +160,7 @@ Key files for the work:
 | `app/src/App.tsx` | commander screen: situation → three plans → verdict |
 | `world/src/playbook.ts` | preset plans per incident |
 | `world/src/scoring.ts` | scorecard accumulator |
-| `server/src/db.ts` | `better-sqlite3` — replace with `node:sqlite` first |
+| `server/src/db.ts` | `node:sqlite` (`DatabaseSync`); no `.pragma()`/`.transaction()` in that API |
 | `server/src/index.ts` | `POST /decide` cache → Kev → defaults, biggest groups first |
 
 ---

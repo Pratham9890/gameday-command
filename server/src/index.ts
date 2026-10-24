@@ -85,7 +85,7 @@ function makeWarmer(db: Db) {
   const write = db.prepare(
     'insert or replace into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
   );
-  const seen = db.prepare<[string], { key: string }>('select key from decision_cache where key = ?');
+  const seen = db.prepare('select key from decision_cache where key = ?');
 
   const pump = () => {
     while (running < WARM_CONCURRENCY && pending.length > 0) {
@@ -157,9 +157,7 @@ export function createApp(db: Db): Hono {
     const asks = body.asks ?? [];
     const deadline = Date.now() + KEV_TIMEOUT_MS;
 
-    const readCache = db.prepare<[string], { odds: string; model: string | null; ms: number | null }>(
-      'select odds, model, ms from decision_cache where key = ?',
-    );
+    const readCache = db.prepare('select odds, model, ms from decision_cache where key = ?');
     const writeCache = db.prepare(
       'insert or replace into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
     );
@@ -176,7 +174,9 @@ export function createApp(db: Db): Hono {
 
     for (const ask of asks) {
       if (answers.has(ask.key)) continue;
-      const cached = readCache.get(ask.key);
+      const cached = readCache.get(ask.key) as
+        | { odds: string; model: string | null; ms: number | null }
+        | undefined;
       if (cached) {
         const odds = JSON.parse(cached.odds) as Record<string, number>;
         if (oddsAreValid(odds, optionsFor(ask))) {
@@ -227,10 +227,9 @@ export function createApp(db: Db): Hono {
 
   app.get('/api/plans', (c) => {
     const kind = c.req.query('incident');
-    const saved = db
-      .prepare<[string], { json: string }>('select json from plans where incident = ?')
-      .all(kind ?? '')
-      .map((row) => JSON.parse(row.json) as ResponsePlan);
+    const saved = (db.prepare('select json from plans where incident = ?').all(kind ?? '') as { json: string }[]).map(
+      (row) => JSON.parse(row.json) as ResponsePlan,
+    );
     const builtIn = kind ? playbookFor(kind as ResponsePlan['forIncident'], defaultMap()) : [];
     return c.json([...builtIn, ...saved]);
   });
@@ -259,8 +258,8 @@ export function createApp(db: Db): Hono {
 
   app.get('/api/comparisons/:id', (c) => {
     const row = db
-      .prepare<[string], { json: string }>('select json from comparisons where id = ?')
-      .get(c.req.param('id'));
+      .prepare('select json from comparisons where id = ?')
+      .get(c.req.param('id')) as { json: string } | undefined;
     return row ? c.json(JSON.parse(row.json)) : c.json({ error: 'no such comparison' }, 404);
   });
 
@@ -279,7 +278,8 @@ export function createApp(db: Db): Hono {
   return app;
 }
 
-if (process.argv[1]?.includes('server/src/index.ts')) {
+// Windows hands argv[1] over with backslashes; without this the server exits silently there.
+if (process.argv[1]?.replaceAll('\\', '/').includes('server/src/index.ts')) {
   const db = openDb();
   const app = createApp(db);
   const cached = (db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n;

@@ -1,6 +1,6 @@
 # TODO — Gameday Command v3
 
-Status: **Phase 0 in progress.** Branch `feat/command-v3` off `1d48d31`.
+Status: **Phase 0 done except the branch-name note; Phase 1 next.** Branch `feat/command-v3` off `1d48d31`.
 Checked boxes are verified in this repo, not merely written.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done and tested.
@@ -11,12 +11,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done and tested.
 
 - [x] Create `feat/command-v3` from `main` @ `1d48d31`.
 - [x] Push `backup/isometric-ui` (our old app) for history only.
-- [ ] Replace `better-sqlite3` with built-in `node:sqlite` in `server/src/db.ts`.
+- [x] Replace `better-sqlite3` with built-in `node:sqlite` in `server/src/db.ts`.
       Acceptance: `npm install` completes on Windows with no Visual Studio and no native build.
-- [ ] Drop `better-sqlite3` from `package.json` / `allowScripts`.
-- [ ] Normalise server file paths so `data/decision-seed.json` resolves with `\` or `/`.
-- [ ] `npm run typecheck` clean.
-- [ ] `npm test` green; record test-file and test-case counts in `CONTEXT.md`.
+- [x] Drop `better-sqlite3` from `package.json` / `allowScripts`.
+- [x] Normalise server file paths so `data/decision-seed.json` resolves with `\` or `/`.
+      Also fixed: the `index.ts` main guard, so `npm run serve` starts on Windows.
+- [x] `npm run typecheck` clean.
+- [x] `npm test` green; record test-file and test-case counts in `CONTEXT.md`.
+- [ ] `npm run seed:export` needs the `sqlite3` CLI and bash syntax; port it to a Node script
+      over `node:sqlite` if a re-warm is ever done on Windows.
 - [ ] Remove the unused probe branch name from any notes; only `main`, `feat/command-v3`,
       `backup/isometric-ui` on the remote.
 

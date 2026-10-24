@@ -170,7 +170,9 @@ describe('POST /decide', () => {
   it('never caches a bad answer', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => kevReply({ hold_place: 2 })));
     await decide();
-    const row = db.prepare<[string], { odds: string }>('select odds from decision_cache where key = ?').get(ask.key);
+    const row = db.prepare('select odds from decision_cache where key = ?').get(ask.key) as
+      | { odds: string }
+      | undefined;
     expect(row).toBeUndefined();
   });
 });

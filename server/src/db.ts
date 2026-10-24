@@ -1,8 +1,12 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 
-export type Db = Database.Database;
+/**
+ * The built-in `node:sqlite` database, so the repo installs on Node 24 without a
+ * native toolchain. `better-sqlite3` needed node-gyp and Visual Studio C++.
+ */
+export type Db = DatabaseSync;
 
 /**
  * Bump whenever what Kev is told changes without changing the decisionKey
@@ -17,8 +21,8 @@ export const DECISION_CACHE_VERSION = 2;
 /** Plans, saved comparisons and the decision cache. The cache is what makes a warm run fast. */
 export function openDb(path = process.env.DB_PATH ?? './data/gameday.db'): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL');
   db.exec(`
     create table if not exists plans (
       id text primary key,
@@ -38,9 +42,10 @@ export function openDb(path = process.env.DB_PATH ?? './data/gameday.db'): Db {
       created_at integer not null
     );
   `);
-  if ((db.pragma('user_version', { simple: true }) as number) < DECISION_CACHE_VERSION) {
+  const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  if (version < DECISION_CACHE_VERSION) {
     db.exec('delete from decision_cache');
-    db.pragma(`user_version = ${DECISION_CACHE_VERSION}`);
+    db.exec(`PRAGMA user_version = ${DECISION_CACHE_VERSION}`);
   }
   seedDecisions(db);
   return db;
@@ -71,7 +76,10 @@ export function seedDecisions(db: Db): number {
 
   let rows: SeedRow[];
   try {
-    rows = JSON.parse(readFileSync(resolve(import.meta.dirname, '../data/decision-seed.json'), 'utf8')) as SeedRow[];
+    // `join` builds the path with the platform's separator, so this resolves on
+    // Windows (`\`) and POSIX (`/`) alike.
+    const seedPath = join(import.meta.dirname, '..', 'data', 'decision-seed.json');
+    rows = JSON.parse(readFileSync(seedPath, 'utf8')) as SeedRow[];
   } catch {
     return 0; // no seed shipped, or unreadable: start cold, which still works
   }
@@ -80,9 +88,15 @@ export function seedDecisions(db: Db): number {
     'insert or ignore into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)',
   );
   const now = Date.now();
-  const load = db.transaction((all: SeedRow[]) => {
-    for (const row of all) insert.run(row.key, row.odds, row.model, row.ms, now);
-  });
-  load(rows);
+  // `node:sqlite` has no `.transaction()` helper; one BEGIN/COMMIT around the
+  // whole seed keeps it to a single fsync, and ROLLBACK keeps it all-or-nothing.
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) insert.run(row.key, row.odds, row.model, row.ms, now);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
   return rows.length;
 }

@@ -49,7 +49,7 @@ result:
 ## ORD-001 — Make the repo install and test on Windows
 
 priority: high
-status: open
+status: verified
 files: server/src/db.ts, package.json, server/src/index.ts, server/src/db.test.ts
 subagents: explore × 1 (inventory every sqlite use before editing)
 do: Replace `better-sqlite3` with the built-in `node:sqlite` (`DatabaseSync`). Keep the schema,
@@ -60,6 +60,34 @@ done-when: from a clean `node_modules`, `npm install` completes with no Visual S
 node-gyp; `npm run typecheck` is silent; `npm test` is green. Report the exact test-file and
 test-case counts, and any live-model tests that skipped.
 result:
+amendment (supervisor, 2026-10-24): the dependency is declared in `server/package.json`
+(`better-sqlite3` and `@types/better-sqlite3`), so that file and `package-lock.json` are in scope
+too. `node:sqlite` has no `.pragma()` or `.transaction()`: read `PRAGMA user_version` with
+`prepare(...).get()`, set it with `exec`, and wrap the seed insert in `BEGIN`/`COMMIT` (with
+`ROLLBACK` on error). Keep `export type Db` so `index.ts` and the tests compile unchanged where
+possible. Activate the toolkit first: `. "$env:USERPROFILE\.config\openchamber\toolkit\activate.ps1"`.
+Do not commit; leave the change in the working tree for review.
+
+result (builder, 2026-10-24): done — `better-sqlite3` replaced by built-in `node:sqlite` (`DatabaseSync`). Not committed; working tree on `feat/command-v3`.
+- Clean install: `node_modules` deleted (confirmed absent), then `npm install` exit 0 → `added 127 packages, and audited 133 packages in 11s`. No node-gyp, no Visual Studio, no native compile. `package-lock.json` no longer contains `better-sqlite3`, `@types/better-sqlite3` or `node-addon-api`. (npm audit reports 3 advisories in the dev-only `vitest`/`tinypool` tree — pre-existing and untouched by this order.)
+- `npm run typecheck` (`tsc -p tsconfig.json`) exit 0, no diagnostics.
+- `npm test` (`vitest run`) exit 0 → `Test Files  20 passed | 1 skipped (21)`, `Tests  149 passed | 3 skipped (152)`, duration 61.92s. The 3 skipped tests are all of `server/src/live.test.ts`: live Kev on :8009 and `fm serve` on :8080 were not listening, so they skip themselves as designed.
+- Seed-path proof: a fresh on-disk DB (temp dir, Windows paths) loaded all 737 shipped seed rows, `PRAGMA user_version` read back 2, and a second `seedDecisions()` returned 0 (idempotency guard intact). The path is now built with `join(import.meta.dirname, '..', 'data', 'decision-seed.json')`, so either separator resolves.
+- Changes: `server/src/db.ts` — `DatabaseSync`, WAL via `exec`, `user_version` read with `prepare('PRAGMA user_version').get()` and written with `exec`, seed inserts wrapped in `BEGIN`/`COMMIT` with `ROLLBACK` on error, schema and `DECISION_CACHE_VERSION = 2` unchanged; `server/src/db.test.ts` — `.pragma()` calls translated; `server/src/index.ts` — only the `better-sqlite3` `prepare<...>` generics replaced by result casts, no logic change; `package.json` — `better-sqlite3` dropped from `allowScripts`; `server/package.json` — dependency and `@types/better-sqlite3` dropped; `package-lock.json` — pruned by the clean install.
+- Scope note: `server/src/decide.test.ts` needed one line (the `prepare<[string], …>` generic removed, result cast instead), because `node:sqlite` prepares statements untyped; it is not in the order's file list and no assertion changed. `contracts.ts` and `app/` were not touched.
+
+review (supervisor, 2026-10-24): **verified.**
+- Read the full diff: changes only in `server/`, `package.json`, `package-lock.json`. The
+  `decide.test.ts` scope note is accepted — a type-only change forced by the untyped API.
+- Reproduced myself: deleted `node_modules`, `npm install` exit 0, `better-sqlite3` absent;
+  `npm run typecheck` silent; `npm test` → 20 passed | 1 skipped files, 149 passed | 3 skipped
+  tests (all 3 in `live.test.ts`, Kev and `fm` absent). Numbers match the builder's report.
+- Found and fixed a pre-existing Windows bug the order did not cover: `server/src/index.ts`
+  started only when `argv[1]` contained `server/src/index.ts` with forward slashes, so on Windows
+  `npm run serve` exited silently. Normalised the separators. Smoke test: server up, `GET
+  /api/plans?incident=gate_surge` → 200, log reports 737 decisions cached.
+- Known leftover, not blocking: `npm run seed:export` shells out to the `sqlite3` CLI with bash
+  `$DB_PATH` syntax, so it does not run on Windows. Only needed after a re-warm against Kev.
 
 ---
 
@@ -100,6 +128,6 @@ result:
 
 | id | title | status | verified by |
 |---|---|---|---|
-| ORD-001 | Windows install and baseline | open | — |
+| ORD-001 | Windows install and baseline | verified | supervisor |
 | ORD-002 | Ratio + synthetic banner | open | — |
 | ORD-003 | Tailgate places | open | — |
