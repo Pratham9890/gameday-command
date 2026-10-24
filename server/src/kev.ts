@@ -1,4 +1,5 @@
 import type { DecisionAsk, DecisionSituation, Odds } from '../../contracts.ts';
+import { FAN_TYPES } from '../../brain/src/fan-types.ts';
 
 export interface KevOptions {
   url: string;
@@ -39,10 +40,12 @@ export const QUESTION_ID = 'decision';
 /**
  * The state Kev reasons over: the rounded facts behind this decisionKey, named
  * so they read as plain fields. Everything here is already part of the key, so
- * one call still answers the whole group of dots.
+ * one call still answers the whole group of dots. Compliance is not in the key
+ * itself, but it is fixed per fan type, and the fan type is.
  */
 export function buildSystemOneRequest(ask: DecisionAsk, situation: DecisionSituation, model: string): SystemOneRequest {
   const c = ask.context;
+  const fanType = FAN_TYPES.find((t) => t.id === ask.fanTypeId);
   const criteria: Record<string, string> = {};
   for (const option of situation.options) criteria[option.key] = option.label;
 
@@ -50,6 +53,7 @@ export function buildSystemOneRequest(ask: DecisionAsk, situation: DecisionSitua
     model,
     state: {
       who: `a group of ${ask.fanTypeId.replace(/-/g, ' ')} fans at Ohio Stadium on game day`,
+      how_readily_they_follow_instructions: fanType?.traits.compliance,
       situation: situation.description,
       minutes_to_kickoff: c.minToKickoffBucket,
       weather: c.weather,

@@ -88,6 +88,13 @@ describe('kev client speaks /v1/systemone', () => {
     expect(String(state.who)).toContain('student section');
   });
 
+  it('tells Kev how readily this fan type follows instructions', () => {
+    const state = buildSystemOneRequest(ask, SITUATIONS.gate_jammed, 'kev-latest').state as Record<string, unknown>;
+    expect(state.how_readily_they_follow_instructions).toBe(0.5);
+    const family = buildSystemOneRequest({ ...ask, fanTypeId: 'family-kids' }, SITUATIONS.gate_jammed, 'kev-latest');
+    expect((family.state as Record<string, unknown>).how_readily_they_follow_instructions).toBe(0.9);
+  });
+
   it('reads the probabilities straight out of a choice answer', () => {
     const odds = parseSystemOne({
       model: 'kev-4b',

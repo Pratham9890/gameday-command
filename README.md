@@ -131,7 +131,7 @@ a fraction of both. Again: a tradeoff, not a recommendation.
 
 | Requirement | State |
 | --- | --- |
-| Workspaces, typecheck, tests | **105 tests in 13 files**, `tsc` clean |
+| Workspaces, typecheck, tests | **115 tests in 16 files**, `tsc` clean |
 | Engine in a worker, no AI in movement | yes; flow fields, seeded RNG, frames every 15 s, snapshot **and** seek-to-rewind exercised through the worker |
 | 20,000 dots at 10x or faster | **222x** in one browser worker, **56.8x** per plan with three running in the app |
 | Stadium map from OSM at kickoff minus 60 | yes, 800x800 cells from a committed extract |

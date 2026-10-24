@@ -22,7 +22,7 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - `server/src/index.ts` → `POST /api/decide` — cache, then Kev, then defaults, **biggest groups first under one shared deadline**. A cold lightning delay raises ~135 keys at once and a single GPU answers them one at a time, so they cannot all fit inside the engine's 2 s pause. Asking for everything in parallel timed out into defaults for nearly all of it (2,203 model-backed dot decisions); asking the biggest groups first gets 16,381 with the same 1.7 s pause. The long tail of small groups takes the default on purpose.
 - `brain/src/client.ts` — the only thing that talks to the server about decisions. Every failure path (timeout, refused, bad JSON, odds that do not sum to 1) returns defaults with `source: 'default'`. Nothing here is allowed to throw.
 - `world/src/scoring.ts` — a plain accumulator. Same samples in, same scorecard out, which is what makes replay-from-tape scoring match a live run.
-- `server/src/kev.ts` — **Kev is not a chat model.** It exposes a TypeSafe-compatible `POST /v1/systemone`: a state plus typed questions in, one prefill pass, typed answers out, and no text generation at all. A `choice` question comes back with `probabilities` keyed by the option names we sent, which is exactly the contract's `Odds` — nothing to parse out of prose. The first version of this client posted OpenAI chat completions and scraped JSON from the reply; against the real server that would have 404'd and turned every decision into a fallback. `GET /v1/models` lists the model names it accepts (`kev-latest` by default).
+- `server/src/kev.ts` — **Kev is not a chat model.** It exposes a TypeSafe-compatible `POST /v1/systemone`: a state plus typed questions in, one prefill pass, typed answers out, and no text generation at all. A `choice` question comes back with `probabilities` keyed by the option names we sent, which is exactly the contract's `Odds` — nothing to parse out of prose. The first version of this client posted OpenAI chat completions and scraped JSON from the reply; against the real server that would have 404'd and turned every decision into a fallback. `GET /v1/models` lists the model names it accepts (`kev-latest` by default). The state carries each fan type's `compliance` trait as `how_readily_they_follow_instructions`; before that Kev only had the type's name to go on.
 - `server/src/fm.ts` — the commander briefing through Apple's on-device model via `fm serve` (a Chat Completions server; model `system`, always `stream: false`). The prompt measures **399 tokens** by `fm count-tokens` against a 4,000 budget. Keep it that small: an overflow comes back as a safety-looking error, not a length error.
 - `server/src/briefing.ts` — `briefingIsSupported()` is the guard on the briefing: any number the model writes must already be on a scorecard (or in a name the request supplied). One invented figure throws the whole briefing away for the template.
 
@@ -166,9 +166,11 @@ The first request pays MLX warm-up and will exceed the timeout; it falls back on
 
 ## The cache ships warm
 
-`server/data/decision-seed.json` holds 544 answers the real Kev-4B already gave (84 KB). `openDb()` loads them into an empty `decision_cache`, so a fresh clone is model-driven from the first click rather than guessing its way through the first run of every scenario. Measured on a brand-new database: a lightning delay runs **54,253 decisions, all from the model, zero fallbacks**, with the pause down to 0.4 s.
+`server/data/decision-seed.json` holds 666 answers the real Kev-4B already gave (104 KB). `openDb()` loads them into an empty `decision_cache`, so a fresh clone is model-driven from the first click rather than guessing its way through the first run of every scenario. Measured on a brand-new database with the earlier 544-answer seed: a lightning delay runs **54,253 decisions, all from the model, zero fallbacks**, with the pause down to 0.4 s.
 
-Regenerate after changing fan types, situations or the `decisionKey` context — those change the keys and the old ones stop matching:
+Regenerate after changing fan types, situations or the `decisionKey` context — those change the keys and the old ones stop matching.
+
+Changing what Kev is *told* without changing the key (a new field in `buildSystemOneRequest`, like each fan type's compliance) is the dangerous case: every old answer still matches, so Kev never sees the new field. Bump `DECISION_CACHE_VERSION` in `server/src/db.ts`: a database stamped older (SQLite `user_version`) empties its cache on open. Regenerate the seed in the same change, or the stale seed reloads straight into the emptied cache.
 
 ```bash
 npm run warm                      # against a live Kev
@@ -184,7 +186,7 @@ npm run warm      # runs all three incidents x three plans, then waits for the w
 
 Only needed if you have changed the decision vocabulary; otherwise the shipped seed covers it.
 
-Takes a few minutes and settles around 538 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
+Takes a few minutes and settles around 666 keys on the stadium map. After it, every fan decision in the demo comes from the model: the last run measured **zero fallbacks on all three plans**. Skip it and the first run of each scenario is mostly defaults, which is correct behaviour but not a good look on stage. The cache lives in SQLite at `DB_PATH`, so it survives restarts.
 
 `?autorun=1` starts the three runs without a click, and the app saves each finished comparison through `POST /api/comparisons` — which is how a run in an ordinary browser window can be checked from the server side, with no debugger attached.
 
