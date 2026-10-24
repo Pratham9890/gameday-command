@@ -237,3 +237,73 @@ describe('scorecard against a hand count on the 3 gate test map', () => {
     expect(card.runId).toBe('hand-count');
   });
 });
+
+describe('rewinding a run', () => {
+  /**
+   * The contract's Snapshot is frozen and carries only what crosses the lane
+   * boundary, so a checkpoint has to carry the movement model's own state and
+   * the scorer's as well. If it did not, a rewound run would drift: fans would
+   * forget which gate they were assigned, which seat they were walking to and
+   * whether they had already been let in.
+   */
+  it('puts the crowd and the scorecard back exactly', async () => {
+    const config = configFor('rewind');
+    const sim = new Simulation({
+      config,
+      map,
+      population: makePopulation(1200, SEED),
+      defaults: DECISION_DEFAULTS,
+      serverUrl: '',
+      movement: new FlowMovement(),
+      replay: { runId: config.runId, answers: [] },
+    });
+
+    // run a while, take a restart point, then keep going and remember where it got to
+    for (let i = 0; i < 120; i++) await sim.step();
+    const point = sim.checkpoint();
+    const tAtCheckpoint = sim.ctx.t;
+
+    for (let i = 0; i < 90; i++) await sim.step();
+    const expectedT = sim.ctx.t;
+    const expectedX = Array.from(sim.ctx.dots.x);
+    const expectedState = Array.from(sim.ctx.dots.state);
+    const expectedTargets = Array.from(sim.ctx.dots.targetPlace);
+    const expectedCard = sim.scorecard();
+
+    // rewind and walk the same ninety seconds again
+    sim.rewind(point);
+    expect(sim.ctx.t).toBe(tAtCheckpoint);
+    for (let i = 0; i < 90; i++) await sim.step();
+
+    expect(sim.ctx.t).toBe(expectedT);
+    expect(Array.from(sim.ctx.dots.x)).toEqual(expectedX);
+    expect(Array.from(sim.ctx.dots.state)).toEqual(expectedState);
+    expect(Array.from(sim.ctx.dots.targetPlace)).toEqual(expectedTargets);
+    expect(sim.scorecard()).toEqual(expectedCard);
+  });
+
+  it('does not double count the scorecard when it rewinds', async () => {
+    const config = configFor('rewind-score');
+    const sim = new Simulation({
+      config,
+      map,
+      population: makePopulation(1200, SEED),
+      defaults: DECISION_DEFAULTS,
+      serverUrl: '',
+      movement: new FlowMovement(),
+      replay: { runId: config.runId, answers: [] },
+    });
+    for (let i = 0; i < 100; i++) await sim.step();
+    const point = sim.checkpoint();
+    const atPoint = sim.scorecard();
+
+    for (let i = 0; i < 50; i++) await sim.step();
+    sim.rewind(point);
+
+    // Officer minutes and danger minutes only ever accumulate, so a rewind that
+    // forgot to put the scorer back would show more here than it did before.
+    expect(sim.scorecard().officerMinutesUsed).toBeCloseTo(atPoint.officerMinutesUsed, 9);
+    expect(sim.scorecard().dangerMinutes).toBeCloseTo(atPoint.dangerMinutes, 9);
+    expect(sim.scorecard().fallbackDecisions).toBe(atPoint.fallbackDecisions);
+  });
+});

@@ -64,12 +64,20 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
 
   let snapshot: Snapshot | null = null;
   let askedForSnapshot = false;
+  let seekFrameT: number | null = null;
+  let seekError: string | null = null;
+  let seeking = false;
+  let resolveSeek: (() => void) | null = null;
 
   const done = new Promise<Scorecard>((resolve, reject) => {
     worker.onmessage = (event: MessageEvent<WorkerOut>) => {
       const message = event.data;
       if (message.type === 'frame') {
         frames++;
+        if (seeking) {
+          seekFrameT = message.frame.t;
+          resolveSeek?.();
+        }
         // Part way in, ask the worker for a snapshot: the contract's restart
         // point has to come out of the worker itself, not just the engine
         // module under Node.
@@ -79,6 +87,9 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
         }
       } else if (message.type === 'snapshot') {
         snapshot = message.snapshot;
+      } else if (message.type === 'error' && seeking) {
+        seekError = message.message;
+        resolveSeek?.();
       }
       else if (message.type === 'deciding') {
         pauses++;
@@ -109,6 +120,58 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
   const card = await done;
   const wallSeconds = (performance.now() - started) / 1000;
   worker.terminate();
+
+  // Rewind through the worker: a seek has to restore a checkpoint and step
+  // forward, which is the contract's restore path exercised across the worker
+  // boundary rather than only inside the engine module.
+  const seekTarget = Math.round(config.startAt + (config.endAt - config.startAt) * 0.25);
+  const seekWorker = new Worker(new URL('../../engine/src/worker.ts', import.meta.url), { type: 'module' });
+  let seekResult: Record<string, unknown> = { ok: false, reason: 'seek never answered' };
+  try {
+    await new Promise<void>((resolve) => {
+      let ready = false;
+      let framesSeen = 0;
+      seekWorker.onmessage = (event: MessageEvent<WorkerOut>) => {
+        const m = event.data;
+        if (m.type === 'ready') ready = true;
+        else if (m.type === 'frame') {
+          framesSeen++;
+          if (seeking) {
+            // Frames emitted before the pause are still arriving; the one we
+            // want is the frame the seek itself produced, at the moment asked
+            // for. Anything earlier is in-flight traffic, not an answer.
+            if (m.frame.t >= seekTarget - 1) {
+              seekFrameT = m.frame.t;
+              resolve();
+            }
+          } else if (ready && framesSeen > 30) {
+            // far enough in to have banked a checkpoint or two
+            seekWorker.postMessage({ type: 'pause' } satisfies WorkerIn);
+            seeking = true;
+            seekWorker.postMessage({ type: 'seek', t: seekTarget } satisfies WorkerIn);
+          }
+        } else if (m.type === 'error' && seeking) {
+          seekError = m.message;
+          resolve();
+        }
+      };
+      resolveSeek = resolve;
+      seekWorker.postMessage({ type: 'init', config, map, population, defaults, serverUrl: '' } satisfies WorkerIn);
+      seekWorker.postMessage({ type: 'play' } satisfies WorkerIn);
+      setTimeout(resolve, 60_000);
+    });
+    seekResult = seekError
+      ? { ok: false, error: seekError }
+      : {
+          // The sought frame must land on the moment asked for, not merely
+          // somewhere earlier in the run.
+          ok: seekFrameT !== null && Math.abs(seekFrameT - seekTarget) <= 1,
+          askedFor: seekTarget,
+          cameBackAt: seekFrameT,
+        };
+  } finally {
+    seekWorker.terminate();
+  }
 
   const snap = snapshot as Snapshot | null;
   const snapshotCheck = snap
@@ -149,6 +212,7 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
     peakDensity: card.peakDensity,
     fallbackDecisions: card.fallbackDecisions,
     snapshot: snapshotCheck,
+    seek: seekResult,
   };
 
   log(
@@ -157,6 +221,7 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
   );
   log(`${label}: decisions ${JSON.stringify(sources)}, peak ${card.peakDensity.toFixed(2)}/m², fallbacks ${card.fallbackDecisions}`);
   log(`${label}: worker snapshot ${JSON.stringify(snapshotCheck)}`);
+  log(`${label}: worker seek ${JSON.stringify(seekResult)}`);
   return result;
 }
 
@@ -171,7 +236,8 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
       dotGroupSize: DOT_GROUP_SIZE,
       ok:
         (measured.timesRealTime as number) >= 10 &&
-        (measured.snapshot as { ok: boolean }).ok,
+        (measured.snapshot as { ok: boolean }).ok &&
+        (measured.seek as { ok: boolean }).ok,
     };
     log(`\nRESULT: ${(measured.timesRealTime as number) >= 10 ? 'PASS' : 'FAIL'} — requirement 3 wants 10x or faster.`);
   } catch (error) {

@@ -69,7 +69,9 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 
 `app/bench.html` + `app/src/bench.ts` measure requirement 3 where it has to hold: 20,000 dots in **one real browser Web Worker** with a warm cache. It deliberately contains no PixiJS (see below). It also asks the worker for a `snapshot` part way in and checks its shape, so the contract's restart point is exercised through the worker rather than only through the engine module under Node.
 
-Measured in headless Chrome against a cache warmed by the real Kev: **225.6x real time**, 5,400 sim seconds in 23.9 s, 362 frames, **121 decisions all from cache and zero fallbacks**, snapshot ok at t=-3280 with a 4-word RNG state, 20,000 dots and 24 officers.
+It also drives a `seek`, which is the contract's restore path across the worker boundary: the worker rewinds to the nearest checkpoint and steps forward, and the frame must come back at the moment asked for, not merely somewhere earlier.
+
+Measured in headless Chrome against a cache warmed by the real Kev: **222.5x real time**, 20,000 dots, **121 decisions all from cache and zero fallbacks**, snapshot ok with a 4-word RNG state and 20,000 dots, and a seek asked for t=-2250 answering at exactly t=-2250.
 
 Drive a headless browser with Chrome's own DevTools Protocol — Node has a built-in `WebSocket`, so this needs no dependencies:
 
@@ -82,6 +84,14 @@ Drive a headless browser with Chrome's own DevTools Protocol — Node has a buil
 **No `<StrictMode>` in `main.tsx`, deliberately.** StrictMode mounts every effect twice in development. PixiJS owns a WebGL context imperatively, and tearing the throwaway first `Application` down while the real second one is still initialising leaves the second `init()` unresolved: the page stops mid-setup, draws nothing, and reports no error. The production build was always fine, which made it easy to misread as the browser's fault. Found with `document.title` beacons — execution stopped at the `if (disposed)` branch — after `Debugger.pause` showed the main thread wedged. Waiting for the init promise before destroying is not enough; do not reintroduce StrictMode without re-checking `npm run dev` in a browser.
 
 **PixiJS also cannot start under software GL**, with one context or three. `Application.init` calls Pixi's own `checkMaxIfStatementsInShader`, which compiles shaders in a loop to find the GPU's `if` limit. On real hardware that is instant; under SwiftShader (and so in any headless browser here, including with `--use-angle=metal`, which falls back) it never finishes, and it pegs the renderer hard enough that Chrome stops answering DevTools requests. A stack dump via `Debugger.pause` shows exactly that frame. The app's DOM renders fine before it — a probe at 2.5 s finds every panel, all three plan names, the editor steps and the scrubber, with zero page errors — so the map canvas is the only part that cannot be checked this way.
+
+## Rewinding a run
+
+`Simulation.checkpoint()` / `rewind()` are the restart points, and the worker keeps one every `CHECKPOINT_EVERY_S` so `seek` can rewind to the nearest and step forward.
+
+A checkpoint is **not** just the contract's `Snapshot`. `Snapshot` is frozen and carries only what crosses the lane boundary, so it says nothing about arrival times, assigned seats and gates, who has already been admitted, or the gates' throughput budgets — nor about what the scorer has accumulated. A rewind that restored only `Snapshot` would drift: fans would forget which gate they were sent to, and officer minutes would be counted twice. So `MovementModel` has optional `capture()` / `restore()`, the `Scorer` has the same, and `Checkpoint` bundles all three. Two tests hold this down: a rewound run reproduces the crowd and the scorecard exactly, and a rewind does not inflate the accumulating totals.
+
+The app's replay scrubber draws the frames it kept rather than seeking, because that is instant and a seek has to re-simulate. `seek` is there for scrubbing beyond what the app holds.
 
 ## App screens
 

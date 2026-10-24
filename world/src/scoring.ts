@@ -27,6 +27,17 @@ export interface ScorerInit {
  * same samples in, same scorecard out, so a replay from a DecisionTape scores
  * identically to the live run.
  */
+export interface ScorerState {
+  peakDensity: number;
+  dangerCellMinutes: number;
+  officerSeconds: number;
+  clearedAt: SimSeconds | null;
+  firstOfficerAt: SimSeconds | null;
+  everOccupied: boolean;
+  fallbacks: number;
+  reachedDots: number[];
+}
+
 export class Scorer {
   private peakDensity = 0;
   private dangerCellMinutes = 0;
@@ -35,7 +46,7 @@ export class Scorer {
   private everOccupied = false;
   private firstOfficerAt: SimSeconds | null = null;
   private fallbacks = 0;
-  private reachedDots = new Set<number>();
+  private reachedDots: Set<number> = new Set<number>();
 
   private readonly init: ScorerInit;
 
@@ -78,6 +89,31 @@ export class Scorer {
   /** Dots an alert actually reached. Anyone never in this set counts as not reached. */
   noteReached(dotIds: Iterable<number>): void {
     for (const id of dotIds) this.reachedDots.add(id);
+  }
+
+  /** Everything the accumulator has gathered, for rewinding a run. */
+  capture(): ScorerState {
+    return {
+      peakDensity: this.peakDensity,
+      dangerCellMinutes: this.dangerCellMinutes,
+      officerSeconds: this.officerSeconds,
+      clearedAt: this.clearedAt,
+      firstOfficerAt: this.firstOfficerAt,
+      everOccupied: this.everOccupied,
+      fallbacks: this.fallbacks,
+      reachedDots: [...this.reachedDots],
+    };
+  }
+
+  restore(state: ScorerState): void {
+    this.peakDensity = state.peakDensity;
+    this.dangerCellMinutes = state.dangerCellMinutes;
+    this.officerSeconds = state.officerSeconds;
+    this.clearedAt = state.clearedAt;
+    this.firstOfficerAt = state.firstOfficerAt;
+    this.everOccupied = state.everOccupied;
+    this.fallbacks = state.fallbacks;
+    this.reachedDots = new Set(state.reachedDots);
   }
 
   finish(): Scorecard {

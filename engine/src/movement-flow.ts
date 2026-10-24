@@ -484,6 +484,36 @@ export class FlowMovement implements MovementModel {
     dots.setState(i, 'walking');
   }
 
+  /** The per-dot and per-gate state the contract's Snapshot has no room for. */
+  capture(): unknown {
+    return {
+      spawnT: this.spawnT.slice(),
+      seatCell: this.seatCell.slice(),
+      lotCell: this.lotCell.slice(),
+      homeGate: this.homeGate.slice(),
+      admitted: this.admitted.slice(),
+      gateBudget: this.gateBudget.slice(),
+      gateAssigned: this.gateAssigned.slice(),
+      closedKey: this.closedKey,
+    };
+  }
+
+  restore(state: unknown): void {
+    if (!state || typeof state !== 'object') return;
+    const s = state as ReturnType<FlowMovement['capture']> & Record<string, never>;
+    const take = <T extends { set(a: T): void }>(into: T, from: unknown) => {
+      if (from) into.set(from as T);
+    };
+    take(this.spawnT, (s as Record<string, unknown>).spawnT);
+    take(this.seatCell, (s as Record<string, unknown>).seatCell);
+    take(this.lotCell, (s as Record<string, unknown>).lotCell);
+    take(this.homeGate, (s as Record<string, unknown>).homeGate);
+    take(this.admitted, (s as Record<string, unknown>).admitted);
+    take(this.gateBudget, (s as Record<string, unknown>).gateBudget);
+    take(this.gateAssigned, (s as Record<string, unknown>).gateAssigned);
+    this.closedKey = String((s as Record<string, unknown>).closedKey ?? '');
+  }
+
   /** True when this cell is inside the stadium bowl. */
   private insideBowl(ctx: SimContext, cell: number): boolean {
     const kind = ctx.map.cells[cell];

@@ -20,7 +20,7 @@ import type {
 import { CELL_SIZE_M, CONTRACT_VERSION, FRAME_EVERY_S, decisionKey } from '../../contracts.ts';
 import { DecisionClient } from '../../brain/src/client.ts';
 import { sampleOdds } from '../../brain/src/sample.ts';
-import { Scorer } from '../../world/src/scoring.ts';
+import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
@@ -47,6 +47,22 @@ export interface MovementModel {
   step(ctx: SimContext, dt: SimSeconds): void;
   /** A dot just chose an option; the model may retarget it. */
   onChoice?(ctx: SimContext, dot: number, situation: SituationId, option: string): void;
+  /**
+   * State the model keeps that the contract's Snapshot does not describe —
+   * arrival times, assigned seats and gates, who has been admitted, the gates'
+   * throughput budgets. Snapshot is frozen and carries only what crosses the
+   * lane boundary, so rewinding a run needs this too or the crowd comes back
+   * subtly different.
+   */
+  capture?(): unknown;
+  restore?(state: unknown): void;
+}
+
+/** Everything needed to put a run back exactly where it was, inside one worker. */
+export interface Checkpoint {
+  snapshot: Snapshot;
+  movement: unknown;
+  scorer: ScorerState;
 }
 
 interface RaisedSituation {
@@ -377,5 +393,22 @@ export class Simulation {
 
   tape(): DecisionTape {
     return this.client.getTape();
+  }
+
+  /** A full restart point for this worker: contract snapshot plus what it omits. */
+  checkpoint(): Checkpoint {
+    return {
+      snapshot: this.snapshot(),
+      movement: this.opts.movement.capture?.() ?? null,
+      scorer: this.scorer.capture(),
+    };
+  }
+
+  /** Put the run back to a checkpoint. Stepping on from here repeats exactly. */
+  rewind(point: Checkpoint): void {
+    this.restore(point.snapshot);
+    this.opts.movement.restore?.(point.movement);
+    this.scorer.restore(point.scorer);
+    this.finished = false;
   }
 }
