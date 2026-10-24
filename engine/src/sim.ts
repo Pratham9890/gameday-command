@@ -24,7 +24,7 @@ import { DecisionClient } from '../../brain/src/client.ts';
 import { sampleOdds } from '../../brain/src/sample.ts';
 import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
-import { GAME_END_S } from '../../world/src/incidents.ts';
+import { GAME_END_S, lateRushFor } from '../../world/src/incidents.ts';
 import { CLEAR_SKY, decisionWeather, walkFactor, weatherAt } from '../../world/src/weather.ts';
 import { TrafficModel } from './traffic.ts';
 import { DensityField } from './density.ts';
@@ -73,6 +73,8 @@ export interface MovementModel {
   sendTo?(ctx: SimContext, dot: number, place: number): void;
   /** Every gate's door and flow, for the app. */
   gateStats?(ctx: SimContext): GateStat[];
+  /** Turn `count` of the arrivals parked nearest `gate` into a rush on it between `fromS` and `toS`. */
+  lateRush?(ctx: SimContext, gate: number, count: number, fromS: SimSeconds, toS: SimSeconds): void;
   /** The game was ended early: fans not yet arrived stay away. */
   release?(ctx: SimContext): void;
   /** Movement state the inspector shows. */
@@ -210,6 +212,13 @@ export class Simulation {
       });
 
     opts.movement.spawn(this.ctx);
+    // A gate surge's late rush, turned from the ordinary arrivals so the crowd
+    // stays the same size and every plan meets the same rush.
+    const rush = lateRushFor(config.incident);
+    const rushGate = rush ? map.places.findIndex((p) => p.id === config.incident.placeId) : -1;
+    if (rush && rushGate >= 0) {
+      opts.movement.lateRush?.(this.ctx, rushGate, Math.round(rush.fans / DOT_GROUP_SIZE), rush.fromS, rush.toS);
+    }
     this.ctx.density.update(dots);
 
     this.traffic = config.traffic

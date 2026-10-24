@@ -1,5 +1,5 @@
 import type { Id, IncidentKind, MapBundle, PlanAction, Place, ResponsePlan } from '../../contracts.ts';
-import { biggestStreet, expandCells, placesOfKind } from './incidents.ts';
+import { biggestStreet, expandCells, placesOfKind, surgeGates } from './incidents.ts';
 
 const OFFICERS_AVAILABLE = 12;
 
@@ -24,9 +24,8 @@ function shelterIds(map: MapBundle): Id[] {
 const compact = (actions: (PlanAction | null)[]): PlanAction[] => actions.filter((a): a is PlanAction => a !== null);
 
 function gateSurgePlans(map: MapBundle): ResponsePlan[] {
-  const gates = placesOfKind(map, 'gate');
-  const hot = gates[0];
-  const relief = gates[1] ?? gates[0];
+  // The incident and its plans must agree on which gate is the hot one.
+  const { hot, relief } = surgeGates(map);
   if (!hot || !relief) return [];
   const hotDoor = doorFor(map, hot);
   const reliefDoor = doorFor(map, relief);

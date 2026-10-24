@@ -10,6 +10,7 @@ export {
   incidentsFor,
   lightningDelay,
   northGate,
+  surgeGates,
   placesOfKind,
   safeCountFor,
   suspiciousPackage,

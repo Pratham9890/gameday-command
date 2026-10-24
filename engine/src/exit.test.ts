@@ -72,6 +72,9 @@ describe('exit orders', () => {
         return;
       }
       const cell = centre + neighbours[Math.floor(i / MAX_DOTS_PER_CELL)]!;
+      // Standing, not seated: seated fans leave the aisle free, so only a
+      // standing crowd hems someone in. Sheltering fans stand still.
+      dots.setState(dot, 'sheltering');
       dots.x[dot] = ((cell % map.width) + 0.5) * CELL_SIZE_M;
       dots.y[dot] = (Math.floor(cell / map.width) + 0.5) * CELL_SIZE_M;
     });

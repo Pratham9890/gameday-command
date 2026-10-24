@@ -44,6 +44,11 @@ const FLOW_WINDOW_S = 60;
 /** Seconds of unused throughput a gate may hold over, so a lull is not banked. */
 const GATE_BURST_S = 5;
 
+/** How far in from a gate, in steps, a fan just through its turnstile may be placed. */
+const LANDING_REACH_CELLS = 16;
+/** How many landing cells a gate keeps, nearest first. */
+const LANDING_CELLS = 40;
+
 /** How long fans who chose to sit and let the exit thin out stay put, in seconds. */
 const WAIT_IN_SEAT_S: [number, number] = [5 * 60, 25 * 60];
 
@@ -90,6 +95,10 @@ export class FlowMovement implements MovementModel {
   /** Sim time a seated or sheltering fan who chose to wait leaves; 0 for nobody. */
   private leaveAt!: Float32Array;
   private occupancy!: Int32Array;
+  /** Per gate, the concourse cells just inside it, nearest first: where a fan stands once through. */
+  private landing = new Map<number, number[]>();
+  /** Seated fans per cell. They fill a seat, not the aisle, so they do not count in `occupancy`. */
+  private seatedHere!: Int32Array;
   private closedKey = '';
 
   private cellOf(ctx: SimContext, i: number): number {
@@ -152,6 +161,8 @@ export class FlowMovement implements MovementModel {
       this.gateCentre.set(gate, { x: sx / cells.length, y: sy / cells.length });
     }
     this.seatingIndex = this.indexOfKind(map, 'seating');
+    this.landing.clear();
+    for (const gate of this.gateIndexes) this.landing.set(gate, this.landingCells(map, gate));
     this.shelterIndex = this.indexOfKind(map, 'shelter');
     if (this.shelterIndex < 0) this.shelterIndex = this.indexOfKind(map, 'concourse');
     this.parkingIndex = this.indexOfKind(map, 'parking');
@@ -209,6 +220,7 @@ export class FlowMovement implements MovementModel {
     this.blockedSince = new Float32Array(n).fill(NaN);
     this.leaveAt = new Float32Array(n);
     this.occupancy = new Int32Array(map.width * map.height);
+    this.seatedHere = new Int32Array(map.width * map.height);
 
     const seatCells = this.seatingIndex >= 0 ? (map.places[this.seatingIndex]?.cells ?? []) : [];
     // Spawn cannot see the incident. An hour after the last arrival leaves time
@@ -279,10 +291,10 @@ export class FlowMovement implements MovementModel {
       if (startSeated) {
         // Preserve the arrival RNG sequence; resolve occupied seats in map order.
         let index = seatIndex;
-        while (this.occupancy[seatCells[index]!]! >= MAX_DOTS_PER_CELL) index = (index + 1) % seatCells.length;
+        while (this.seatedHere[seatCells[index]!]! >= MAX_DOTS_PER_CELL) index = (index + 1) % seatCells.length;
         const seatedCell = seatCells[index]!;
         this.seatCell[i] = seatedCell;
-        this.occupancy[seatedCell]!++;
+        this.seatedHere[seatedCell]!++;
         this.admitted[i] = 1;
         dots.x[i] = ((seatedCell % map.width) + 0.5) * CELL_SIZE_M;
         dots.y[i] = (Math.floor(seatedCell / map.width) + 0.5) * CELL_SIZE_M;
@@ -324,12 +336,23 @@ export class FlowMovement implements MovementModel {
     // and a cell quietly accepts a fifth dot, which is how a 2 m square ended
     // up reading 13 people per square meter. Rebuilding is O(dots) and makes
     // any slip self-correcting within one step.
+    //
+    // Seated fans are counted apart. The stands have aisles: a fan in their
+    // seat does not stop another walking past to theirs. Counting them as
+    // blocking made the rows nearest a gate a wall once they filled, and the
+    // fans behind them backed up through the turnstile — 3,500 people jammed
+    // inside Gate 2 at kickoff +30 min, all already admitted.
     const occupancy = this.occupancy;
+    const seatedHere = this.seatedHere;
     occupancy.fill(0);
+    seatedHere.fill(0);
     for (let i = 0; i < dots.count; i++) {
-      if (dots.stateOf(i) === 'gone') continue;
+      const state = dots.stateOf(i);
+      if (state === 'gone') continue;
       const cell = this.cellOf(ctx, i);
-      if (cell >= 0) occupancy[cell]!++;
+      if (cell < 0) continue;
+      if (state === 'seated') seatedHere[cell]!++;
+      else occupancy[cell]!++;
     }
 
     this.admitAtGates(ctx);
@@ -499,6 +522,54 @@ export class FlowMovement implements MovementModel {
           break;
         }
       }
+      // Pinned in a corner: every short step lands in a full cell, yet a free
+      // neighbour no further from the goal is there across this cell. The
+      // passes above try fixed headings and skip moves that stay in the cell,
+      // so a fan wedged in its south-east corner never walked back west to the
+      // empty cell beside it — 800 admitted fans froze inside Gate 2 that way.
+      // Head for that neighbour's centre, even if it takes a few steps to cross.
+      if (!moved) {
+        const cx = cell % map.width;
+        const cy = (cell / map.width) | 0;
+        let target = -1;
+        let targetDist = here + DETOUR_SLACK * WALK_STEP + 1;
+        for (let k = 1; k <= 8; k++) {
+          const nx = cx + DIR_DX[k]!;
+          const ny = cy + DIR_DY[k]!;
+          if (nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
+          const next = ny * map.width + nx;
+          if (!this.fields.passable(next) || occupancy[next]! >= MAX_DOTS_PER_CELL) continue;
+          if (this.unscreenedEntry(ctx, i, cell, next)) continue;
+          // No squeezing diagonally between two walls.
+          if (k % 2 === 0 && (!this.fields.passable(cy * map.width + nx) || !this.fields.passable(ny * map.width + cx))) continue;
+          const there = field.dist[next]!;
+          if (there === UNREACHABLE || there >= targetDist) continue;
+          targetDist = there;
+          target = next;
+        }
+        if (target >= 0) {
+          const tx = ((target % map.width) + 0.5) * CELL_SIZE_M;
+          const ty = (((target / map.width) | 0) + 0.5) * CELL_SIZE_M;
+          const gx = tx - dots.x[i]!;
+          const gy = ty - dots.y[i]!;
+          const len = Math.hypot(gx, gy) || 1;
+          const nx = Math.fround(dots.x[i]! + (gx / len) * Math.min(stride, len));
+          const ny = Math.fround(dots.y[i]! + (gy / len) * Math.min(stride, len));
+          const nCell = ((ny / CELL_SIZE_M) | 0) * map.width + ((nx / CELL_SIZE_M) | 0);
+          // The straight line to a neighbour's centre crosses only this cell
+          // and that one; anything else (a corner clip) is refused.
+          if (nCell === cell || nCell === target) {
+            if (nCell !== cell) {
+              occupancy[cell]!--;
+              occupancy[nCell]!++;
+            }
+            dots.x[i] = nx;
+            dots.y[i] = ny;
+            dots.setState(i, 'walking');
+            moved = true;
+          }
+        }
+      }
       // Hemmed in on every side, detour included. This is the queue.
       if (!moved) {
         dots.setState(i, 'queued');
@@ -548,6 +619,16 @@ export class FlowMovement implements MovementModel {
         const cell = this.cellOf(ctx, i);
         if (cell < 0) continue;
         if (field.dist[cell]! > GATE_REACH_CELLS * WALK_STEP) continue;
+        // Through the turnstile means on the far side of it. Admitting fans
+        // where they stood left them behind the very queue still waiting to
+        // get in, with no way past it: at Gate 2 2,500 people already admitted
+        // stood jammed outside the gate for the whole run.
+        const land = this.freeLanding(gate);
+        if (land < 0) break; // the inside of this gate is full: nobody else gets through yet
+        this.occupancy[cell]!--;
+        this.occupancy[land]!++;
+        dots.x[i] = Math.fround(((land % ctx.map.width) + 0.5) * CELL_SIZE_M);
+        dots.y[i] = Math.fround((((land / ctx.map.width) | 0) + 0.5) * CELL_SIZE_M);
 
         this.admitted[i] = 1;
         dots.targetPlace[i] = this.afterGate[i]! >= 0 ? this.afterGate[i]! : this.seatingIndex;
@@ -558,6 +639,47 @@ export class FlowMovement implements MovementModel {
         this.gateBudget[gate]!--;
       }
     }
+  }
+
+  /** A landing cell inside this gate with room for one more, or -1. */
+  private freeLanding(gate: number): number {
+    for (const cell of this.landing.get(gate) ?? []) if (this.occupancy[cell]! < MAX_DOTS_PER_CELL) return cell;
+    return -1;
+  }
+
+  /**
+   * The bowl cells just inside a gate, found by walking in from the gate's own
+   * cells: concourse first, the stands if a map has no concourse there.
+   */
+  private landingCells(map: MapBundle, gate: number): number[] {
+    const { width, height, cells } = map;
+    const depth = new Map<number, number>();
+    const queue: number[] = [];
+    for (const cell of map.places[gate]?.cells ?? []) {
+      depth.set(cell, 0);
+      queue.push(cell);
+    }
+    const inside: number[] = [];
+    for (let head = 0; head < queue.length; head++) {
+      const cell = queue[head]!;
+      const d = depth.get(cell)!;
+      const kind = cells[cell];
+      if (kind === 'concourse' || kind === 'stands') inside.push(cell);
+      if (d >= LANDING_REACH_CELLS) continue;
+      const cx = cell % width;
+      const cy = (cell / width) | 0;
+      for (let k = 1; k <= 7; k += 2) {
+        const nx = cx + DIR_DX[k]!;
+        const ny = cy + DIR_DY[k]!;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const next = ny * width + nx;
+        if (cells[next] === 'blocked' || depth.has(next)) continue;
+        depth.set(next, d + 1);
+        queue.push(next);
+      }
+    }
+    const concourse = inside.filter((c) => cells[c] === 'concourse');
+    return (concourse.length > 0 ? concourse : inside).slice(0, LANDING_CELLS);
   }
 
   /**
@@ -582,10 +704,12 @@ export class FlowMovement implements MovementModel {
     if (dist < CELL_SIZE_M * 0.5) return true;
 
     // At the seat but it is taken: sit down right here.
-    if (dist < CELL_SIZE_M * 1.5 && occupancy[seat]! >= MAX_DOTS_PER_CELL) return true;
+    if (dist < CELL_SIZE_M * 1.5 && this.seatedHere[seat]! >= MAX_DOTS_PER_CELL) return true;
 
     const free = (population.types[dots.typeIndex[i]!]?.walkSpeedMps ?? 1.2) * (ctx.walkFactor ?? 1);
-    const factor = densityFactor(cell >= 0 ? density.peoplePerM2[cell]! : 0);
+    // Walking the aisle past seated rows goes at the pace of the people on their feet.
+    const rho = cell < 0 ? 0 : density.standingPerM2[cell]!;
+    const factor = densityFactor(rho);
     const step = Math.min(free * factor * dt, dist);
     const base = Math.atan2(dy, dx);
 
@@ -919,6 +1043,31 @@ export class FlowMovement implements MovementModel {
     // Leaving through a gate is a door, not a turnstile.
     if (kind === 'parking' || kind === 'exit') this.admitted[dot] = 1;
     this.retarget(ctx, dot, place);
+  }
+
+  /**
+   * A late rush on one gate: the `count` fans parked nearest it (by walking
+   * distance) arrive in a burst between `fromS` and `toS` and all make for it.
+   * Taken from the crowd already spawned, so the crowd is the same size and
+   * the same fans rush in every plan.
+   */
+  lateRush(ctx: SimContext, gate: number, count: number, fromS: number, toS: number): void {
+    const { dots, rng } = ctx;
+    const field = this.fields.field(gate, true);
+    const candidates: number[] = [];
+    for (let i = 0; i < dots.count; i++) {
+      if (dots.stateOf(i) !== 'arriving' || field.dist[this.lotCell[i]!] === UNREACHABLE) continue;
+      candidates.push(i);
+    }
+    candidates.sort((a, b) => field.dist[this.lotCell[a]!]! - field.dist[this.lotCell[b]!]! || a - b);
+    for (const i of candidates.slice(0, count)) {
+      const home = this.homeGate[i]!;
+      if (home >= 0) this.gateAssigned[home]!--;
+      this.homeGate[i] = gate;
+      this.gateAssigned[gate]!++;
+      dots.targetPlace[i] = gate;
+      this.spawnT[i] = fromS + (toS - fromS) * rng.next();
+    }
   }
 
   /** The game ended early: anyone still on their way turns round and never arrives. */

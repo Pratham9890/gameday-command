@@ -613,7 +613,9 @@ export class CrowdScene {
   private updateGateLabel(label: { el: HTMLElement; place: number }): void {
     const stat = this.scene?.gates.find((g) => g.place === label.place);
     const name = (this.init.map.places[label.place]?.name ?? '').replace(/\s*\(.*\)/, '');
-    const text = !stat ? name : stat.open ? `● ${name} · ${Math.round(stat.inPerMin)}/min` : `⛔ ${name} closed`;
+    // Whichever way the gate is busier: in before kickoff, out after the whistle.
+    const flow = !stat ? '' : stat.outPerMin > stat.inPerMin ? `${Math.round(stat.outPerMin)}/min out` : `${Math.round(stat.inPerMin)}/min`;
+    const text = !stat ? name : stat.open ? `● ${name} · ${flow}` : `⛔ ${name} closed`;
     if (this.gateText.get(label.place) === text) return;
     this.gateText.set(label.place, text);
     label.el.textContent = text;

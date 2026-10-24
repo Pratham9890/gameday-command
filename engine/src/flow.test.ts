@@ -242,9 +242,10 @@ describe('FlowMovement on the test map', () => {
     }
 
     // 3 gates x 60 people/min / 5 fans per dot = 36 dots per minute, plus the
-    // one dot of budget each gate starts with.
+    // one dot of budget each gate starts with. Officers on station speed a
+    // gate up by at most 40%, and this plan posts six of them on one.
     const gates = map.places.filter((p) => p.kind === 'gate').length;
-    const ceiling = (gates * TEST_GATE_THROUGHPUT_PER_MIN / DOT_GROUP_SIZE) * minutes + gates;
+    const ceiling = ((gates * TEST_GATE_THROUGHPUT_PER_MIN * 1.4) / DOT_GROUP_SIZE) * minutes + gates;
     expect(through).toBeLessThanOrEqual(ceiling);
     expect(through).toBeGreaterThan(0);
   });
@@ -269,12 +270,15 @@ describe('FlowMovement on the test map', () => {
   });
 
   it('diverges when the plan changes but the seed does not', async () => {
-    const a = makeSim({ planIndex: 0 });
-    const c = makeSim({ planIndex: 2 });
+    // The incident comes while fans are still arriving, and the crowd is
+    // compared soon after: on this small map everyone is through the gates
+    // before kickoff, so a gate shut at kickoff changes nothing.
+    const a = makeSim({ planIndex: 0, incidentAt: -1800, endAt: -1200 });
+    const c = makeSim({ planIndex: 2, incidentAt: -1800, endAt: -1200 });
     await runToEnd(a);
     await runToEnd(c);
-    // plan C closes the hot gate, so the crowd cannot end up in the same place
-    expect(Array.from(a.ctx.dots.state)).not.toEqual(Array.from(c.ctx.dots.state));
+    // plan C closes the hot gate, so the crowd cannot be in the same place
+    expect(Array.from(a.ctx.dots.x)).not.toEqual(Array.from(c.ctx.dots.x));
   });
 
   it('never lets more dots into a cell than physically fit', async () => {
@@ -288,17 +292,21 @@ describe('FlowMovement on the test map', () => {
 
     while (!sim.done) {
       await sim.step();
-      const counts = new Int32Array(map.cells.length);
-      const { x, y, state, count } = sim.ctx.dots;
+      // Standing fans and seated fans are capped apart: a seat row and the
+      // aisle beside it are different space, so seated fans do not block.
+      const standing = new Int32Array(map.cells.length);
+      const seated = new Int32Array(map.cells.length);
+      const { x, y, count } = sim.ctx.dots;
       for (let i = 0; i < count; i++) {
-        if (sim.ctx.dots.stateOf(i) === 'gone') continue;
+        const s = sim.ctx.dots.stateOf(i);
+        if (s === 'gone') continue;
         if (x[i]! < 0 || y[i]! < 0) continue;
-        counts[((y[i]! / CELL_SIZE_M) | 0) * width + ((x[i]! / CELL_SIZE_M) | 0)]!++;
+        const cell = ((y[i]! / CELL_SIZE_M) | 0) * width + ((x[i]! / CELL_SIZE_M) | 0);
+        (s === 'seated' ? seated : standing)[cell]!++;
       }
-      void state;
       let worst = 0;
-      for (let c = 0; c < counts.length; c++) if (counts[c]! > worst) worst = counts[c]!;
-      expect(worst, `t=${sim.ctx.t} packed ${worst} dots into one cell`).toBeLessThanOrEqual(MAX_DOTS_PER_CELL);
+      for (let c = 0; c < standing.length; c++) if (standing[c]! > worst) worst = standing[c]!;
+      expect(worst, `t=${sim.ctx.t} packed ${worst} standing dots into one cell`).toBeLessThanOrEqual(MAX_DOTS_PER_CELL);
     }
   });
 
@@ -391,5 +399,37 @@ describe('FlowMovement on the test map', () => {
     expect(shut[0]!.capacityPerMin).toBe(0);
     // The open gates kept passing people after it shut.
     expect(openFlow).toBeGreaterThan(0);
+  });
+
+  it('puts a fan through the turnstile on the far side of it', async () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 1200, startAt: -1800, endAt: -1500, movement });
+    const { dots } = sim.ctx;
+    const before = new Uint8Array(dots.count);
+    let landed = 0;
+    while (!sim.done) {
+      for (let i = 0; i < dots.count; i++) before[i] = movement.describe(i).admitted ? 1 : 0;
+      await sim.step();
+      for (let i = 0; i < dots.count; i++) {
+        if (before[i] === 1 || !movement.describe(i).admitted) continue;
+        // Admitted this step: standing inside, not left behind the queue.
+        const cell = Math.floor(dots.y[i]! / CELL_SIZE_M) * map.width + Math.floor(dots.x[i]! / CELL_SIZE_M);
+        expect(['concourse', 'stands']).toContain(map.cells[cell]);
+        landed++;
+      }
+    }
+    expect(landed).toBeGreaterThan(0);
+  });
+
+  it('turns the fans parked nearest a gate into a late rush on it', () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 1200, movement });
+    const gate = map.places.findIndex((p) => p.kind === 'gate');
+    movement.lateRush(sim.ctx, gate, 50, -120, 60);
+    const rushing = Array.from({ length: sim.ctx.dots.count }, (_, i) => i).filter(
+      (i) => movement.describe(i).homeGate === gate && movement.describe(i).arriveAt >= -120 && movement.describe(i).arriveAt <= 60,
+    );
+    expect(rushing.length).toBeGreaterThanOrEqual(50);
+    expect(rushing.every((i) => sim.ctx.dots.targetPlace[i] === gate)).toBe(true);
   });
 });
