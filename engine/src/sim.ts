@@ -1025,10 +1025,10 @@ export class Simulation {
         case 'barricade':
           if (!this.barricades.some(b=>b.id===order.closableId)) {
             const known=this.ctx.map.closables.find(c=>c.id===order.closableId);
-            if(known)this.barricades.push({...known,blocks:order.blocks??'all'});
+            if(known)this.barricades.push({...known,...(order.blocks?{blocks:order.blocks}:{})});
           }
           if (order.cells && !this.ctx.map.closables.some((c) => c.id === order.closableId)) {
-            const barricade = { id: order.closableId, name: order.name ?? order.closableId, cells: order.cells,blocks:order.blocks??'all' };
+            const barricade = { id: order.closableId, name: order.name ?? order.closableId, cells: order.cells,...(order.blocks?{blocks:order.blocks}:{}) };
             // Each worker owns its map; retaining the registration across
             // rewinds lets closures replay without duplicate geometry.
             this.ctx.map.closables.push(barricade);
