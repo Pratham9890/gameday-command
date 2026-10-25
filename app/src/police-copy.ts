@@ -42,7 +42,7 @@ export const policeCopy = {
   requestDismiss: 'Dismiss request',
   noFreeUnit: 'No reachable free unit is available.',
   reports: ['crowd crush','medical','fight','traffic','suspicious item','other'] as const,
-  measured: (seconds:number,count:number)=>`Measured dispatch to first arrival: ${(seconds/60).toFixed(2)} simulated min across ${count} responses.`,
+  measured: (seconds:number,count:number)=>`Measured suggestion to first arrival: ${(seconds/60).toFixed(2)} simulated min across ${count} responses.`,
   empty: 'No uncovered hotspot or incident needs an available unit right now.',
   routing: 'Calculating walking routes. Play the run to update live conditions.',
   assignment: 'Response assignments',

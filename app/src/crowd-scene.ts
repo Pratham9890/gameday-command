@@ -699,7 +699,7 @@ export class CrowdScene {
     this.closedTags = [];
     const areas = closedAreas(map, info);
     this.barricades = buildBarricades(areas.flatMap((area) =>
-      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate).map(p=>({...p,kind:area.blocks==='pedestrians'?'sawhorse' as const:area.blocks==='vehicles'?'jersey' as const:p.kind}))));
+      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate).map(p=>({...p,kind:area.blocks==='pedestrians'?'fence' as const:area.blocks==='vehicles'?'jersey' as const:p.kind}))));
     for (const { body, lights } of this.barricades) this.people.addChild(body, lights);
     for (const area of areas) {
       for (const cell of area.cells) this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);

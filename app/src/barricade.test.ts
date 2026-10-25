@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CELL_SIZE_M, CONTRACT_VERSION, type MapBundle } from '../../contracts.ts';
-import { barricadeAt } from './barricade.ts';
+import { barricadeAt, fenceAt } from './barricade.ts';
 
 function roadMap(): MapBundle {
   const cells: MapBundle['cells'] = Array(600).fill('walk');
@@ -17,6 +17,17 @@ function roadMap(): MapBundle {
     sources: [],
   };
 }
+
+describe('fenceAt', () => {
+  it('extends a pedestrian fence along walkable cells only, within reach', () => {
+    const map = roadMap();
+    const fence = fenceAt(map, 100, 6)!;
+    expect(fence.cells).toContain(100);
+    expect(fence.cells.every((cell) => map.cells[cell] === 'walk')).toBe(true);
+    expect(fence.cells).not.toContain(300);
+    expect(fence.cells.length).toBeGreaterThan(1);
+  });
+});
 
 describe('barricadeAt', () => {
   it('returns a named street closure without changing its cells', () => {

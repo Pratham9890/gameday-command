@@ -9,7 +9,7 @@ export interface BarricadePlacement {
   y: number;
   /** Direction of the long edge, in ground-plane radians. */
   angle: number;
-  kind: 'jersey' | 'sawhorse';
+  kind: 'jersey' | 'sawhorse' | 'fence';
 }
 
 export interface ClosedArea extends Barricade {
@@ -177,7 +177,13 @@ export function buildBarricades(pieces: BarricadePlacement[]): BarricadeGroup[] 
       face(top, 0xffb45c);
     };
     if (p.kind === 'jersey') prism(-1, 1, 0.3, 0.13, 0, 0.8, true);
-    else {
+    else if (p.kind === 'fence') {
+      // Bike-rack fencing: two slim uprights and two horizontal rails.
+      prism(-0.92, -0.8, 0.08, 0.06, 0, 1.15, false);
+      prism(0.8, 0.92, 0.08, 0.06, 0, 1.15, false);
+      prism(-1, 1, 0.06, 0.06, 0.55, 0.65, false);
+      prism(-1, 1, 0.06, 0.06, 0.95, 1.05, false);
+    } else {
       prism(-0.78, -0.58, 0.3, 0.08, 0, 1.1, false);
       prism(0.58, 0.78, 0.3, 0.08, 0, 1.1, false);
       prism(-1, 1, 0.11, 0.11, 0.85, 1.3, true);

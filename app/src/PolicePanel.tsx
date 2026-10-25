@@ -1,5 +1,5 @@
 import {Roadblocks} from './Roadblocks.tsx';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CELL_SIZE_M, type MapBundle, type Incident } from '../../contracts.ts';
 import type { OfficerStatus, PoliceOrder } from '../../engine/src/edits.ts';
 import { isGateDoor } from './barricade.ts';
@@ -10,10 +10,22 @@ import type {PoliceHotspot} from './congestion.ts';
 import {policeCopy} from './police-copy.ts';
 import {patrolBeats} from '../../world/src/officers.ts';
 import {coverage} from './coverage.ts';
+import {classifyGates,type GateSample} from './gate-health.ts';
+import { afterActionHtml, lastUndoable, timeline } from './after-action.ts';
+
+function download(name: string, type: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 export type PolicePickMode = null | { kind: 'barricade';blocks?:'all'|'vehicles'|'pedestrians';reachM?:number;replaceId?:string } | { kind: 'dispatch'; officerIds: string[] }
   | {kind:'response';officerIds:string[];mission:Extract<PoliceOrder,{type:'respond'}>}
   | {kind:'add_officer';unit:string}
+  | {kind:'traffic_point';officerIds:string[]}
   | {kind:'marker';markerKind:'staging'|'medical'|'pa';radiusCells:number}
   | {kind:'officer_report';reportKind:Extract<PoliceOrder,{type:'officer_report'}>['kind']};
 
@@ -42,6 +54,7 @@ export function describeOrder(order: PoliceOrder, map: MapBundle, officers: Offi
     case 'place_marker':return `Placed ${order.marker.name} marker.`;
     case 'remove_marker':return 'Removed a marker.';
     case 'officer_report': return `${units([order.officerId])} reported ${order.kind}.`;
+    case 'officer_ack': return `${units([order.officerId])} acknowledged the assignment.`;
     case 'report_decision': return 'Dismissed an officer request.';
     case 'patrol': return `${units(order.officerIds)} assigned to ${order.name ?? 'an outdoor patrol'}.`;
     case 'resume_patrol': return `${units(order.officerIds)} resumed their patrol.`;
@@ -89,16 +102,39 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
   const [blockKind,setBlockKind]=useState<'all'|'vehicles'|'pedestrians'>('vehicles');
   const [blockLength,setBlockLength]=useState(20);
   const [unitName,setUnitName]=useState('Demo unit');
+  const [reachMinutes,setReachMinutes]=useState(0);
   const scene = run.scene.current;
   const officers = scene?.officers ?? [];
   const targets = responseTargets(map, hotspots, incident, scene?.t, run.latest.current?.frame.vehicles);
-  const suggestions = scene ? dispatchSuggestions(map, targets, scene) : [];
-  const reachCoverage=useMemo(()=>coverage(map,officers,hotspots),[map,scene?.officers,hotspots]);
+  const gateHistory = useRef<GateSample[]>([]);
+  const durations = useRef(new Map<string, number>());
+  useEffect(() => {
+    const t = scene?.t;
+    if (t === undefined) return;
+    const samples = gateHistory.current;
+    const last = samples[samples.length - 1];
+    if (last && t < last.t) {
+      samples.length = 0;
+      durations.current.clear();
+    }
+    if (!last || last.t !== t) samples.push({t, gates: scene?.gates ?? []});
+    if (samples.length > 240) samples.splice(0, samples.length - 240);
+    for (const target of targets) if (!durations.current.has(target.spot.where)) durations.current.set(target.spot.where, t);
+  }, [scene?.t, scene?.gates, targets]);
+  const health = useMemo(() => classifyGates(gateHistory.current, scene ? {t: scene.t, gates: scene.gates} : null), [scene?.t, scene?.gates]);
+  const healthByPlace = useMemo(() => new Map(health.map((item) => [item.place, item])), [health]);
+  const suggestions = scene ? dispatchSuggestions(map, targets, scene, {durations: durations.current, gateHealth: healthByPlace}) : [];
+  const [dismissReason, setDismissReason] = useState('');
+  const reachCoverage=useMemo(()=>coverage(map,officers,hotspots,reachMinutes),[map,scene?.officers,hotspots,reachMinutes]);
   const officerIds = selected.filter((id) => officers.some((o) => o.id === id));
   const barricades = new Map((scene?.barricades ?? []).map((b) => [b.id, b]));
   for (const street of streets) if (scene?.closed.includes(street.id)) barricades.set(street.id, street);
   const requests=(scene?.orders??[]).flatMap(e=>e.order.type==='officer_report'?[{t:e.t,order:e.order}]:[]).filter(e=>!scene?.orders?.some(d=>(d.order.type==='respond'||d.order.type==='report_decision')&&d.order.reportId===e.order.reportId));
-  const arrivals=new Map<string,number>();for(const a of scene?.responseArrivals??[]){const key=a.startedAt+':'+a.targetCell;arrivals.set(key,Math.min(arrivals.get(key)??Infinity,a.arrivedAt-a.startedAt));}
+  const arrivals=new Map<string,number>();for(const a of scene?.responseArrivals??[]){const key=a.startedAt+':'+a.targetCell;arrivals.set(key,Math.min(arrivals.get(key)??Infinity,a.arrivedAt-(a.suggestionAt??a.startedAt)));}
+  const slowestResponse=Math.max(0,...(scene?.responses??[]).flatMap(r=>r.units.map(u=>u.etaS??0)));
+  const undoable = lastUndoable(scene);
+  const entries = timeline(scene, (order) => describeOrder(order, map, officers),
+    (id) => officers.find((o) => o.id === id)?.unit ?? 'A unit');
   const reachPct = Number(reach);
   const reachValid = reach.trim() !== '' && Number.isFinite(reachPct) && reachPct >= 0 && reachPct <= 100;
 
@@ -118,17 +154,19 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
         <section><h3>{policeCopy.requests} ({requests.length})</h3>{requests.map(r=>{const candidates=(scene?.responses?.find(v=>v.cell===r.order.toCell)?.units??[]).filter(u=>u.id!==r.order.officerId&&u.etaS!==null&&officers.find(o=>o.id===u.id)?.state==='standby').sort((a,b)=>a.etaS!-b.etaS!);return <article className="police-picker" key={r.order.reportId}><p>{officers.find(o=>o.id===r.order.officerId)?.unit}: {r.order.kind}, {clockText(r.t)}</p>{!candidates.length&&<p>{policeCopy.noFreeUnit}</p>}<div className="police-actions"><button disabled={!candidates.length} onClick={()=>onOrder({type:'respond',officerIds:[candidates[0]!.id],toCell:r.order.toCell,kind:r.order.kind==='traffic'?'traffic':'incident',reason:'Officer request: '+r.order.kind,returnAfterS:180,reportId:r.order.reportId})}>{policeCopy.requestSend}</button><button className="ghost" onClick={()=>onOrder({type:'report_decision',reportId:r.order.reportId,decision:'dismissed'})}>{policeCopy.requestDismiss}</button></div></article>;})}</section>
         {arrivals.size>0&&<p>{policeCopy.measured([...arrivals.values()].reduce((a,b)=>a+b,0)/arrivals.size,arrivals.size)}</p>}
         <section><h3>{policeCopy.coverage}</h3><p className="muted">{policeCopy.coverageRule}</p>
-          <p>{reachCoverage.outdoorShare===null?'No outdoor area':`${(reachCoverage.outdoorShare*100).toFixed(1)}% of outdoor walkable area within reach`}. {reachCoverage.uncoveredHotspots} hotspot centres outside reach.</p></section>
+          <label>Reachable within<select value={reachMinutes} onChange={e=>setReachMinutes(Number(e.target.value))}><option value={0}>Now only</option><option value={2}>2 min</option><option value={5}>5 min</option><option value={10}>10 min</option></select></label>
+          <p>{reachCoverage.outdoorShare===null?'No outdoor area':`${(reachCoverage.outdoorShare*100).toFixed(1)}% of outdoor walkable area within reach`}. {reachCoverage.uncoveredHotspots} hotspot centres outside reach. {slowestResponse>0?`Slowest suggested walk ${Math.ceil(slowestResponse/60)} min.`:'No routed response time yet.'}{reachMinutes>0&&reachCoverage.reachableShare!==null?` ${(reachCoverage.reachableShare*100).toFixed(1)}% reachable within ${reachMinutes} min on foot (straight-line estimate).`:''}</p></section>
         <section aria-label={policeCopy.title}>
           <h3>{policeCopy.title} ({suggestions.length})</h3>
           <p className="muted">{policeCopy.rule}</p>
           {suggestions.length > 0 && <button className="primary" onClick={()=>suggestions.forEach(s=>onOrder(s.order))}>{policeCopy.sendAll}</button>}
+          {suggestions.length > 0 && <label>Dismissal reason (optional)<input value={dismissReason} maxLength={120} onChange={e=>setDismissReason(e.target.value)} placeholder="For example: unit already nearby" /></label>}
           {suggestions.map(s=><article className="police-picker" key={s.cell}>
             <h4>{s.what}</h4><p>{s.why}</p><p className="muted">{s.cost}. Walking ETA {Math.ceil(s.etaS/60)} min.</p>
             <p className="muted">{policeCopy.duration(s.order.returnAfterS)}</p>
             <div className="police-actions"><button onClick={()=>onOrder(s.order)}>{policeCopy.accept}</button>
               <button className="ghost" onClick={()=>armPick({kind:'response',officerIds:s.order.officerIds,mission:s.order})}>{policeCopy.modify}</button>
-              <button className="ghost" onClick={()=>onOrder({type:'dismiss_suggestion',toCell:s.cell,score:s.spot.score})}>{policeCopy.dismiss}</button></div>
+              <button className="ghost" onClick={()=>{onOrder({type:'dismiss_suggestion',toCell:s.cell,score:s.spot.score,...(dismissReason.trim()?{reason:dismissReason.trim()}:{})});setDismissReason('');}}>{policeCopy.dismiss}</button></div>
           </article>)}
           {!suggestions.length && <p className="muted">{targets.length && !scene?.responses?.length ? policeCopy.routing : policeCopy.empty}</p>}
           <p className="muted">{policeCopy.mission}</p>
@@ -218,6 +256,7 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
           <h3>Barricades</h3>
           <label>Block traffic<select value={blockKind} onChange={e=>setBlockKind(e.target.value as typeof blockKind)}><option value="vehicles">Vehicles only</option><option value="all">Vehicles and pedestrians</option><option value="pedestrians">Pedestrians only</option></select></label><label>Street reach in metres<input type="number" min={2} max={80} step={2} value={blockLength} onChange={e=>setBlockLength(Math.max(2,Math.min(80,Number(e.target.value)||2)))}/></label>
           <button className="small" onClick={() => armPick({ kind: 'barricade',blocks:blockKind,reachM:blockLength })}>Barricade a street</button>
+          <button className="small" disabled={!officerIds.length} onClick={() => armPick({kind:'traffic_point',officerIds})}>Place traffic control point</button>
           {pickMode && <button className="small ghost" onClick={() => armPick(null)}>Cancel map pick</button>}
           {barricades.size === 0 && <p className="muted">No street barricades up.</p>}
           <ul className="police-barricades">
@@ -283,6 +322,22 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
       <section>
         <h3>Order log</h3>
         {!scene?.orders?.length && <p className="muted">No orders carried out yet.</p>}
+        <div className="police-actions">
+          <button className="small ghost" disabled={disabled || !undoable} onClick={() => undoable && onOrder(undoable.inverse)}
+            title={undoable ? `Undo: ${describeOrder(undoable.order, map, officers)}` : undefined}>
+            {undoable ? `Undo last order (${clockText(undoable.t)})` : 'Nothing to undo'}
+          </button>
+          <button className="small ghost" disabled={!entries.length} onClick={() => download(`plan-${label}-timeline.json`, 'application/json',
+            JSON.stringify({ plan: label, map: map.name, scorecard: run.scorecard, timeline: entries }, null, 2))}>Export timeline (JSON)</button>
+          <button className="small ghost" disabled={!entries.length} onClick={() => {
+            const page = window.open('', '_blank');
+            if (!page) return;
+            page.document.write(afterActionHtml(`After-action report: ${map.name}, plan ${label}`, entries, run.scorecard));
+            page.document.close();
+            page.print();
+          }}>Print after-action report</button>
+        </div>
+        <p className="muted">Undo sends the opposite order now; it never rewinds the run.</p>
         <ol className="police-log">
           {[...(scene?.orders ?? [])].reverse().map(({ t, order }, i) => (
             <li key={i}><span className="muted">{clockText(t)}</span> {describeOrder(order, map, officers)}</li>

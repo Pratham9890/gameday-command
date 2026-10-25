@@ -226,6 +226,9 @@ export function useRun(init: RunInit | null): RunHandle {
       defaults: init.defaults,
       serverUrl: '',
     } satisfies WorkerIn);
+    // The close-up interpolates along recorded paths; benches and the diag
+    // tools never ask, so their engine pays nothing for motion capture.
+    worker.postMessage({ type: 'motion', on: true } satisfies EditIn);
 
     return () => {
       worker.terminate();

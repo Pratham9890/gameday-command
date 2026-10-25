@@ -12,6 +12,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "build": "npm run build --workspace @gameday/app",
     "dev": "npm run dev --workspace @gameday/app",
     "serve": "node --watch server/src/index.ts",
     "fetch-map": "node world/scripts/fetch-map.ts",

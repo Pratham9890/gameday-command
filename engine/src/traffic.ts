@@ -7,8 +7,8 @@ import type { DensityField } from './density.ts';
 import type { DotStore } from './dots.ts';
 import { STATE_INDEX } from './dots.ts';
 import { DIR_DX, DIR_DY, UNREACHABLE } from './flowfield.ts';
-import { parkingConnectors } from './traffic-access.ts';
 import { Rng } from './rng.ts';
+import { parkingConnectors } from './traffic-access.ts';
 
 /**
  * Vehicle traffic. Plain code, like the crowd: no AI moves a car.
@@ -111,14 +111,18 @@ function buildRoadNet(map: MapBundle): RoadNet {
   const { width: W, height: H, cells } = map;
   const size = W * H;
   const mask = new Uint8Array(size);
-  // Preserve the calibrated Ohio network until narrow driveways have a full
-  // aisle/footprint model. Imported grounds use explicit shortest connectors.
-  const nearLot = map.id === 'ohio-stadium' ? new Uint8Array(size) : parkingConnectors(map);
-  if(map.id === 'ohio-stadium')for(let c=0;c<size;c++) {
-    if(cells[c]!=='parking')continue;
-    const cx=c%W,cy=Math.floor(c/W);
-    for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++) {
-      const x=cx+dx,y=cy+dy;if(x>=0&&y>=0&&x<W&&y<H)nearLot[y*W+x]=1;
+  // A six-metre apron around every lot is the calibrated model on Ohio. A lot
+  // the apron leaves unreachable gets one narrow connector, so imported grounds
+  // do not need a map-id branch and no whole sidewalk becomes a road.
+  const nearLot = new Uint8Array(size);
+  for (let c = 0; c < size; c++) {
+    if (cells[c] !== 'parking') continue;
+    const cx = c % W, cy = Math.floor(c / W);
+    for (let dy = -3; dy <= 3; dy++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x >= 0 && y >= 0 && x < W && y < H) nearLot[y * W + x] = 1;
+      }
     }
   }
   for (let i = 0; i < size; i++) {
@@ -142,33 +146,60 @@ function buildRoadNet(map: MapBundle): RoadNet {
     if (isBorderRoad(W - 1, y)) border.push(y * W + W - 1);
   }
 
-  // Reachable from the edge, through general-traffic cells only.
+  // Reachable from the edge, through general-traffic cells only. The mask can
+  // grow after the first flood when a connector is added, so this is a helper.
   const reach = new Uint8Array(size);
   const queue = new Int32Array(size);
-  let head = 0;
-  let tail = 0;
-  for (const c of border) {
-    reach[c] = 1;
-    queue[tail++] = c;
-  }
-  while (head < tail) {
-    const c = queue[head++]!;
-    const cx = c % W;
-    const cy = (c / W) | 0;
-    for (let d = 1; d <= 7; d += 2) {
-      const x = cx + DIR_DX[d]!;
-      const y = cy + DIR_DY[d]!;
-      if (x < 0 || y < 0 || x >= W || y >= H) continue;
-      const n = y * W + x;
-      if (reach[n] || mask[n] === 0 || mask[n] === MASK_EMS_ONLY) continue;
-      reach[n] = 1;
-      queue[tail++] = n;
+  const floodReach = () => {
+    reach.fill(0);
+    let head = 0;
+    let tail = 0;
+    for (const c of border) {
+      reach[c] = 1;
+      queue[tail++] = c;
     }
+    while (head < tail) {
+      const c = queue[head++]!;
+      const cx = c % W;
+      const cy = (c / W) | 0;
+      for (let d = 1; d <= 7; d += 2) {
+        const x = cx + DIR_DX[d]!;
+        const y = cy + DIR_DY[d]!;
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const n = y * W + x;
+        if (reach[n] || mask[n] === 0 || mask[n] === MASK_EMS_ONLY) continue;
+        reach[n] = 1;
+        queue[tail++] = n;
+      }
+    }
+  };
+  floodReach();
+  // Lots the apron leaves cut off get the single shortest connector to a road
+  // over walkable ground, then the flood runs again.
+  const unreached = new Uint8Array(size);
+  let anyUnreached = false;
+  for (let c = 0; c < size; c++) {
+    if (cells[c] === 'parking' && reach[c] === 0) {
+      unreached[c] = 1;
+      anyUnreached = true;
+    }
+  }
+  if (anyUnreached) {
+    const connectors = parkingConnectors(map, 30, unreached);
+    let added = false;
+    for (let c = 0; c < size; c++) {
+      if (connectors[c] === 1 && mask[c] !== MASK_DRIVEWAY) {
+        mask[c] = MASK_DRIVEWAY;
+        added = true;
+      }
+    }
+    if (added) floodReach();
   }
 
   // Named lots only; the combined "All lots" place overlaps every one of them.
   const lotOf = new Int16Array(size).fill(-1);
   const lots = map.places.filter((p) => p.kind === 'parking' && p.id !== 'lots');
+
   lots.forEach((lot, index) => {
     for (const c of lot.cells) if (cells[c] === 'parking') lotOf[c] = index;
   });
@@ -234,8 +265,8 @@ function buildRoadNet(map: MapBundle): RoadNet {
   // are the stub ends of service roads that go nowhere; a car spawned on one
   // sat there for the whole run, and the cars queued behind it never got in.
   const toLots = new Uint8Array(size);
-  head = 0;
-  tail = 0;
+  let head = 0;
+  let tail = 0;
   for (let c = 0; c < size; c++) {
     if (lotOf[c]! >= 0 && byLot[lotOf[c]!]!.length > 0 && reach[c] === 1) {
       toLots[c] = 1;
@@ -1123,12 +1154,14 @@ export class TrafficModel {
         }
         if (t < this.arriveT[i]!) continue;
         let cell = this.entry[i]!;
-        // An off-map arrival can choose another approach when its original
-        // road component has filled up but another connected lot has space.
-        // No teleport on the map and no additional RNG draws.
-        if (this.map.id !== 'ohio-stadium' && anyLotOpen && (cell < 0 || lots.dist[cell] === UNREACHABLE)) {
-          const alternatives = this.net.entries.filter(e => this.closedCells[e.cell] !== 1 && lots.dist[e.cell] !== UNREACHABLE);
-          if (alternatives.length) {
+        // A car still off-map may use another approach when its road component
+        // is full or closed. Choosing the nearest reachable entry keeps the
+        // choice deterministic; no RNG draw moves an existing car.
+        if (anyLotOpen && (cell < 0 || this.closedCells[cell] === 1 || lots.dist[cell] === UNREACHABLE)) {
+          const alternatives = this.net.entries.filter((entry) =>
+            this.closedCells[entry.cell] !== 1 && this.occCount[entry.cell] === 0 &&
+            rho[entry.cell]! <= CROWD_STOP && lots.dist[entry.cell] !== UNREACHABLE);
+          if (alternatives.length > 0) {
             cell = alternatives[i % alternatives.length]!.cell;
             this.entry[i] = cell;
           }

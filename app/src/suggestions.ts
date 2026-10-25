@@ -81,7 +81,19 @@ export function responseTargets(map: MapBundle, hotspots: PoliceHotspot[], incid
   });
 }
 
-export function dispatchSuggestions(map: MapBundle, targets: ReturnType<typeof responseTargets>, scene: SceneInfo) {
+export interface SuggestionContext {
+  /** Sim seconds each hotspot has been continuously observed, keyed by its name. */
+  durations?: ReadonlyMap<string, number>;
+  /** Gate health from the same gate samples the Gates tab uses. */
+  gateHealth?: ReadonlyMap<number, { health: string; reason: string }>;
+}
+
+export function dispatchSuggestions(
+  map: MapBundle,
+  targets: ReturnType<typeof responseTargets>,
+  scene: SceneInfo,
+  context: SuggestionContext = {},
+) {
   const reserved=new Set<string>();
   const distance=(cell:number, x:number,y:number)=>Math.hypot((cell%map.width+0.5)*CELL_SIZE_M-x,(Math.floor(cell/map.width)+0.5)*CELL_SIZE_M-y);
   const near=(cell:number,spot:PoliceHotspot)=>cell%map.width>=spot.x0-12 && cell%map.width<=spot.x1+12 &&
@@ -94,6 +106,11 @@ export function dispatchSuggestions(map: MapBundle, targets: ReturnType<typeof r
     const dismissed=scene.orders?.some(({t,order})=>order.type==='dismiss_suggestion' && scene.t-t<300 && scene.t>=t &&
       distance(order.toCell,spot.cx,spot.cy)<=36 && spot.score<order.score*1.25);
     if(dismissed) return [];
+    // An accepted response also settles the spot for the same five-minute
+    // window, so a unit that has just returned is not sent straight back.
+    const accepted=scene.orders?.some(({t,order})=>order.type==='respond' && scene.t-t>=0 && scene.t-t<300 &&
+      distance(order.toCell,spot.cx,spot.cy)<=36);
+    if(accepted) return [];
     const times=scene.responses?.find(r=>r.cell===cell)?.units ?? [];
     const available=scene.officers.filter(o=>!reserved.has(o.id) && o.state!=='en_route' && !protectedUnit(o))
       .flatMap(o=>{const eta=times.find(v=>v.id===o.id)?.etaS;return eta===null||eta===undefined?[]:[{o,eta}];})
@@ -101,11 +118,23 @@ export function dispatchSuggestions(map: MapBundle, targets: ReturnType<typeof r
     const chosen=available.slice(0,spot.level==='critical'?2:1);
     if(!chosen.length) return [];
     chosen.forEach(v=>reserved.add(v.o.id));
-    const why=incident?spot.where:`${Math.round(spot.crowdedPeople).toLocaleString()} people packed, peak ${spot.peakDensity.toFixed(1)}/m²; ${spot.stoppedVehicles} vehicles stopped`;
-    const order: Extract<PoliceOrder,{type:'respond'}>={type:'respond',officerIds:chosen.map(v=>v.o.id),toCell:cell,
-      kind:trafficPoint?'traffic':incident?'incident':'crowd',reason:why,returnAfterS:POLICE_WORK_S};
+    const duration = context.durations?.get(spot.where);
+    const age = duration === undefined ? '' : `; seen for ${(duration / 60).toFixed(1)} min`;
+    const gate = map.places
+      .map((place, index) => ({ index, place }))
+      .filter(({ place }) => place.kind === 'gate')
+      .sort((a, b) => Math.hypot(a.place.cells[0]! % map.width - cell % map.width, Math.floor(a.place.cells[0]! / map.width) - Math.floor(cell / map.width)) -
+        Math.hypot(b.place.cells[0]! % map.width - cell % map.width, Math.floor(b.place.cells[0]! / map.width) - Math.floor(cell / map.width)))[0];
+    const health = gate ? context.gateHealth?.get(gate.index) : undefined;
+    const gateNote = health && health.health !== 'ok' ? `; gate ${gate!.place.name}: ${health.reason}` : '';
+    const why = incident ? spot.where : `${Math.round(spot.crowdedPeople).toLocaleString()} people packed, peak ${spot.peakDensity.toFixed(1)}/m²; ${spot.stoppedVehicles} vehicles stopped${age}${gateNote}`;
+    const order: Extract<PoliceOrder,{type:'respond'}> = {type:'respond',officerIds:chosen.map(v=>v.o.id),toCell:cell,
+      kind:trafficPoint?'traffic':incident?'incident':'crowd',reason:why,returnAfterS:POLICE_WORK_S,suggestionAt:scene.t};
     return [{cell,spot,order,etaS:Math.max(...chosen.map(v=>v.eta)),
       what:`Send ${chosen.map(v=>v.o.unit).join(' and ')} to ${spot.where}`,
-      why,cost:chosen.map(v=>`${v.o.unit} leaves ${v.o.state==='standby'?'their original post':'their current assignment'}`).join('; ')}];
+      why,cost:chosen.map(v=>{
+        const post = v.o.patrol?.name ?? (v.o.place >= 0 ? map.places[v.o.place]?.name : undefined) ?? 'their original post';
+        return `${v.o.unit} leaves ${v.o.state==='standby'?post:v.o.patrol?`beat ${post}`:`assignment at ${post}`}`;
+      }).join('; ')}];
   });
 }

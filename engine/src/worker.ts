@@ -29,12 +29,14 @@ let looping = false;
 let peopleMotion = new MotionRecorder(3);
 let vehicleMotion = new MotionRecorder();
 let officerMotion = new MotionRecorder();
-let officerMotionKey='';
+let officerMotionKey = '';
+/** Off until a view asks: headless benches must not pay for path recording. */
+let motionOn = false;
 let responseTargets: number[] = [];
 let responseOfficer: string | undefined;
 
 function recordMotion(): void {
-  if (!sim) return;
+  if (!sim || !motionOn) return;
   const {t, dots} = sim.ctx;
   peopleMotion.capture(t, dots.x, dots.y);
   const v = sim.traffic?.frame();
@@ -49,7 +51,7 @@ function resetMotion(): void {
   peopleMotion = new MotionRecorder(3);
   vehicleMotion = new MotionRecorder();
   officerMotion = new MotionRecorder();
-  recordMotion();
+  if (motionOn) recordMotion();
 }
 
 /**
@@ -90,7 +92,7 @@ let typesSent = -1;
 function emitFrame(): void {
   if (!sim) return;
   // Also flush a final frame whose timestamp is not a multiple of the cadence.
-  peopleMotion.capture(sim.ctx.t, sim.ctx.dots.x, sim.ctx.dots.y, undefined, undefined, true);
+  if (motionOn) peopleMotion.capture(sim.ctx.t, sim.ctx.dots.x, sim.ctx.dots.y, undefined, undefined, true);
   // Fan types ride alongside frames only when they changed: they are fixed at
   // spawn and move only with a commander edit or a rewind.
   if (sim.typesVersion !== typesSent) {
@@ -100,14 +102,24 @@ function emitFrame(): void {
   }
   // Scene first, so the frame's redraw already has the officers it shows.
   const alerts = sim.takeAlerts();
-  const motion = { people: peopleMotion.take(), vehicles: vehicleMotion.take(), officers: officerMotion.take(),
-    officerIds: sim.ctx.officers.map(o => o.id) };
+  const motion = motionOn
+    ? {
+        people: peopleMotion.take(),
+        vehicles: vehicleMotion.take(),
+        officers: officerMotion.take(),
+        officerIds: sim.ctx.officers.map((officer) => officer.id),
+      }
+    : null;
+  const transfer = alerts.map((alert) => alert.dots.buffer);
+  if (motion) {
+    transfer.push(...[motion.people, motion.vehicles, motion.officers].flatMap((path) => [path.offsets.buffer, path.samples.buffer]));
+  }
   send(
     {
       type: 'scene',
       scene: {
         t: sim.ctx.t,
-        motion,
+        ...(motion ? { motion } : {}),
         officers: sim.officerStatus(true),
         gates: sim.gateStats(),
         closed: sim.closedIds(),
@@ -116,10 +128,10 @@ function emitFrame(): void {
         markers: sim.markerStatus(),
         orders: sim.ordersLog(),
         responseArrivals: sim.responseArrivals(),
-        responses: sim.responseTimes(responseTargets,responseOfficer),
+        responses: sim.responseTimes(responseTargets, responseOfficer),
       },
     },
-    [...alerts.map((a) => a.dots.buffer), ...[motion.people, motion.vehicles, motion.officers].flatMap(p => [p.offsets.buffer, p.samples.buffer])],
+    transfer,
   );
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));
 }
@@ -218,6 +230,10 @@ host.onmessage = (event) => {
         return;
       case 'speed':
         speed = message.speed;
+        return;
+      case 'motion':
+        motionOn = message.on;
+        resetMotion();
         return;
       case 'seek': {
         if (!sim) return;

@@ -86,6 +86,23 @@ describe('live response missions',()=>{
     const field=new FlowFields(sim.ctx.map).toCell(target);
     expect(field.dist[o.cell]).not.toBe(UNREACHABLE);
   });
+  it('replays a dispatch, a patrol and a placed unit exactly after a rewind',async()=>{
+    const sim=make();
+    await step(sim,20);
+    const point=sim.checkpoint();
+    sim.queueOrder({type:'add_officer',unit:'Synthetic relief',cell:240});
+    await sim.step();
+    const placed=sim.ctx.officers[1]!.id;
+    sim.queueOrder({type:'respond',officerIds:['off-1'],toCell:134,kind:'crowd',reason:'Rewrite test',returnAfterS:60});
+    sim.queueOrder({type:'patrol',officerIds:[placed],waypoints:[123,134,214],loop:true,name:'Rewrite beat'});
+    await step(sim,40);
+    const officers=sim.officerStatus(),frame=sim.frame(),card=sim.scorecard();
+    sim.rewind(point);
+    await step(sim,41);
+    expect(sim.officerStatus()).toEqual(officers);
+    expect(sim.frame().x).toEqual(frame.x);
+    expect(sim.scorecard()).toEqual(card);
+  });
   it('repeats live instructions and records fans following rather than just moving a marker',async()=>{
     const sim=make();
     sim.queueOrder({type:'respond',officerIds:['off-1'],toCell:11*20+14,kind:'crowd',reason:'Crowd on approach',returnAfterS:300});

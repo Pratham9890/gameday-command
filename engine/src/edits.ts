@@ -65,6 +65,7 @@ export interface PoliceMission {
   arrivedAt: number | null;
   returnAfterS: number | null;
   phase: 'responding' | 'working' | 'returning';
+  suggestionAt?: number;
 }
 
 /** One gate's door and flow, for the gates panel and the map labels. */
@@ -96,7 +97,7 @@ export interface SceneInfo {
   /** Live police orders this run has carried out, oldest first. */
   orders?: { t: SimSeconds; order: PoliceOrder }[];
   responses?: {cell: number; units: {id: Id; etaS: number | null}[]}[];
-  responseArrivals?: {officerId:Id;startedAt:number;arrivedAt:number;targetCell:number}[];
+  responseArrivals?: {officerId:Id;startedAt:number;arrivedAt:number;targetCell:number;suggestionAt?:number}[];
   markers?: PoliceMarker[];
 }
 
@@ -119,13 +120,14 @@ export type PoliceOrder =
   | {type:'place_marker';marker:PoliceMarker}
   | {type:'remove_marker';id:Id}
   | {type:'officer_report';reportId:string;officerId:Id;toCell:number;kind:'backup'|'crowd crush'|'medical'|'fight'|'traffic'|'suspicious item'|'other'}
+  | {type:'officer_ack';officerId:Id}
   | {type:'report_decision';reportId:string;decision:'dismissed'}
   | {type:'patrol';officerIds:Id[];waypoints:number[];loop:boolean;name?:string}
   | {type:'resume_patrol';officerIds:Id[]}
   | {type:'add_officer';unit:string;cell:number}
   | {type:'remove_officer';officerId:Id}
   | {type: 'dismiss_suggestion'; toCell: number; score: number; reason?: string}
-  | { type: 'respond'; officerIds: Id[]; toCell: number; kind: PoliceMission['kind']; reason: string; returnAfterS: number; reportId?:string }
+  | { type: 'respond'; officerIds: Id[]; toCell: number; kind: PoliceMission['kind']; reason: string; returnAfterS: number; reportId?: string; suggestionAt?: number }
   /** Send officers to a cell (a gate, a street, or any spot). */
   | { type: 'dispatch'; officerIds: Id[]; toCell: number }
   /** Send officers back to their police post. */
@@ -141,8 +143,12 @@ export type PoliceOrder =
   /** End the game now: everyone heads for the exits. */
   | { type: 'release' };
 
-export type EditIn = { type: 'edit'; edit: DotEdit } | { type: 'inspect'; dot: number } | { type: 'order'; order: PoliceOrder }
-  | {type: 'response_targets'; cells: number[]; officerId?:Id};
+export type EditIn =
+  | { type: 'edit'; edit: DotEdit }
+  | { type: 'inspect'; dot: number }
+  | { type: 'order'; order: PoliceOrder }
+  | { type: 'motion'; on: boolean }
+  | { type: 'response_targets'; cells: number[]; officerId?: Id };
 
 export type EditOut =
   | {type: 'responses'; t: number; responses: NonNullable<SceneInfo['responses']>}

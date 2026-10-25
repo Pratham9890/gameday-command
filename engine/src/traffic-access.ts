@@ -5,7 +5,7 @@ import {CELL_SIZE_M} from '../../contracts.ts';
  * walkable ground. Never drive through a building or turn an entire sidewalk
  * into a road. Only roads connected to the map edge seed these connectors.
  */
-export function parkingConnectors(map: MapBundle, maxMeters = 30): Uint8Array {
+export function parkingConnectors(map: MapBundle, maxMeters = 30, wanted?: Uint8Array): Uint8Array {
   const {width: W,height: H,cells}=map, n=cells.length;
   const result=new Uint8Array(n), dist=new Int16Array(n).fill(-1), parent=new Int32Array(n).fill(-1), queue=new Int32Array(n);
   let head=0,tail=0;
@@ -26,15 +26,20 @@ export function parkingConnectors(map: MapBundle, maxMeters = 30): Uint8Array {
   const seen=new Uint8Array(n), stack:number[]=[];
   for(let start=0;start<n;start++) {
     if(cells[start]!=='parking' || seen[start])continue;
-    let best=-1,bestDist=Infinity;
+    let best=-1,bestDist=Infinity,wantedHere=false;
     stack.push(start);seen[start]=1;
     while(stack.length) {
       const c=stack.pop()!;
+      if(wanted?.[c]===1)wantedHere=true;
       neighbors(c,next=>{
-        if(cells[next]==='parking' && !seen[next]){seen[next]=1;stack.push(next);}
+        if(cells[next]==='parking' && !seen[next]){
+          if(wanted?.[next]===1)wantedHere=true;
+          seen[next]=1;stack.push(next);
+        }
         if(dist[next]!>=0 && dist[next]!<bestDist){best=next;bestDist=dist[next]!;}
       });
     }
+    if(wanted&&!wantedHere)continue;
     while(best>=0 && cells[best]==='walk') {result[best]=1;best=parent[best]!;}
   }
   return result;

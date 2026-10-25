@@ -9,6 +9,10 @@ describe('geometric coverage',()=>{
     expect(a.coveredCells).toBeGreaterThan(0);expect(b.coveredCells).toBe(a.coveredCells);
     expect(a.outdoorCells).toBeLessThan(map.cells.length);expect(a.blockMeters).toBe(12);
     expect(a.grid.some(Boolean)).toBe(true);
+    const reach = coverage(map,[unit],[],2);
+    expect(reach.reachableCells).toBeGreaterThan(0);
+    expect(reach.reachableShare).toBeGreaterThanOrEqual(a.outdoorShare!);
+    expect(reach.grid.some((value) => value === 2)).toBe(true);
   });
   it('reports no measured share for an empty domain',()=>{
     const map=makeTestMap();map.cells.fill('blocked');

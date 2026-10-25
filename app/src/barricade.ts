@@ -32,6 +32,29 @@ function nearestRoad(map: MapBundle, cell: number): number {
   return best;
 }
 
+/** A pedestrian-only fence along a walkable stretch, starting at the clicked cell. */
+export function fenceAt(map: MapBundle, cell: number, reachM = 20): { closableId: string; name: string; cells: number[]; existing: false } | null {
+  if (!Number.isInteger(cell) || cell < 0 || cell >= map.width * map.height || map.cells[cell] !== 'walk') return null;
+  const cells = [cell];
+  const seen = new Set([cell]);
+  for (let head = 0; head < cells.length; head++) {
+    const at = cells[head]!;
+    const cx = at % map.width;
+    const cy = Math.floor(at / map.width);
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x < 0 || y < 0 || x >= map.width || y >= map.height) continue;
+      const next = y * map.width + x;
+      if (seen.has(next) || map.cells[next] !== 'walk') continue;
+      if (Math.hypot(x - cell % map.width, y - Math.floor(cell / map.width)) * CELL_SIZE_M > reachM) continue;
+      seen.add(next);
+      cells.push(next);
+    }
+  }
+  return {closableId:`fence-${cell}`, name:'Pedestrian fence', cells, existing:false};
+}
+
 export function barricadeAt(
   map: MapBundle,
   cell: number,

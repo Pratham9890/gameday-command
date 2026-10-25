@@ -29,7 +29,7 @@ import {DemoAccess} from './DemoAccess.tsx';
 import {OfficerConsole} from './OfficerConsole.tsx';
 import {readRole,saveRole,type DemoRole} from './roles.ts';
 import { PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
-import { barricadeAt } from './barricade.ts';
+import { barricadeAt, fenceAt } from './barricade.ts';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
@@ -710,7 +710,7 @@ export function App() {
   }, [pickMode]);
 
   const sendOrder = (order: PoliceOrder) => {
-    if (ordersDisabled || (officerRole && (order.type!=='officer_report'||order.officerId!==roleChoice.unitId))) return;
+    if (ordersDisabled || (officerRole && ((order.type !== 'officer_report' && order.type !== 'officer_ack') || order.officerId !== roleChoice.unitId))) return;
     runs[closeRun]!.send({ type: 'order', order });
   };
 
@@ -742,6 +742,11 @@ export function App() {
     if (pickMode.kind === 'add_officer') {
       setPickMode(null);sendOrder({type:'add_officer',unit:pickMode.unit,cell});return;
     }
+    if (pickMode.kind === 'traffic_point') {
+      setPickMode(null);
+      sendOrder({type:'respond',officerIds:pickMode.officerIds,toCell:cell,kind:'traffic',reason:'Manual traffic control point',returnAfterS:300});
+      return;
+    }
     if (pickMode.kind === 'response') {
       setPickMode(null);
       sendOrder({...pickMode.mission,toCell:cell});
@@ -753,7 +758,7 @@ export function App() {
       return;
     }
     const barricade = pickMode.blocks==='pedestrians'&&loaded.map.cells[cell]==='walk'
-      ? {closableId:'fence-'+cell,name:'Pedestrian fence',cells:[cell],existing:false}
+      ? fenceAt(loaded.map, cell, pickMode.reachM??20)
       : barricadeAt(loaded.map, cell,pickMode.reachM??20,!!pickMode.replaceId);
     // A miss keeps barricade mode on, so the commander just clicks again.
     if (!barricade) {
@@ -1115,6 +1120,7 @@ export function App() {
                       : pickMode.kind === 'marker' ? 'Click an outdoor location for the marker. Esc cancels.'
                       : pickMode.kind === 'officer_report' ? 'Click the incident location. Esc cancels.'
                       : pickMode.kind === 'add_officer' ? 'Click an outdoor spot for the synthetic unit. Esc cancels.'
+                      : pickMode.kind === 'traffic_point' ? 'Click a junction for the traffic control point. Esc cancels.'
                       : `Click where to send ${pickMode.officerIds.length} ${pickMode.officerIds.length === 1 ? 'officer' : 'officers'} — Esc to cancel`}
                     <span>Plan {LABELS[closeRun]} only</span>
                   </div>
@@ -1325,7 +1331,7 @@ export function App() {
           )}
         </main>
 
-        {officerRole?<OfficerConsole officer={own} disabled={ordersDisabled} following={following} onFollow={()=>setFollowing(v=>!v)} nearby={nearby} onReport={reportKind=>armPick({kind:'officer_report',reportKind})} onBackup={()=>{if(own)sendOrder({type:'officer_report',reportId:own.id+':'+t+':'+(liveScene?.orders?.length??0),officerId:own.id,toCell:own.cell,kind:'backup'});}}/>:<aside className="side">
+        {officerRole?<OfficerConsole officer={own} disabled={ordersDisabled} following={following} onFollow={()=>setFollowing(v=>!v)} nearby={nearby} where={own&&loaded?loaded.map.places.find(p=>p.cells.includes(own.targetCell))?.name:undefined} onAck={()=>{if(own)sendOrder({type:'officer_ack',officerId:own.id});}} onReport={reportKind=>armPick({kind:'officer_report',reportKind})} onBackup={()=>{if(own)sendOrder({type:'officer_report',reportId:own.id+':'+t+':'+(liveScene?.orders?.length??0),officerId:own.id,toCell:own.cell,kind:'backup'});}}/>:<aside className="side">
           <div className="rail-tabs" role="tablist" aria-label="Side panel">
             {RAIL_TABS.map((tab) => (
               <button key={tab.id} role="tab" aria-selected={railTab === tab.id} className={railTab === tab.id ? 'on' : undefined} onClick={() => setRailTab(tab.id)}>

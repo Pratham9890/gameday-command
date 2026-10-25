@@ -1640,8 +1640,12 @@ export class FlowMovement implements MovementModel {
           }
           if (directive >= 0 && this.admitted[dot] !== 1 && !this.returningToCar[dot] &&
               this.fields.field(directive, true).dist[cell] !== UNREACHABLE) {
-            if (directive !== dots.targetPlace[dot]) this.retarget(ctx, dot, directive);
-            return;
+            if (directive !== dots.targetPlace[dot]) {
+              this.retarget(ctx, dot, directive);
+              return;
+            }
+            // Already heading there: fall through so an officer's own post or
+            // the plan's redirect can still spread the queue.
           }
         }
         // An officer standing in front of you is more specific than a PA: they

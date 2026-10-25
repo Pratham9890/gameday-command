@@ -816,7 +816,7 @@ main { min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 20px 20px
 .police-pick span { display: block; color: var(--dim); margin-top: 3px; }
 
 /* Demo radio access and officer console share the command board palette. */
-.demo-access { position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:var(--board);padding:20px;overflow:auto; }
+.demo-access { position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:var(--board);padding:20px;overflow:auto;animation:demo-fade .2s ease-out; }
 .demo-card { width:min(100%,480px);padding:28px;border:1px solid var(--rule);border-radius:var(--radius);background:var(--paper);text-align:center; }
 .demo-card h1,.demo-card h2 {font-family:var(--display);}
 .demo-card label,.officer-console label {display:grid;gap:8px;text-align:left;margin:12px 0;}
@@ -832,7 +832,8 @@ main { min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 20px 20px
 .police-orders input {background:var(--paper-2);border:1px solid var(--rule);color:var(--ink);min-height:44px;}
 .police-pick {background:var(--paper);color:var(--ink);border-color:var(--info);}
 @keyframes radio-sync {0% {opacity:.2;transform:scale(.9);} 100% {opacity:1;transform:scale(1);}}
-@media (prefers-reduced-motion:reduce) {.demo-seal.syncing {animation:none;}}
+@keyframes demo-fade {from {opacity:0;} to {opacity:1;}}
+@media (prefers-reduced-motion:reduce) {.demo-seal.syncing {animation:none;} .demo-access {animation:demo-fade .2s ease-out;}}
 @media (max-width:600px) {
  .officer-layout {display:flex;flex-direction:column;}
  .officer-layout main {min-width:0;}

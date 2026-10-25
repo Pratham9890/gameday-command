@@ -47,4 +47,16 @@ describe('dispatch suggestion rules',()=>{
     s.officers[0]!.mission={kind:'crowd',reason:'Test',targetCell:targets[0]!.cell,startedAt:0,arrivedAt:null,returnAfterS:180,phase:'responding'};
     expect(dispatchSuggestions(map,targets,s)).toHaveLength(0);
   });
+  it('includes observed duration and a delivered suggestion timestamp',()=>{
+    const targets=responseTargets(map,[spot()]),s=scene(targets);
+    const list=dispatchSuggestions(map,targets,s,{durations:new Map([['Test queue',720]])});
+    expect(list[0]!.why).toContain('seen for 12.0 min');
+    expect(list[0]!.order.suggestionAt).toBe(100);
+  });
+  it('does not re-suggest a spot accepted less than five minutes ago',()=>{
+    const targets=responseTargets(map,[spot()]),s=scene(targets);
+    s.orders=[{t:0,order:{type:'respond',officerIds:['a'],toCell:targets[0]!.cell,kind:'crowd',reason:'Test',returnAfterS:60}}];
+    expect(dispatchSuggestions(map,targets,s)).toHaveLength(0);
+    s.t=301;expect(dispatchSuggestions(map,targets,s)).toHaveLength(1);
+  });
 });

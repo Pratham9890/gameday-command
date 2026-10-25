@@ -158,7 +158,7 @@ export class Simulation {
   private readonly missions = new Map<Id, PoliceMission>();
   private readonly patrols = new Map<Id, NonNullable<OfficerStatus['patrol']>>();
   private nextOfficer = 1;
-  private arrivals: {officerId:Id;startedAt:number;arrivedAt:number;targetCell:number}[] = [];
+  private arrivals: {officerId:Id;startedAt:number;arrivedAt:number;targetCell:number;suggestionAt?:number}[] = [];
   private instructionStats: {t:number;gates:GateStat[]}|null = null;
   private readonly instructionAt = new Map<Id, number>();
   private readonly instructionAreas = new Map<number, number>();
@@ -381,7 +381,23 @@ export class Simulation {
           pos.y += dy * norm * step;
           continue;
         }
-        if (field && field.dist[cell] !== 0) break; // Unreachable: wait rather than cross a wall.
+        if (field && field.dist[cell] === 0xffff) {
+          // A target can lose its route after a closure or a synthetic officer
+          // is moved. Turning back is better than freezing at the old cell for
+          // the rest of the run.
+          const home = this.officerHome.get(officer.id);
+          this.officerTargets.delete(officer.id);
+          if (patrol) patrol.active = false;
+          if (mission) {
+            mission.phase = 'returning';
+            if (home !== undefined && home !== target) {
+              this.officerTargets.set(officer.id, home);
+              this.recalling.add(officer.id);
+            }
+          }
+          break;
+        }
+        if (field && field.dist[cell] !== 0) break; // On the destination itself.
         // On the destination itself, or nowhere to route from: the last
         // stretch to the exact post is a straight line.
         const gx = goal.x - pos.x;
@@ -423,7 +439,7 @@ export class Simulation {
         // repeat it while they stay on station.
         if (mission) {
           mission.phase = 'working'; mission.arrivedAt = this.ctx.t;
-          if (mission.returnAfterS !== null) this.arrivals.push({officerId:officer.id,startedAt:mission.startedAt,arrivedAt:this.ctx.t,targetCell:target});
+          if (mission.returnAfterS !== null) this.arrivals.push({officerId:officer.id,startedAt:mission.startedAt,arrivedAt:this.ctx.t,targetCell:target,...(mission.suggestionAt !== undefined ? { suggestionAt: mission.suggestionAt } : {})});
           this.instructLive(officer.id);
         } else this.raised.push({ situation: 'officer_instruction', cells: this.cellsAround(target, officer.radiusCells) });
       }
@@ -994,9 +1010,31 @@ export class Simulation {
         }
         case 'respond':
         case 'dispatch': {
-          const cell = order.toCell;
-          const kind = this.ctx.map.cells[cell];
-          if (!Number.isInteger(cell) || !kind || kind === 'blocked' || kind === 'stands' || kind === 'concourse') break;
+          let cell = order.toCell;
+          let kind = this.ctx.map.cells[cell];
+          if (!Number.isInteger(cell) || !kind || kind === 'blocked') break;
+          if (kind === 'stands' || kind === 'concourse') {
+            // Officers do not walk inside the bowl. A crowd post aimed at the
+            // stands means the nearest gate outside it, not a silent no-op.
+            let best = -1;
+            let bestDistance = Infinity;
+            const cx = cell % this.ctx.map.width;
+            const cy = (cell / this.ctx.map.width) | 0;
+            for (const place of this.ctx.map.places) {
+              if (place.kind !== 'gate') continue;
+              for (const gateCell of place.cells) {
+                const dx = Math.abs((gateCell % this.ctx.map.width) - cx);
+                const dy = Math.abs(((gateCell / this.ctx.map.width) | 0) - cy);
+                if (dx + dy < bestDistance) {
+                  bestDistance = dx + dy;
+                  best = gateCell;
+                }
+              }
+            }
+            if (best < 0) break;
+            cell = best;
+            kind = this.ctx.map.cells[cell];
+          }
           const field = this.officerFields.toCell(cell);
           for (const id of order.officerIds) {
             const officer = this.ctx.officers.find(o => o.id === id);
@@ -1005,7 +1043,7 @@ export class Simulation {
             this.missions.set(id, {kind: order.type === 'respond' ? order.kind : 'crowd',
               reason: order.type === 'respond' ? order.reason : '', targetCell: cell,
               startedAt: this.ctx.t, arrivedAt: null, returnAfterS: order.type === 'respond' ? Math.max(60, Math.min(900, order.returnAfterS || 180)) : null,
-              phase: 'responding'});
+              phase: 'responding', ...(order.type === 'respond' && order.suggestionAt !== undefined ? { suggestionAt: order.suggestionAt } : {})});
           }
           break;
         }
@@ -1034,12 +1072,23 @@ export class Simulation {
             this.ctx.map.closables.push(barricade);
             this.barricades.push(barricade);
           }
-          if(order.blocks==='vehicles'||this.barricades.find(b=>b.id===order.closableId)?.blocks==='vehicles') {
-            if(order.closed)this.vehicleClosed.add(order.closableId);else this.vehicleClosed.delete(order.closableId);
-            act.setClosed(order.closableId,false);
-          } else {
-            if(order.blocks==='pedestrians')this.pedestrianOnly.add(order.closableId);
-            act.setClosed(order.closableId,order.closed);
+          {
+            const known = this.barricades.find((barricade) => barricade.id === order.closableId);
+            if (known && order.blocks) known.blocks = order.blocks;
+            const blocks = order.blocks ?? known?.blocks;
+            if (order.closed && blocks === 'vehicles') {
+              this.vehicleClosed.add(order.closableId);
+              this.pedestrianOnly.delete(order.closableId);
+              act.setClosed(order.closableId, false);
+            } else if (order.closed && blocks === 'pedestrians') {
+              this.pedestrianOnly.add(order.closableId);
+              this.vehicleClosed.delete(order.closableId);
+              act.setClosed(order.closableId, true);
+            } else {
+              this.vehicleClosed.delete(order.closableId);
+              this.pedestrianOnly.delete(order.closableId);
+              act.setClosed(order.closableId, order.closed);
+            }
           }
           break;
         case 'redirect': {
