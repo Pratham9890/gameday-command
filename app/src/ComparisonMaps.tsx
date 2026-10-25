@@ -171,6 +171,7 @@ export interface FocusBox {
 }
 
 export interface ComparisonMapsProps {
+  showCoverage?: boolean;
   map: MapBundle;
   runs: RunHandle[];
   /** Replay frame to draw, or null to follow the live runs. */
@@ -423,7 +424,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
   useEffect(() => {
     needsRef.current = true;
-  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked, props.hotspots]);
+  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked, props.hotspots, props.showCoverage]);
 
   // ─── the draw loop ───
   useEffect(() => {
@@ -597,6 +598,16 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           ctx.setLineDash([]);
         }
 
+        if (p.showCoverage && view) {
+          const seen = new Set<number>();
+          ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--info').trim();
+          ctx.globalAlpha = 0.09;
+          for (const o of p.runs[index]!.scene.current?.officers ?? []) {
+            if (seen.has(o.cell)) continue; seen.add(o.cell);
+            ctx.beginPath();ctx.arc(toX(o.x),toY(o.y),(o.radiusCells??10)*CELL_SIZE_M*m2px,0,Math.PI*2);ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
         // Vehicles at their real size.
         const vf = d?.vehicles;
         if (vf && d?.vx && d.vy && d.vh && p.showVehicles) {
@@ -674,6 +685,19 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           ctx.fillRect(sx - 4 * k, sy - k, 8 * k, 2 * k);
         }
 
+        ctx.setTransform(1,0,0,1,ox,0);
+        ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+        ctx.font='12px Public Sans, sans-serif';
+        for(const m of p.runs[index]!.scene.current?.markers??[]) {
+          const x=toX((m.cell%map.width+.5)*CELL_SIZE_M),y=toY((Math.floor(m.cell/map.width)+.5)*CELL_SIZE_M);
+          ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--info').trim();ctx.strokeRect(x-5,y-5,10,10);ctx.fillText(m.name+' marker',x+8,y);
+        }
+        if(p.showCoverage)for(const o of p.runs[index]!.scene.current?.officers??[]) {
+          const route=o.route??[];if(!route.length)continue;
+          ctx.beginPath();ctx.moveTo(toX(o.x),toY(o.y));
+          for(const c of route)ctx.lineTo(toX((c%map.width+.5)*CELL_SIZE_M),toY((Math.floor(c/map.width)+.5)*CELL_SIZE_M));
+          ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--info').trim();ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+        }
         // Officers: a blue disc with a white ring, a shield when close.
         ctx.setTransform(1, 0, 0, 1, ox, 0);
         if (view) {

@@ -412,6 +412,10 @@ export class CrowdScene {
   private barricades: BarricadeGroup[] = [];
   private closedTags: { el: HTMLElement; sx: number; sy: number }[] = [];
   private selectedOfficer: string | null = null;
+  private coverageVisible = false;
+  private officerFocus: string | null = null;
+  setCoverage(on: boolean): void {this.coverageVisible = on;}
+  setOfficerFocus(id: string | null): void {this.officerFocus = id;}
   /** Who the last alert reached, and when it went out (wall clock). */
   private alert: { mask: Uint8Array; start: number; mx: number; my: number; radius: number } | null = null;
   private cover = new Graphics();
@@ -695,7 +699,7 @@ export class CrowdScene {
     this.closedTags = [];
     const areas = closedAreas(map, info);
     this.barricades = buildBarricades(areas.flatMap((area) =>
-      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate)));
+      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate).map(p=>({...p,kind:area.blocks==='pedestrians'?'sawhorse' as const:area.blocks==='vehicles'?'jersey' as const:p.kind}))));
     for (const { body, lights } of this.barricades) this.people.addChild(body, lights);
     for (const area of areas) {
       for (const cell of area.cells) this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
@@ -705,9 +709,13 @@ export class CrowdScene {
       const p = isoProject(area.x, area.y, 4);
       const el = document.createElement('div');
       el.className = 'crowd-label closed';
-      el.textContent = `⛔ ${fromMap ? area.name.replace(/ door$/, '') : area.name} closed`;
+      el.textContent = `${fromMap ? area.name.replace(/ door$/, '') : area.name}: ${area.blocks??'all'} blocked`;
       overlay.appendChild(el);
       this.closedTags.push({ el, sx: p.sx, sy: p.sy });
+    }
+    for(const marker of info?.markers??[]) {
+      const p=isoProject((marker.cell%width+.5)*CELL_SIZE_M,(Math.floor(marker.cell/width)+.5)*CELL_SIZE_M,4);
+      const el=document.createElement('div');el.className='crowd-label';el.textContent=marker.name+' marker';overlay.appendChild(el);this.closedTags.push({el,sx:p.sx,sy:p.sy});
     }
     this.closedCells.fill({ color: CLOSED, alpha: 0.3 });
   }
@@ -1715,7 +1723,7 @@ export class CrowdScene {
     if (!cur) return;
     const { width } = this.init.map;
     // Kept a readable size on screen however far out you are.
-    const k = Math.max(1, PEOPLE_MIN_SCALE / s) * 1.1;
+    const baseK = Math.max(1, PEOPLE_MIN_SCALE / s) * 1.1;
     const centre = (cell: number) => isoProject(((cell % width) + 0.5) * CELL_SIZE_M, (Math.floor(cell / width) + 0.5) * CELL_SIZE_M);
     const officers = this.scene
       ? this.officerPositions(performance.now())
@@ -1727,18 +1735,31 @@ export class CrowdScene {
           targetCell: -1,
         }));
 
+    const covered = new Set<number>();
     for (const o of officers) {
+      const k = baseK * (this.officerFocus && this.officerFocus !== o.id ? 0.72 : 1);
+      if (this.coverageVisible) {
+        const key = Math.floor(o.y / CELL_SIZE_M) * width + Math.floor(o.x / CELL_SIZE_M);
+        if (!covered.has(key)) {
+          covered.add(key);const ground = isoProject(o.x,o.y);
+          const radius = ((o as Partial<OfficerStatus>).radiusCells ?? 10) * CELL_SIZE_M;
+          this.routes.ellipse(ground.sx,ground.sy,radius*Math.SQRT2,radius/Math.SQRT2).fill({color:OFFICER,alpha:0.09});
+        }
+      }
       const p = isoProject(o.x, o.y, this.liftAt(o.x, o.y));
       // Where they are headed: a dotted line to the post, so a dispatch is visible.
-      if (o.state === 'en_route' && o.targetCell >= 0) {
+      if ((o.state === 'en_route' || o.state === 'patrolling') && o.targetCell >= 0) {
         const ground = isoProject(o.x, o.y);
         const t = centre(o.targetCell);
-        const len = Math.hypot(t.sx - ground.sx, t.sy - ground.sy);
+        const cells = (o as Partial<OfficerStatus>).route;
+        const points = cells?.length ? [ground,...cells.slice(1).map(centre)] : [];
         const dash = Math.max(1.5, 6 / s);
-        for (let d = 0; d < len; d += dash * 2) {
-          const a = d / len;
-          const b = Math.min(1, (d + dash) / len);
-          this.routes.moveTo(ground.sx + (t.sx - ground.sx) * a, ground.sy + (t.sy - ground.sy) * a).lineTo(ground.sx + (t.sx - ground.sx) * b, ground.sy + (t.sy - ground.sy) * b);
+        for (let j = 1; j < points.length; j++) {
+          const from = points[j-1]!,to = points[j]!,len = Math.hypot(to.sx-from.sx,to.sy-from.sy);
+          for (let d = 0; d < len; d += dash * 2) {
+            const a = d / len,b = Math.min(1,(d+dash)/len);
+            this.routes.moveTo(from.sx+(to.sx-from.sx)*a,from.sy+(to.sy-from.sy)*a).lineTo(from.sx+(to.sx-from.sx)*b,from.sy+(to.sy-from.sy)*b);
+          }
         }
         this.routes.stroke({ color: OFFICER, width: Math.max(0.25, 2 / s), alpha: 0.85 });
         this.routes.circle(t.sx, t.sy, 1.4 * k).stroke({ color: OFFICER, width: Math.max(0.2, 1.5 / s) });

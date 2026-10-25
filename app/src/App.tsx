@@ -1,3 +1,4 @@
+import {Roadblocks} from './Roadblocks.tsx';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig, VehicleKind } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
@@ -5,7 +6,7 @@ import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
-import { DEFAULT_VEHICLES, VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
+import { VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
 import { WEATHER_LABELS, WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
 import type { PoliceOrder } from '../../engine/src/edits.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
@@ -21,6 +22,12 @@ import { rankByPriority, stoppedPerStreet, streetIndex, type HistorySample, type
 import { OfficerPanel } from './OfficerPanel.tsx';
 import { OfficerRoster, ZoneTable, LotBoard } from './SideBoards.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
+import { trafficCapacity } from '../../engine/src/traffic.ts';
+import { policeCopy } from './police-copy.ts';
+import {responseTargets, dispatchSuggestions} from './suggestions.ts';
+import {DemoAccess} from './DemoAccess.tsx';
+import {OfficerConsole} from './OfficerConsole.tsx';
+import {readRole,saveRole,type DemoRole} from './roles.ts';
 import { PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
 import { barricadeAt } from './barricade.ts';
 import { stepStatus } from './live-steps.ts';
@@ -59,7 +66,7 @@ const DANGER = 3.5;
 const fanCount = (map: MapBundle) =>
   map.width > 200 ? Math.min(STADIUM_FANS, Math.round((map.places.find((p) => p.kind === 'seating')?.capacity ?? STADIUM_FANS) / 5) * 5) : TEST_FANS;
 /** The test map is a gate wall and a lot with no streets between them. */
-const hasRoads = (map: MapBundle) => map.width > 200;
+const hasRoads = (map: MapBundle) => trafficCapacity(map).entries > 0;
 const minutes = (seconds: number) => `${seconds < 0 ? '−' : '+'}${Math.abs(Math.round(seconds / 60))} min`;
 const n = (value: number) => Math.round(value).toLocaleString();
 
@@ -349,9 +356,13 @@ function VehicleIcon({ kind }: { kind: VehicleKind }) {
 }
 
 export function App() {
+  const [roleChoice,setRoleChoice]=useState<DemoRole>(()=>readRole());
+  const [showRole,setShowRole]=useState(!AUTORUN),[following,setFollowing]=useState(true);
+  const officerRole=roleChoice.role==='officer';
   const [mapId, setMapId] = useState<string | null>(MAP_PARAM ?? (AUTORUN ? 'default' : null));
   const [priority, setPriority] = useState<Priority>('clear');
   const [history, setHistory] = useState<{ runs: number; samples: HistorySample[] }>({ runs: 0, samples: [] });
+  const [showCoverage,setShowCoverage]=useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [incidentIndex, setIncidentIndex] = useState(0);
@@ -492,7 +503,7 @@ export function App() {
         incident,
         plan: applyDisabled(state.plan, state.disabled),
         officers,
-        traffic: traffic ? { vehicles: DEFAULT_VEHICLES, seed: SEED ^ 0x7a11c, emergencyResponse: true } : undefined,
+        traffic: traffic ? { vehicles: trafficCapacity(loaded.map).vehicles, seed: SEED ^ 0x7a11c, emergencyResponse: true } : undefined,
         weather: weatherTimeline(weatherId),
       };
       return { config, map: loaded.map, population, defaults: loaded.defaults };
@@ -622,7 +633,7 @@ export function App() {
    * the three runs still differ only by their plans.
    */
   const applyEdit = (edit: EditRequest) => {
-    if (!picked) return;
+    if (!picked || officerRole) return;
     const frame = runs[picked.run]?.latest.current?.frame;
     if (!frame) return;
     let dots = [picked.dot];
@@ -681,7 +692,7 @@ export function App() {
   const progress = Math.min(1, Math.max(0, (t - window_.startAt) / (window_.endAt - window_.startAt)));
   const status = incident ? incidentStatus(incident, t) : null;
   const started = runs.some((r) => r.frameCount > 1);
-  const ordersDisabled = scrub !== null || !started;
+  const ordersDisabled = scrub !== null || !started || runs[closeRun]!.scorecard !== null;
 
   // A pending click must not follow the commander into a different plan or replay.
   useEffect(() => {
@@ -699,12 +710,12 @@ export function App() {
   }, [pickMode]);
 
   const sendOrder = (order: PoliceOrder) => {
-    if (ordersDisabled) return;
+    if (ordersDisabled || (officerRole && (order.type!=='officer_report'||order.officerId!==roleChoice.unitId))) return;
     runs[closeRun]!.send({ type: 'order', order });
   };
 
   const armPick = (mode: PolicePickMode) => {
-    if (mode && ordersDisabled) return;
+    if (mode && (ordersDisabled || (officerRole && mode.kind!=='officer_report'))) return;
     setPickMode(mode);
     setPickHint(null);
     if (mode) {
@@ -721,21 +732,39 @@ export function App() {
       setPickMode(null);
       return;
     }
+    if (pickMode.kind === 'marker') {
+      sendOrder({type:'place_marker',marker:{id:'marker-'+runs[closeRun]!.t+'-'+cell,cell,kind:pickMode.markerKind,name:pickMode.markerKind==='pa'?'PA speaker':pickMode.markerKind==='medical'?'Medical tent':'Staging area',radiusCells:pickMode.radiusCells}});setPickMode(null);return;
+    }
+    if (pickMode.kind === 'officer_report') {
+      if (roleChoice.unitId) sendOrder({type:'officer_report',reportId:roleChoice.unitId+':'+runs[closeRun]!.t+':'+(runs[closeRun]!.scene.current?.orders?.length??0),officerId:roleChoice.unitId,toCell:cell,kind:pickMode.reportKind});
+      setPickMode(null);return;
+    }
+    if (pickMode.kind === 'add_officer') {
+      setPickMode(null);sendOrder({type:'add_officer',unit:pickMode.unit,cell});return;
+    }
+    if (pickMode.kind === 'response') {
+      setPickMode(null);
+      sendOrder({...pickMode.mission,toCell:cell});
+      return;
+    }
     if (pickMode.kind === 'dispatch') {
       setPickMode(null);
       sendOrder({ type: 'dispatch', officerIds: pickMode.officerIds, toCell: cell });
       return;
     }
-    const barricade = barricadeAt(loaded.map, cell);
+    const barricade = pickMode.blocks==='pedestrians'&&loaded.map.cells[cell]==='walk'
+      ? {closableId:'fence-'+cell,name:'Pedestrian fence',cells:[cell],existing:false}
+      : barricadeAt(loaded.map, cell,pickMode.reachM??20,!!pickMode.replaceId);
     // A miss keeps barricade mode on, so the commander just clicks again.
     if (!barricade) {
       setPickHint('That is not a street — click a road');
       return;
     }
     setPickMode(null);
+    if(pickMode.replaceId)sendOrder({type:'barricade',closableId:pickMode.replaceId,closed:false});
     sendOrder({
-      type: 'barricade', closableId: barricade.closableId, closed: true,
-      name: barricade.name, cells: barricade.existing ? undefined : barricade.cells,
+      type: 'barricade', closableId: pickMode.replaceId?barricade.closableId+'-'+runs[closeRun]!.t:barricade.closableId, closed: true,
+      name: barricade.name, cells: barricade.existing && !pickMode.replaceId ? undefined : barricade.cells, blocks:pickMode.blocks,
     });
   };
   const deciding = runs.reduce((sum, r) => sum + (r.deciding ?? 0), 0);
@@ -788,6 +817,21 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standing, loaded, placeIndex]);
 
+  const liveScene = runs[closeRun]!.scene.current;
+  const suggestedTargets = loaded ? responseTargets(loaded.map, police[closeRun] ?? [], incident, liveScene?.t, runs[closeRun]!.latest.current?.frame.vehicles) : [];
+  const requests=(liveScene?.orders??[]).flatMap(e=>e.order.type==='officer_report'?[e.order]:[]).filter(e=>!liveScene?.orders?.some(d=>(d.order.type==='respond'||d.order.type==='report_decision')&&d.order.reportId===e.reportId));
+  const own=liveScene?.officers.find(o=>o.id===roleChoice.unitId);
+  const nearbyTargets=loaded&&officerRole&&own ? [...loaded.map.places.filter(p=>p.kind==='gate'&&p.cells.length).map(p=>({cell:p.cells[0]!,name:p.name})),...(liveScene?.barricades??[]).map(b=>({cell:b.cells[0]!,name:b.name})),...suggestedTargets.map(v=>({cell:v.cell,name:v.spot.where}))].sort((a,b)=>Math.hypot(a.cell%loaded.map.width-own.cell%loaded.map.width,Math.floor(a.cell/loaded.map.width)-Math.floor(own.cell/loaded.map.width))-Math.hypot(b.cell%loaded.map.width-own.cell%loaded.map.width,Math.floor(b.cell/loaded.map.width)-Math.floor(own.cell/loaded.map.width))).slice(0,8) : [];
+  const responseKey = [...new Set(officerRole?nearbyTargets.map(v=>v.cell):[...requests.map(e=>e.toCell),...suggestedTargets.map(v=>v.cell)])].slice(0,8).join(',');
+  useEffect(()=>{
+    if (runs[closeRun]!.ready) runs[closeRun]!.send({type:'response_targets',cells:responseKey ? responseKey.split(',').map(Number) : [],officerId:officerRole?roleChoice.unitId??undefined:undefined});
+  },[responseKey,closeRun,generation,runs[closeRun]!.ready,officerRole,roleChoice.unitId]);
+  const nearby=nearbyTargets.flatMap(v=>{const eta=liveScene?.responses?.find(r=>r.cell===v.cell)?.units.find(u=>u.id===roleChoice.unitId)?.etaS;return eta!=null&&eta<=180?[{name:v.name,etaS:eta}]:[];}).sort((a,b)=>a.etaS-b.etaS);
+  useEffect(()=>{if(officerRole){setView('close');setPicked(null);setPickedOfficer(null);setPickMode(null);}},[officerRole]);
+  useEffect(()=>{if(officerRole&&following&&own&&loaded)setFocusBox({x0:own.x/CELL_SIZE_M-12,y0:own.y/CELL_SIZE_M-12,x1:own.x/CELL_SIZE_M+12,y1:own.y/CELL_SIZE_M+12,nonce:Date.now()});},[officerRole,following,own?.x,own?.y,loaded]);
+  useEffect(()=>{if(officerRole&&loaded&&liveScene&&!liveScene.officers.some(o=>o.id===roleChoice.unitId))setShowRole(true);},[officerRole,loaded,liveScene?.officers.length,roleChoice.unitId]);
+  const suggestionCount = loaded && liveScene ? dispatchSuggestions(loaded.map,suggestedTargets,liveScene).length : 0;
+
   const vehicleCounts = useMemo(() => {
     const counts = new Map<VehicleKind, number>();
     const v = shown(runs[view === 'compare' ? 0 : closeRun]!)?.frame.vehicles;
@@ -820,21 +864,25 @@ export function App() {
       : pickedCell;
   const zoomTo = (h: Hotspot) => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() });
 
+  const demoUnits=loaded?(liveScene?.officers??makeOfficers(loaded.map,OFFICERS)).map(o=>({id:o.id,unit:o.unit,post:loaded.map.places.find(p=>p.cells.includes('homeCell' in o?o.homeCell:o.cell))?.name??'Outdoor post'})):[];
+  const chooseRole=(choice:DemoRole)=>{saveRole(choice);setRoleChoice(choice);setShowRole(false);setFollowing(true);};
+  const roleDialog=showRole?<DemoAccess choice={roleChoice} units={demoUnits} onChoose={chooseRole} onSkip={()=>chooseRole({role:'supervisor',unitId:roleChoice.unitId})}/>:null;
   if (!mapId) {
     return (
-      <StartScreen
+      <>{roleDialog}<StartScreen
         onPick={(id) => {
           const url = new URL(window.location.href);
           url.searchParams.set('map', id);
           window.history.replaceState(null, '', url);
           setMapId(id);
         }}
-      />
+      /></>
     );
   }
 
   return (
     <>
+      {roleDialog}
       <header className="top">
         <div className="venue">
           <span className="venue-stripe" aria-hidden="true" />
@@ -885,6 +933,7 @@ export function App() {
             )}
           </span>
         </div>
+        <div className="role-switch"><span>{officerRole?own?.unit??policeCopy.officer:policeCopy.supervisor}</span><button onClick={()=>setShowRole(true)}>{policeCopy.switchRole}</button></div>
         <ThemeToggle />
       </header>
 
@@ -903,7 +952,7 @@ export function App() {
         </p>
       )}
 
-      <div className="layout">
+      <div className={`layout${officerRole?' officer-layout':''}`}>
         <main>
           <div className="controls transport">
             <button className="go play" onClick={() => setPlaying((p) => !p)} disabled={!loaded || allDone}>
@@ -937,6 +986,8 @@ export function App() {
               <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
               Vehicles
             </label>
+            {loaded && trafficOn && <span className="muted">{policeCopy.roadCapacity(trafficCapacity(loaded.map).stalls, trafficCapacity(loaded.map).vehicles)}</span>}
+            <label className="toggle"><input type="checkbox" checked={showCoverage} onChange={e=>setShowCoverage(e.target.checked)}/>{policeCopy.coverage}</label>
             <button onClick={restart} disabled={!loaded}>
               Restart
             </button>
@@ -949,6 +1000,7 @@ export function App() {
                     one PixiJS Application for the same reason. */}
                 {view !== 'close' ? (
                   <ComparisonMaps
+                    showCoverage={showCoverage}
                     key={view}
                     map={loaded.map}
                     runs={view === 'plan' ? [runs[closeRun]!] : runs}
@@ -978,6 +1030,7 @@ export function App() {
                   />
                 ) : (
                   <CrowdView
+                    showCoverage={showCoverage}
                     map={loaded.map}
                     run={runs[closeRun]!}
                     types={FAN_TYPES}
@@ -991,7 +1044,8 @@ export function App() {
                       setPickedVehicle(null);
                       setPicked(dot === null ? null : { run: closeRun, dot });
                     }}
-                    selectedOfficer={pickedOfficer?.run === closeRun ? pickedOfficer.id : null}
+                    selectedOfficer={officerRole?roleChoice.unitId:pickedOfficer?.run === closeRun ? pickedOfficer.id : null}
+                    officerFocus={officerRole?roleChoice.unitId:null}
                     onPickOfficer={(id) => {
                       setPicked(null);
                       setPickedVehicle(null);
@@ -1058,6 +1112,9 @@ export function App() {
                   <div className="police-pick" role="status">
                     {pickMode.kind === 'barricade'
                       ? 'Click a street to barricade it — Esc to cancel'
+                      : pickMode.kind === 'marker' ? 'Click an outdoor location for the marker. Esc cancels.'
+                      : pickMode.kind === 'officer_report' ? 'Click the incident location. Esc cancels.'
+                      : pickMode.kind === 'add_officer' ? 'Click an outdoor spot for the synthetic unit. Esc cancels.'
                       : `Click where to send ${pickMode.officerIds.length} ${pickMode.officerIds.length === 1 ? 'officer' : 'officers'} — Esc to cancel`}
                     <span>Plan {LABELS[closeRun]} only</span>
                   </div>
@@ -1066,7 +1123,7 @@ export function App() {
                 {view === 'close' && runs[closeRun] && planStates[closeRun] && (
                   <AlertBanner run={runs[closeRun]!} plan={applyDisabled(planStates[closeRun]!.plan, planStates[closeRun]!.disabled)} incidentAt={incident?.at ?? 0} />
                 )}
-                {pickedOfficer && runs[pickedOfficer.run] && (
+                {!officerRole && pickedOfficer && runs[pickedOfficer.run] && (
                   <OfficerPanel
                     map={loaded.map}
                     run={runs[pickedOfficer.run]!}
@@ -1078,7 +1135,7 @@ export function App() {
                     disabled={ordersDisabled}
                   />
                 )}
-                {picked && pickedRun && (
+                {!officerRole && picked && pickedRun && (
                   <Inspector
                     map={loaded.map}
                     types={FAN_TYPES}
@@ -1268,7 +1325,7 @@ export function App() {
           )}
         </main>
 
-        <aside className="side">
+        {officerRole?<OfficerConsole officer={own} disabled={ordersDisabled} following={following} onFollow={()=>setFollowing(v=>!v)} nearby={nearby} onReport={reportKind=>armPick({kind:'officer_report',reportKind})} onBackup={()=>{if(own)sendOrder({type:'officer_report',reportId:own.id+':'+t+':'+(liveScene?.orders?.length??0),officerId:own.id,toCell:own.cell,kind:'backup'});}}/>:<aside className="side">
           <div className="rail-tabs" role="tablist" aria-label="Side panel">
             {RAIL_TABS.map((tab) => (
               <button key={tab.id} role="tab" aria-selected={railTab === tab.id} className={railTab === tab.id ? 'on' : undefined} onClick={() => setRailTab(tab.id)}>
@@ -1276,6 +1333,7 @@ export function App() {
                 {tab.id === 'brief' && (police[closeRun]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && (
                   <b className="tab-count">{police[closeRun]!.filter((h) => h.level === 'critical').length}</b>
                 )}
+                {tab.id === 'orders' && suggestionCount > 0 && <b>{suggestionCount}</b>}
                 {tab.id === 'plans' && allDone && <b className="tab-dot" title="Results are in" />}
               </button>
             ))}
@@ -1435,12 +1493,15 @@ export function App() {
                   Police orders <Info>Give a live order to the plan on the map. It takes effect on the next simulated second; the other two plans continue as written.</Info>
                 </h2>
                 <PolicePanel
+                  hotspots={police[closeRun]}
+                  incident={incident}
                   key={`${closeRun}-${generation}`}
                   map={loaded.map}
                   run={runs[closeRun]!}
                   label={LABELS[closeRun]!}
                   disabled={ordersDisabled}
                   started={started}
+                  onFocus={cell=>setFocusBox({x0:cell%loaded!.map.width-15,y0:Math.floor(cell/loaded!.map.width)-15,x1:cell%loaded!.map.width+15,y1:Math.floor(cell/loaded!.map.width)+15,nonce:Date.now()})}
                   onOrder={sendOrder}
                   armPick={armPick}
                   pickMode={pickMode}
@@ -1463,7 +1524,7 @@ export function App() {
             {railTab === 'gates' && loaded && runs[closeRun] && <LotBoard map={loaded.map} run={runs[closeRun]!} />}
 
             {railTab === 'key' && (
-              <>
+              <>{loaded&&<Roadblocks map={loaded.map} scene={liveScene} vehicles={runs[closeRun]!.latest.current?.frame.vehicles} onFocus={cell=>setFocusBox({x0:cell%loaded.map.width-15,y0:Math.floor(cell/loaded.map.width)-15,x1:cell%loaded.map.width+15,y1:Math.floor(cell/loaded.map.width)+15,nonce:Date.now()})}/>}
                 <section className="block">
                   <h2>How packed</h2>
                   <ul className="band-key">
@@ -1562,7 +1623,7 @@ export function App() {
               </section>
             )}
           </div>
-        </aside>
+        </aside>}
       </div>
     </>
   );

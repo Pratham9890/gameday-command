@@ -8,6 +8,8 @@ import type { RunHandle } from './useRun.ts';
 import { WeatherFx } from './WeatherFx.tsx';
 
 export interface CrowdViewProps {
+  showCoverage?: boolean;
+  officerFocus?: string | null;
   map: MapBundle;
   run: RunHandle;
   types: FanType[];
@@ -69,6 +71,7 @@ export function CrowdView(props: CrowdViewProps) {
     observer.observe(host);
     return () => observer.disconnect();
   }, []);
+  useEffect(()=>{sceneRef.current?.setCoverage(!!props.showCoverage);sceneRef.current?.setOfficerFocus(props.officerFocus??null);},[props.showCoverage,props.officerFocus]);
   const [following, setFollowing] = useState(false);
   const [heat, setHeat] = useState(true);
 
@@ -89,6 +92,8 @@ export function CrowdView(props: CrowdViewProps) {
       picking: () => pickStreetRef.current !== undefined,
       onFollowChange: setFollowing,
     });
+    scene.setCoverage(!!props.showCoverage);
+    scene.setOfficerFocus(props.officerFocus??null);
     sceneRef.current = scene;
     // For unattended checks, like window.gamedayMap for the side-by-side maps.
     (window as unknown as { gamedayScene?: CrowdScene }).gamedayScene = scene;

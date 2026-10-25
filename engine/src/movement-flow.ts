@@ -1639,6 +1639,23 @@ export class FlowMovement implements MovementModel {
         return;
 
       case 'officer_instruction':
+        if (option === 'follow' && ctx.officerRelief?.size) {
+          const cell = this.cellOf(ctx, dot);
+          let directive = -1, closest = Infinity;
+          for (const officer of ctx.officers) {
+            const gate = ctx.officerRelief.get(officer.id);
+            if (gate === undefined || !this.isOpen(ctx, gate)) continue;
+            const dx = officer.cell % ctx.map.width - cell % ctx.map.width;
+            const dy = Math.floor(officer.cell / ctx.map.width) - Math.floor(cell / ctx.map.width);
+            if (Math.abs(dx) > officer.radiusCells || Math.abs(dy) > officer.radiusCells) continue;
+            if (dx * dx + dy * dy < closest) {closest = dx * dx + dy * dy; directive = gate;}
+          }
+          if (directive >= 0 && this.admitted[dot] !== 1 && !this.returningToCar[dot] &&
+              this.fields.field(directive, true).dist[cell] !== UNREACHABLE) {
+            if (directive !== dots.targetPlace[dot]) this.retarget(ctx, dot, directive);
+            return;
+          }
+        }
         // An officer standing in front of you is more specific than a PA: they
         // send you where they were posted. Falling back to the plan's redirect
         // covers an officer sent somewhere that is not a destination itself.

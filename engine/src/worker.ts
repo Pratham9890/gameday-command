@@ -29,6 +29,9 @@ let looping = false;
 let peopleMotion = new MotionRecorder(3);
 let vehicleMotion = new MotionRecorder();
 let officerMotion = new MotionRecorder();
+let officerMotionKey='';
+let responseTargets: number[] = [];
+let responseOfficer: string | undefined;
 
 function recordMotion(): void {
   if (!sim) return;
@@ -37,6 +40,8 @@ function recordMotion(): void {
   const v = sim.traffic?.frame();
   if (v) vehicleMotion.capture(t, v.x, v.y, v.heading, v.speed);
   const officers = sim.officerStatus();
+  const key=officers.map(o=>o.id).join(',');
+  if(key!==officerMotionKey){officerMotion=new MotionRecorder();officerMotionKey=key;}
   officerMotion.capture(t, officers.map(o => o.x), officers.map(o => o.y));
 }
 
@@ -103,12 +108,15 @@ function emitFrame(): void {
       scene: {
         t: sim.ctx.t,
         motion,
-        officers: sim.officerStatus(),
+        officers: sim.officerStatus(true),
         gates: sim.gateStats(),
-        closed: [...sim.ctx.closed],
+        closed: sim.closedIds(),
         alerts,
         barricades: sim.liveBarricades(),
+        markers: sim.markerStatus(),
         orders: sim.ordersLog(),
+        responseArrivals: sim.responseArrivals(),
+        responses: sim.responseTimes(responseTargets,responseOfficer),
       },
     },
     [...alerts.map((a) => a.dots.buffer), ...[motion.people, motion.vehicles, motion.officers].flatMap(p => [p.offsets.buffer, p.samples.buffer])],
@@ -191,6 +199,8 @@ host.onmessage = (event) => {
           emit: send,
         });
         typesSent = -1;
+        responseTargets = [];
+        responseOfficer = undefined;
         resetMotion();
         checkpoints = [];
         lastCheckpointAt = Number.NEGATIVE_INFINITY;
@@ -249,6 +259,11 @@ host.onmessage = (event) => {
         return;
       case 'order':
         sim?.queueOrder(message.order);
+        return;
+      case 'response_targets':
+        responseOfficer = message.officerId;
+        responseTargets = [...new Set(message.cells.filter(c => Number.isInteger(c) && c >= 0 && c < (sim?.ctx.map.cells.length ?? 0)))].slice(0, 8);
+        if (sim) send({type: 'responses', t: sim.ctx.t, responses: sim.responseTimes(responseTargets,responseOfficer)});
         return;
       case 'inspect': {
         const info = sim?.inspect(message.dot);
