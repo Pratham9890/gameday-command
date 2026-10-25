@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import { ThemeToggle } from './ThemeToggle.tsx';
 
 interface MapRow {
   id: string;
@@ -70,7 +71,10 @@ export function StartScreen({ onPick }: { onPick: (id: string) => void }) {
   return (
     <div className="start">
       <div className="start-card">
-        <h1>Gameday Command</h1>
+        <div className="start-head">
+          <h1>Gameday Command</h1>
+          <ThemeToggle />
+        </div>
         <p className="lead">Test crowd and traffic plans for a stadium before game day. Pick one you have, or bring in any stadium from OpenStreetMap.</p>
 
         <h2>Your stadiums</h2>

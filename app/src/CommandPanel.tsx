@@ -28,26 +28,31 @@ export interface CommandPanelProps {
   incident: Incident;
   run: RunHandle;
   label: string;
+  history: { runs: number; samples: HistorySample[] };
+  onSuggest: (plans: ResponsePlan[]) => void;
+}
+
+export interface RankingProps {
+  map: MapBundle;
+  incident: Incident;
   labels: readonly string[];
   planNames: string[];
   cards: (Scorecard | null)[];
   allDone: boolean;
-  history: { runs: number; samples: HistorySample[] };
   priority: Priority;
   onPriority: (p: Priority) => void;
-  onSuggest: (plans: ResponsePlan[]) => void;
 }
 
 /**
- * The commander's brief, top of the side column:
+ * The commander's brief, on the Brief tab:
  *   1. Right now: every gate and street, low / medium / high, from the
  *      simulation or from real conditions the commander loads.
  *   2. Suggested plans built from those conditions, loaded into A, B and C.
- *   3. Which plan is best for the priority the commander picks.
- *   4. What the commander thinks, kept as a log.
+ * Which plan is best, and what the commander thinks of it, is `Ranking` on
+ * the Plans tab, next to the verdict.
  */
 export function CommandPanel(props: CommandPanelProps) {
-  const { map, incident, run, label, labels, planNames, cards, allDone, history, priority, onPriority, onSuggest } = props;
+  const { map, incident, run, label, history, onSuggest } = props;
   const index = useMemo(() => streetIndex(map), [map]);
   const [conditions, setConditions] = useState<Conditions | null>(null);
   const [feedUrl, setFeedUrl] = useState('');
@@ -82,9 +87,6 @@ export function CommandPanel(props: CommandPanelProps) {
 
   const busy = now.filter((r) => r.level !== 'low');
   const shown = showAll ? now : busy.slice(0, 6);
-  const order = allDone ? rankByPriority(cards, priority) : null;
-  const best = order ? order[0]! : null;
-  const why = PRIORITIES.find((p) => p.id === priority)!;
 
   const loadText = (text: string, source: string) => {
     try {
@@ -156,6 +158,7 @@ export function CommandPanel(props: CommandPanelProps) {
         <p className="muted">JSON or CSV with gate queues and stopped vehicles by name. Only what the feed reports is shown; nothing is filled in.</p>
         <label className="file">
           <input
+            aria-label="Load a conditions file"
             type="file"
             accept=".json,.csv,.txt"
             onChange={(e) => {
@@ -185,6 +188,17 @@ export function CommandPanel(props: CommandPanelProps) {
         <p className="muted">Fills A, B and C with a redirect, a closure and an officer plan. Edit them, then run.</p>
       </div>
 
+    </section>
+  );
+}
+
+/** Which plan is best for the priority the commander picks, and what they think of it. Never an order: "your call". */
+export function Ranking({ map, incident, labels, planNames, cards, allDone, priority, onPriority }: RankingProps) {
+  const order = allDone ? rankByPriority(cards, priority) : null;
+  const best = order ? order[0]! : null;
+  const why = PRIORITIES.find((p) => p.id === priority)!;
+  return (
+    <section className="block ranking">
       <label className="priority">
         What matters most?
         <select value={priority} onChange={(e) => onPriority(e.target.value as Priority)}>

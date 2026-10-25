@@ -12,7 +12,8 @@ import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.ts
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
-import { CommandPanel } from './CommandPanel.tsx';
+import { CommandPanel, Ranking } from './CommandPanel.tsx';
+import { ThemeToggle } from './ThemeToggle.tsx';
 import { StartScreen } from './StartScreen.tsx';
 import { applyTheme } from './theme.ts';
 import { rankByPriority, stoppedPerStreet, streetIndex, type HistorySample, type Priority } from './command.ts';
@@ -251,7 +252,34 @@ function AlertBanner({ run, plan, incidentAt }: { run: RunHandle; plan: Response
   );
 }
 
+/** The map key over the close-up. It opens the first time and then remembers whether you closed it. */
 function Legend() {
+  const [open, setOpenState] = useState(() => {
+    try {
+      return localStorage.getItem('gd-legend') !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const setOpen = (v: boolean) => {
+    setOpenState(v);
+    try {
+      localStorage.setItem('gd-legend', v ? 'open' : 'closed');
+    } catch {
+      // private window: the key opens again next time
+    }
+  };
+  if (!open) {
+    return (
+      <button className="legend-open" onClick={() => setOpen(true)} aria-expanded={false}>
+        Key
+      </button>
+    );
+  }
+  return <LegendBody onClose={() => setOpen(false)} />;
+}
+
+function LegendBody({ onClose }: { onClose: () => void }) {
   const rings: [string, number][] = [
     ['walking in', 3],
     ['waiting at a gate', 2],
@@ -261,6 +289,9 @@ function Legend() {
   ];
   return (
     <div className="map-legend">
+      <button className="small ghost legend-close" onClick={onClose} aria-expanded={true} title="Hide the key">
+        Hide key
+      </button>
       <div className="legend-row">
         {rings.map(([text, state]) => (
           <span key={text}>
@@ -476,6 +507,13 @@ export function App() {
 
   const cards = runs.map((r) => r.scorecard);
   const allDone = cards.every((c) => c !== null);
+  // When all three plans finish, show the verdict once; after that the rail stays where the commander puts it.
+  const wasDone = useRef(false);
+  useEffect(() => {
+    if (allDone && !wasDone.current) setRailTab('plans');
+    wasDone.current = allDone;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDone]);
   // "Best" is best for the priority the commander picked.
   const order = allDone ? rankByPriority(cards, priority) : null;
   void rankPlans;
@@ -760,7 +798,7 @@ export function App() {
             )}
           </span>
         </div>
-
+        <ThemeToggle />
       </header>
 
       {loadError && (
@@ -871,7 +909,23 @@ export function App() {
                 <div className="map-title">
                   {view !== 'compare' ? (
                     <>
-                      <span className="label">{LABELS[closeRun]}</span> {planStates[closeRun]?.plan.name}
+                      <span className="plan-switch" role="group" aria-label="Plan on the map">
+                        {LABELS.map((l, k) => (
+                          <button
+                            key={l}
+                            className={closeRun === k ? 'on' : undefined}
+                            aria-pressed={closeRun === k}
+                            title={planStates[k]?.plan.name}
+                            onClick={() => {
+                              setCloseRun(k);
+                              if (picked) setPicked({ run: k, dot: picked.dot });
+                            }}
+                          >
+                            {l}
+                          </button>
+                        ))}
+                      </span>
+                      <span className="map-plan-name">{planStates[closeRun]?.plan.name}</span>
                     </>
                   ) : (
                     'Plans A, B and C side by side'
@@ -1111,20 +1165,14 @@ export function App() {
           <div className="rail-body">
             {railTab === 'brief' && (
               <>
-                {incident && <p className="pitch">{pitchFor(incident, zoneName)}</p>}
+                {incident && started && <p className="pitch">{pitchFor(incident, zoneName)}</p>}
                 {loaded && incident && planStates.length === 3 && (
                   <CommandPanel
                     map={loaded.map}
                     incident={incident}
                     run={runs[closeRun]!}
                     label={LABELS[closeRun]!}
-                    labels={LABELS}
-                    planNames={planStates.map((p) => p.plan.name)}
-                    cards={cards}
-                    allDone={allDone}
                     history={history}
-                    priority={priority}
-                    onPriority={setPriority}
                     onSuggest={(plans) => {
                       if (plans.length < 3) return;
                       setPlanStates(plans.slice(0, 3).map((plan) => ({ plan, disabled: new Set<number>() })));
@@ -1208,6 +1256,18 @@ export function App() {
                     </>
                   )}
                 </section>
+                {loaded && incident && (
+                  <Ranking
+                    map={loaded.map}
+                    incident={incident}
+                    labels={LABELS}
+                    planNames={planStates.map((p) => p.plan.name)}
+                    cards={cards}
+                    allDone={allDone}
+                    priority={priority}
+                    onPriority={setPriority}
+                  />
+                )}
                 <section className="block">
                   <h2>
                     Three plans, same crowd <Info>Click a plan to show it on the map. The plans differ only in what you tell the crowd and staff to do.</Info>

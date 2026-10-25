@@ -144,6 +144,11 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 
 **Visual language** (`styles.css` header comment): US road signage and incident-command boards. Overpass (open Highway Gothic) for headings and numbers, Public Sans for text, loaded from Google Fonts in `app/index.html`. Guide green is the primary action, warning yellow medium, stop red high; team colours appear only in the header stripe, plan letters and gate badges. Sentence case, no emoji or middle-dot strings in copy.
 
+- **Light and dark.** `ThemeToggle.tsx` sets `data-theme` on `<html>` and stores it as `gd-theme`; until someone picks, the stylesheet follows `prefers-color-scheme`. `index.html` applies a saved pick before first paint. Every colour is a token on `:root` with a dark set under `[data-theme='dark']` and the media query; selected tabs use `--inverse-bg`/`--inverse-ink` rather than `--ink` and white, which would invert badly. The map well is dark in both.
+- Text is 12px or larger and every text colour passes 4.5:1 in both modes (checked in the page); keep it that way when adding a colour.
+- The plan on the map is switched from the map itself (A/B/C in its top-left corner). The map key folds to a "Key" button and remembers it (`gd-legend`).
+- `Ranking` (priority, best plan, feedback) sits on the Plans tab under the verdict; `CommandPanel` on Brief is only the current levels and plan builder. The rail jumps to Plans once when all three runs finish.
+
 - **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
 - **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
 - **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work". See "Danger scoring" below for why they still barely separate the plans.
