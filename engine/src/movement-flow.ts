@@ -1,3 +1,4 @@
+import {NearestCells} from './nearest-cells.ts';
 import type { Id, MapBundle, SituationId } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_GROUP_SIZE } from '../../contracts.ts';
 import type { FlowField } from './flowfield.ts';
@@ -118,6 +119,7 @@ export class FlowMovement implements MovementModel {
   private gateCentre = new Map<number, { x: number; y: number }>();
   private seatingIndex = -1;
   private shelterIndex = -1;
+  private shelterSearch: NearestCells|null = null;
   private parkingIndex = -1;
   /** For every cell, the smallest parking place containing it, or -1. */
   private parkingByCell!: Int32Array;
@@ -308,6 +310,7 @@ export class FlowMovement implements MovementModel {
     this.seatingIndex = this.indexOfKind(map, 'seating');
     this.shelterIndex = this.indexOfKind(map, 'shelter');
     if (this.shelterIndex < 0) this.shelterIndex = this.indexOfKind(map, 'concourse');
+    this.shelterSearch=new NearestCells(map.places[this.shelterIndex]?.cells??[],map.width);
     this.parkingIndex = this.indexOfKind(map, 'parking');
     // Once at spawn: scanning every parking place per released fan was too slow.
     this.parkingByCell = new Int32Array(map.cells.length).fill(-1);
@@ -1075,24 +1078,9 @@ export class FlowMovement implements MovementModel {
   /** Nearest concourse/shelter cell with standing room. */
   private shelterCell(ctx: SimContext, i: number): number {
     if (this.shelterIndex < 0) return -1;
-    const { dots, map } = ctx;
-    const cells = map.places[this.shelterIndex]?.cells ?? [];
-    const cx = dots.x[i]! / CELL_SIZE_M;
-    const cy = dots.y[i]! / CELL_SIZE_M;
-    let best = -1;
-    let bestD = Infinity;
-    for (const c of cells) {
-      if (!this.fields.passable(c)) continue;
-      if (this.standingAt(c) >= MAX_DOTS_PER_CELL) continue;
-      const dx = (c % map.width) + 0.5 - cx;
-      const dy = ((c / map.width) | 0) + 0.5 - cy;
-      const d = dx * dx + dy * dy;
-      if (d < bestD) {
-        bestD = d;
-        best = c;
-      }
-    }
-    return best;
+    const { dots } = ctx;
+    return this.shelterSearch?.nearest(dots.x[i]!/CELL_SIZE_M,dots.y[i]!/CELL_SIZE_M,
+      cell=>this.fields.passable(cell)&&this.standingAt(cell)<MAX_DOTS_PER_CELL)??-1;
   }
 
   /** Put an admitted fan in shelter immediately, respecting the reserved capacity. */
@@ -1639,6 +1627,23 @@ export class FlowMovement implements MovementModel {
         return;
 
       case 'officer_instruction':
+        if (option === 'follow' && ctx.officerRelief?.size) {
+          const cell = this.cellOf(ctx, dot);
+          let directive = -1, closest = Infinity;
+          for (const officer of ctx.officers) {
+            const gate = ctx.officerRelief.get(officer.id);
+            if (gate === undefined || !this.isOpen(ctx, gate)) continue;
+            const dx = officer.cell % ctx.map.width - cell % ctx.map.width;
+            const dy = Math.floor(officer.cell / ctx.map.width) - Math.floor(cell / ctx.map.width);
+            if (Math.abs(dx) > officer.radiusCells || Math.abs(dy) > officer.radiusCells) continue;
+            if (dx * dx + dy * dy < closest) {closest = dx * dx + dy * dy; directive = gate;}
+          }
+          if (directive >= 0 && this.admitted[dot] !== 1 && !this.returningToCar[dot] &&
+              this.fields.field(directive, true).dist[cell] !== UNREACHABLE) {
+            if (directive !== dots.targetPlace[dot]) this.retarget(ctx, dot, directive);
+            return;
+          }
+        }
         // An officer standing in front of you is more specific than a PA: they
         // send you where they were posted. Falling back to the plan's redirect
         // covers an officer sent somewhere that is not a destination itself.

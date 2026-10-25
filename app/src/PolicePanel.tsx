@@ -1,13 +1,26 @@
+import {Roadblocks} from './Roadblocks.tsx';
 import { useEffect, useMemo, useState } from 'react';
-import { CELL_SIZE_M, type MapBundle } from '../../contracts.ts';
+import { CELL_SIZE_M, type MapBundle, type Incident } from '../../contracts.ts';
 import type { OfficerStatus, PoliceOrder } from '../../engine/src/edits.ts';
 import { isGateDoor } from './barricade.ts';
 import { clockText } from './story.ts';
 import type { RunHandle } from './useRun.ts';
+import {dispatchSuggestions, responseTargets} from './suggestions.ts';
+import type {PoliceHotspot} from './congestion.ts';
+import {policeCopy} from './police-copy.ts';
+import {patrolBeats} from '../../world/src/officers.ts';
+import {coverage} from './coverage.ts';
 
-export type PolicePickMode = null | { kind: 'barricade' } | { kind: 'dispatch'; officerIds: string[] };
+export type PolicePickMode = null | { kind: 'barricade';blocks?:'all'|'vehicles'|'pedestrians';reachM?:number;replaceId?:string } | { kind: 'dispatch'; officerIds: string[] }
+  | {kind:'response';officerIds:string[];mission:Extract<PoliceOrder,{type:'respond'}>}
+  | {kind:'add_officer';unit:string}
+  | {kind:'marker';markerKind:'staging'|'medical'|'pa';radiusCells:number}
+  | {kind:'officer_report';reportKind:Extract<PoliceOrder,{type:'officer_report'}>['kind']};
 
 interface PolicePanelProps {
+  onFocus?:(cell:number)=>void;
+  hotspots?: PoliceHotspot[];
+  incident?: Incident;
   map: MapBundle;
   run: RunHandle;
   label: string;
@@ -26,6 +39,16 @@ export function describeOrder(order: PoliceOrder, map: MapBundle, officers: Offi
     ? officers.find((o) => o.id === ids[0])?.unit ?? '1 officer'
     : `${ids.length} officers`;
   switch (order.type) {
+    case 'place_marker':return `Placed ${order.marker.name} marker.`;
+    case 'remove_marker':return 'Removed a marker.';
+    case 'officer_report': return `${units([order.officerId])} reported ${order.kind}.`;
+    case 'report_decision': return 'Dismissed an officer request.';
+    case 'patrol': return `${units(order.officerIds)} assigned to ${order.name ?? 'an outdoor patrol'}.`;
+    case 'resume_patrol': return `${units(order.officerIds)} resumed their patrol.`;
+    case 'add_officer': return `Placed synthetic unit ${order.unit}.`;
+    case 'remove_officer': return `Removed ${units([order.officerId])}.`;
+    case 'respond': return `${units(order.officerIds)} responding: ${order.reason}. Return after ${Math.round(order.returnAfterS/60)} minutes on scene.`;
+    case 'dismiss_suggestion': return `Dismissed a response suggestion${order.reason ? `: ${order.reason}` : '.'}`;
     case 'dispatch': {
       const where = map.places.find((p) => p.cells.includes(order.toCell))?.name
         ?? `${(order.toCell % map.width + 0.5) * CELL_SIZE_M}, ${(Math.floor(order.toCell / map.width) + 0.5) * CELL_SIZE_M} m`;
@@ -47,7 +70,7 @@ export function describeOrder(order: PoliceOrder, map: MapBundle, officers: Offi
 }
 
 /** Live commands for the selected plan; App owns map picking and worker routing. */
-export function PolicePanel({ map, run, label, disabled, started, onOrder, armPick, pickMode, hint }: PolicePanelProps) {
+export function PolicePanel({ map, run, label, disabled, started, onOrder, armPick, pickMode, hint, hotspots = [], incident,onFocus }: PolicePanelProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [destination, setDestination] = useState(-1);
@@ -59,11 +82,23 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
   const [message, setMessage] = useState('');
   const [reach, setReach] = useState('60');
   const [confirmRelease, setConfirmRelease] = useState(false);
+  const beats=useMemo(()=>patrolBeats(map),[map]);
+  const [beatIndex,setBeatIndex]=useState(0);
+  const [markerKind,setMarkerKind]=useState<'staging'|'medical'|'pa'>('staging');
+  const [paRadius,setPaRadius]=useState(30);
+  const [blockKind,setBlockKind]=useState<'all'|'vehicles'|'pedestrians'>('vehicles');
+  const [blockLength,setBlockLength]=useState(20);
+  const [unitName,setUnitName]=useState('Demo unit');
   const scene = run.scene.current;
   const officers = scene?.officers ?? [];
+  const targets = responseTargets(map, hotspots, incident, scene?.t, run.latest.current?.frame.vehicles);
+  const suggestions = scene ? dispatchSuggestions(map, targets, scene) : [];
+  const reachCoverage=useMemo(()=>coverage(map,officers,hotspots),[map,scene?.officers,hotspots]);
   const officerIds = selected.filter((id) => officers.some((o) => o.id === id));
   const barricades = new Map((scene?.barricades ?? []).map((b) => [b.id, b]));
   for (const street of streets) if (scene?.closed.includes(street.id)) barricades.set(street.id, street);
+  const requests=(scene?.orders??[]).flatMap(e=>e.order.type==='officer_report'?[{t:e.t,order:e.order}]:[]).filter(e=>!scene?.orders?.some(d=>(d.order.type==='respond'||d.order.type==='report_decision')&&d.order.reportId===e.order.reportId));
+  const arrivals=new Map<string,number>();for(const a of scene?.responseArrivals??[]){const key=a.startedAt+':'+a.targetCell;arrivals.set(key,Math.min(arrivals.get(key)??Infinity,a.arrivedAt-a.startedAt));}
   const reachPct = Number(reach);
   const reachValid = reach.trim() !== '' && Number.isFinite(reachPct) && reachPct >= 0 && reachPct <= 100;
 
@@ -80,6 +115,27 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
       {disabled && <p className="muted">{started ? 'Orders are live only — leave the replay to give orders.' : 'Start the run to give orders.'}</p>}
       {hint && <p className="warn" role="status">{hint}</p>}
       <fieldset disabled={disabled}>
+        <section><h3>{policeCopy.requests} ({requests.length})</h3>{requests.map(r=>{const candidates=(scene?.responses?.find(v=>v.cell===r.order.toCell)?.units??[]).filter(u=>u.id!==r.order.officerId&&u.etaS!==null&&officers.find(o=>o.id===u.id)?.state==='standby').sort((a,b)=>a.etaS!-b.etaS!);return <article className="police-picker" key={r.order.reportId}><p>{officers.find(o=>o.id===r.order.officerId)?.unit}: {r.order.kind}, {clockText(r.t)}</p>{!candidates.length&&<p>{policeCopy.noFreeUnit}</p>}<div className="police-actions"><button disabled={!candidates.length} onClick={()=>onOrder({type:'respond',officerIds:[candidates[0]!.id],toCell:r.order.toCell,kind:r.order.kind==='traffic'?'traffic':'incident',reason:'Officer request: '+r.order.kind,returnAfterS:180,reportId:r.order.reportId})}>{policeCopy.requestSend}</button><button className="ghost" onClick={()=>onOrder({type:'report_decision',reportId:r.order.reportId,decision:'dismissed'})}>{policeCopy.requestDismiss}</button></div></article>;})}</section>
+        {arrivals.size>0&&<p>{policeCopy.measured([...arrivals.values()].reduce((a,b)=>a+b,0)/arrivals.size,arrivals.size)}</p>}
+        <section><h3>{policeCopy.coverage}</h3><p className="muted">{policeCopy.coverageRule}</p>
+          <p>{reachCoverage.outdoorShare===null?'No outdoor area':`${(reachCoverage.outdoorShare*100).toFixed(1)}% of outdoor walkable area within reach`}. {reachCoverage.uncoveredHotspots} hotspot centres outside reach.</p></section>
+        <section aria-label={policeCopy.title}>
+          <h3>{policeCopy.title} ({suggestions.length})</h3>
+          <p className="muted">{policeCopy.rule}</p>
+          {suggestions.length > 0 && <button className="primary" onClick={()=>suggestions.forEach(s=>onOrder(s.order))}>{policeCopy.sendAll}</button>}
+          {suggestions.map(s=><article className="police-picker" key={s.cell}>
+            <h4>{s.what}</h4><p>{s.why}</p><p className="muted">{s.cost}. Walking ETA {Math.ceil(s.etaS/60)} min.</p>
+            <p className="muted">{policeCopy.duration(s.order.returnAfterS)}</p>
+            <div className="police-actions"><button onClick={()=>onOrder(s.order)}>{policeCopy.accept}</button>
+              <button className="ghost" onClick={()=>armPick({kind:'response',officerIds:s.order.officerIds,mission:s.order})}>{policeCopy.modify}</button>
+              <button className="ghost" onClick={()=>onOrder({type:'dismiss_suggestion',toCell:s.cell,score:s.spot.score})}>{policeCopy.dismiss}</button></div>
+          </article>)}
+          {!suggestions.length && <p className="muted">{targets.length && !scene?.responses?.length ? policeCopy.routing : policeCopy.empty}</p>}
+          <p className="muted">{policeCopy.mission}</p>
+          {officers.some(o=>o.mission) && <h4>{policeCopy.assignment}</h4>}
+          {officers.filter(o=>o.mission).map(o=><p key={o.id}>{o.unit}: {o.mission!.phase}. {o.mission!.reason}
+            {o.mission!.arrivedAt!==null && o.mission!.returnAfterS!==null && o.mission!.phase==='working' && ` Return in ${Math.max(0,Math.ceil((o.mission!.arrivedAt+o.mission!.returnAfterS-scene!.t)/60))} min.`}</p>)}
+        </section>
         <section>
           <h3>Officers</h3>
           <div className="police-actions">
@@ -101,7 +157,7 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
                         {officer.unit}
                       </label>
                     </td>
-                    <td>{officer.state === 'standby' ? 'Standby' : officer.state === 'en_route' ? 'On the way' : 'On scene'}</td>
+                    <td>{officer.state === 'patrolling' ? 'On patrol' : officer.state === 'standby' ? 'Standby' : officer.state === 'en_route' ? 'On the way' : 'On scene'}</td>
                     <td>{map.places[officer.place]?.name ?? 'street'}</td>
                   </tr>
                 ))}
@@ -109,6 +165,14 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
             </table>
           </div>
           {officers.length === 0 && <p className="muted">Starts with the run.</p>}
+          {beats.length>0 && <label>Patrol beat<select value={beatIndex} onChange={e=>setBeatIndex(Number(e.target.value))}>{beats.map((b,i)=><option value={i} key={i}>{b.name}</option>)}</select></label>}
+          <div className="police-actions">
+            <button disabled={!officerIds.length||!beats[beatIndex]} onClick={()=>{const b=beats[beatIndex]!;onOrder({type:'patrol',officerIds,waypoints:b.waypoints,loop:b.loop,name:b.name});}}>{policeCopy.patrol}</button>
+            <button className="ghost" disabled={!officerIds.length} onClick={()=>onOrder({type:'resume_patrol',officerIds})}>{policeCopy.resume}</button>
+          </div>
+          <label>{policeCopy.unitName}<input value={unitName} maxLength={64} onChange={e=>setUnitName(e.target.value)} /></label>
+          <div className="police-actions"><button disabled={!unitName.trim()} onClick={()=>armPick({kind:'add_officer',unit:unitName})}>{policeCopy.add}</button>
+            <button className="ghost" disabled={!officerIds.length} onClick={()=>officerIds.forEach(id=>onOrder({type:'remove_officer',officerId:id}))}>{policeCopy.remove}</button></div>
           <div className="police-actions">
             <button className="small" disabled={officerIds.length === 0} onClick={() => setSending((v) => !v)}>Send to…</button>
             <button className="small ghost" disabled={officerIds.length === 0} onClick={() => onOrder({ type: 'recall', officerIds })}>Back to post</button>
@@ -145,14 +209,21 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
         </section>
 
         <section>
+          <h3>Map placements</h3>
+          <label>Marker type<select value={markerKind} onChange={e=>setMarkerKind(e.target.value as typeof markerKind)}><option value="staging">Staging marker</option><option value="medical">Medical tent marker</option><option value="pa">PA speaker marker</option></select></label>
+          <label>PA radius in metres<input type="number" min={2} max={200} value={paRadius} onChange={e=>setPaRadius(Math.max(2,Math.min(200,Number(e.target.value)||2)))}/></label>
+          <button onClick={()=>armPick({kind:'marker',markerKind,radiusCells:paRadius/CELL_SIZE_M})}>Place marker on map</button>
+          <p className="muted">Staging and medical tents are markers. PA markers can define an alert area.</p>
+          {(scene?.markers??[]).map(m=><p key={m.id}>{m.name} <button className="ghost" onClick={()=>onOrder({type:'remove_marker',id:m.id})}>Remove</button></p>)}
           <h3>Barricades</h3>
-          <button className="small" onClick={() => armPick({ kind: 'barricade' })}>Barricade a street</button>
+          <label>Block traffic<select value={blockKind} onChange={e=>setBlockKind(e.target.value as typeof blockKind)}><option value="vehicles">Vehicles only</option><option value="all">Vehicles and pedestrians</option><option value="pedestrians">Pedestrians only</option></select></label><label>Street reach in metres<input type="number" min={2} max={80} step={2} value={blockLength} onChange={e=>setBlockLength(Math.max(2,Math.min(80,Number(e.target.value)||2)))}/></label>
+          <button className="small" onClick={() => armPick({ kind: 'barricade',blocks:blockKind,reachM:blockLength })}>Barricade a street</button>
           {pickMode && <button className="small ghost" onClick={() => armPick(null)}>Cancel map pick</button>}
           {barricades.size === 0 && <p className="muted">No street barricades up.</p>}
           <ul className="police-barricades">
             {[...barricades.values()].map((b) => (
               <li key={b.id}>
-                <span>{b.name}</span>
+                <button className="small ghost" onClick={()=>armPick({kind:'barricade',blocks:'blocks' in b?b.blocks??'all':'all',reachM:blockLength,replaceId:b.id})}>Move or resize</button><span>{b.name} ({'blocks' in b?b.blocks??'all':'all'} blocked)</span>
                 <button className="small ghost" onClick={() => onOrder({ type: 'barricade', closableId: b.id, closed: false, name: b.name })}>Remove</button>
               </li>
             ))}
@@ -188,7 +259,9 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
           <label>Message<input type="text" value={message} onChange={(e) => setMessage(e.target.value)} /></label>
           <label>Reach %<input type="number" min={0} max={100} value={reach} onChange={(e) => setReach(e.target.value)} /></label>
           <button className="small" disabled={!message.trim() || !reachValid} onClick={() => {
-            onOrder({ type: 'alert', channel, message: message.trim(), reachShare: reachPct / 100 });
+            const pa=scene?.markers?.filter(m=>m.kind==='pa')??[];
+            const zone=pa.length?map.cells.flatMap((_,cell)=>pa.some(m=>Math.hypot(cell%map.width-m.cell%map.width,Math.floor(cell/map.width)-Math.floor(m.cell/map.width))<=m.radiusCells)?[cell]:[]):undefined;
+            onOrder({ type: 'alert', channel, message: message.trim(), reachShare: reachPct / 100,zoneCells:channel==='pa'?zone:undefined });
             setMessage('');
           }}>Send</button>
         </section>
@@ -206,6 +279,7 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
         </section>
       </fieldset>
 
+      <Roadblocks map={map} scene={scene} vehicles={run.latest.current?.frame.vehicles} onFocus={onFocus}/>
       <section>
         <h3>Order log</h3>
         {!scene?.orders?.length && <p className="muted">No orders carried out yet.</p>}

@@ -119,6 +119,7 @@ export class FlowFields {
   private readonly map: MapBundle;
   private readonly costs: Uint8Array;
   private readonly cache = new Map<number, FlowField>();
+  private readonly cellCache = new Map<number, FlowField>();
   private closedCells: Set<number> = new Set();
   /** Freeway cells: drivable, never walkable. */
   private readonly motorway: Uint8Array;
@@ -152,6 +153,29 @@ export class FlowFields {
         }
       }
       if (nearRoad) this.costs[cell] = SIDEWALK_STEP;
+    }
+    // Imported grounds can have tiny parking strips behind buildings. Price
+    // the narrow approach rather than treating it as an unlimited shortcut.
+    // Keep the calibrated Ohio layout and all existing cell kinds unchanged.
+    if (map.id.startsWith('osm-')) {
+      const clearance = new Uint8Array(cells.length).fill(7);
+      const queue = new Int32Array(cells.length);
+      let head = 0, tail = 0;
+      for (let c = 0; c < cells.length; c++) if (cells[c] === 'blocked') {clearance[c] = 0; queue[tail++] = c;}
+      while (head < tail) {
+        const c = queue[head++]!;
+        if (clearance[c]! >= 6) continue;
+        for (const next of [c%width>0?c-1:-1,c%width<width-1?c+1:-1,c>=width?c-width:-1,c<cells.length-width?c+width:-1]) {
+          if (next < 0 || clearance[next]! <= clearance[c]! + 1) continue;
+          clearance[next] = clearance[c]! + 1; queue[tail++] = next;
+        }
+      }
+      for (let c = 0; c < cells.length; c++) {
+        if (cells[c] === 'walk' || cells[c] === 'parking') {
+          const penalty = Math.max(0, 6 - clearance[c]!) * 8;
+          this.costs[c] = Math.min(MAX_STEP_COST, this.costs[c]! + penalty);
+        }
+      }
     }
     this.motorway = motorwayCells(map);
     const size = width * height;
@@ -196,6 +220,7 @@ export class FlowFields {
     this.closedCells = next;
     this.refreshCosts();
     this.cache.clear();
+    this.cellCache.clear();
     return true;
   }
 
@@ -250,6 +275,16 @@ export class FlowFields {
     if (cached) return cached;
     const field = this.build(this.map.places[placeIndex]?.cells ?? [], avoidInterior);
     this.cache.set(key, field);
+    return field;
+  }
+
+  /** Outdoor routing for live posts. Bounded separately from destination fields. */
+  toCell(cell: number): FlowField {
+    const cached = this.cellCache.get(cell);
+    if (cached) return cached;
+    const field = this.build([cell], true);
+    if (this.cellCache.size >= 16) this.cellCache.delete(this.cellCache.keys().next().value!);
+    this.cellCache.set(cell, field);
     return field;
   }
 
