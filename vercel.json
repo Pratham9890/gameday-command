@@ -16,7 +16,7 @@
       "has": [{ "type": "query", "key": "incident", "value": "(?<kind>[a-z_]+)" }],
       "destination": "/static-api/plans/:kind.json"
     },
-    { "source": "/api/history", "destination": "/static-api/empty.json" },
-    { "source": "/api/feedback", "destination": "/static-api/empty.json" }
+    { "source": "/api/history", "destination": "/static-api/history.json" },
+    { "source": "/api/feedback", "destination": "/static-api/feedback.json" }
   ]
 }

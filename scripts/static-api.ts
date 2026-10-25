@@ -37,4 +37,6 @@ for (const { id } of maps) await save(`/api/maps/${id}`, `maps/${id}.json`);
 await save('/api/maps/default', 'maps/default.json');
 await save('/api/decision-defaults', 'decision-defaults.json');
 for (const kind of KINDS) await save(`/api/plans?incident=${kind}`, `plans/${kind}.json`);
-writeFileSync(resolve(OUT, 'empty.json'), '[]');
+// Nothing recorded yet: the same empty shapes the server answers with for a fresh database.
+await save('/api/history?map=none', 'history.json');
+await save('/api/feedback?map=none', 'feedback.json');
