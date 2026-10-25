@@ -73,6 +73,14 @@ const SQUEEZE_AFTER_S = 25;
 const RIDESHARE_DWELL_S = 45;
 
 /**
+ * Fields held for the closure set in force. A lot crossing full and empty makes
+ * a layout recur — a ride share parked on the last stall leaves the same lot as
+ * full as it found it — and a few layouts cover that without keeping a whole
+ * map's worth of grids alive.
+ */
+const FIELD_CACHE_MAX = 6;
+
+/**
  * Queue capacity for a ring buffer holding every cell at once: one power of
  * two, with a slot left free so full and empty stay distinguishable.
  */
@@ -397,6 +405,15 @@ export class TrafficModel {
   private exitField: Field | null = null;
   private emsField: Field | null = null;
   private lotsDirty = true;
+  /**
+   * Fields already built for the closure set in force, by what they were built
+   * from. A build walks the whole map, and traffic reran it whenever any lot
+   * crossed full or empty, even where that left the free lots — and so the
+   * seeds — exactly as they were. A field follows from the closed cells and its
+   * seeds alone, so the same key reuses the same field; a closure change
+   * empties the cache, as `FlowFields.setClosed` does.
+   */
+  private readonly fieldCache = new Map<string, Field>();
   private readonly bfsQueue: Int32Array;
   /** Cells the field being built reached, in discovery order. */
   private readonly fieldTouched: Int32Array;
@@ -740,23 +757,58 @@ export class TrafficModel {
         if (!closed.has(c.id)) continue;
         for (const cell of c.cells) this.closedCells[cell] = 1;
       }
+      // Every field follows from the closed cells, so a new closure set retires
+      // them all, and the cached copies built for the old one.
+      this.fieldCache.clear();
       this.exitField = null;
+      this.lotsField = null;
       this.emsField = null;
-      this.lotsDirty = true;
     }
-    if (!this.exitField) this.exitField = this.buildField(this.net.border, false);
+    if (!this.exitField) {
+      this.exitField = this.cachedField('edge', () => this.buildField(this.net.border, false));
+    }
     if (this.lotsDirty || !this.lotsField) {
       this.lotsDirty = false;
-      const seeds: number[] = [];
-      for (let c = 0; c < this.net.lotOf.length; c++) {
-        const lot = this.net.lotOf[c]!;
-        if (lot >= 0 && this.lotFree[lot]! > 0) seeds.push(c);
-      }
-      this.lotsField = this.buildField(seeds, false);
+      this.lotsField = this.cachedField(`lots:${this.freeLotsKey()}`, () => {
+        const seeds: number[] = [];
+        for (let c = 0; c < this.net.lotOf.length; c++) {
+          const lot = this.net.lotOf[c]!;
+          if (lot >= 0 && this.lotFree[lot]! > 0) seeds.push(c);
+        }
+        return this.buildField(seeds, false);
+      });
     }
     if (this.ambulance >= 0 && this.emergencyDispatched && !this.emsField) {
-      this.emsField = this.buildField(this.emsTarget(), true);
+      this.emsField = this.cachedField('ems', () => this.buildField(this.emsTarget(), true));
     }
+  }
+
+  /** A field from the cache, built on first use. Only `dist` and `dir` are ever read from one. */
+  private cachedField(key: string, build: () => Field): Field {
+    const cached = this.fieldCache.get(key);
+    if (cached) return cached;
+    const field = build();
+    if (this.fieldCache.size >= FIELD_CACHE_MAX) {
+      // Oldest first: the layouts that recur are the ones still being asked for.
+      const oldest = this.fieldCache.keys().next().value;
+      if (oldest !== undefined) this.fieldCache.delete(oldest);
+    }
+    this.fieldCache.set(key, field);
+    return field;
+  }
+
+  /**
+   * Which lots still have a stall free, as a key. The lot field's seeds are
+   * every cell of every such lot, in map order, so this says exactly when its
+   * seed set changes — and when it does not: a lot with one free stall and a
+   * lot with fifty seed the identical field.
+   */
+  private freeLotsKey(): string {
+    let key = '';
+    for (let lot = 0; lot < this.net.lotCount; lot++) {
+      if (this.lotFree[lot]! > 0) key += `${lot},`;
+    }
+    return key;
   }
 
   /** Where the ambulance is going: the drivable edge of the incident zone. */
@@ -1294,6 +1346,7 @@ export class TrafficModel {
     this.emergencyOnScene = Boolean(s.emergencyOnScene);
     // Fields follow from the state just restored; rebuild them on the next step.
     this.closedKey = '\u0000';
+    this.fieldCache.clear();
     this.lotsDirty = true;
     this.emsField = null;
     // Occupancy is not carried in the snapshot; start it clean so the sparse

@@ -8,6 +8,19 @@ const GONE = STATE_INDEX.gone;
 const SEATED = STATE_INDEX.seated;
 
 /**
+ * What FlowMovement already knows about this step's cell occupancy, so the
+ * density pass can skip walking every dot. `counts` and `seated` are per cell;
+ * `touched` names every cell the rebuild cleared and wrote, so after the rebuild
+ * it holds every occupied cell, and the density pass can take it wholesale.
+ */
+export interface DensityContribution {
+  counts: Int32Array;
+  seated: Int32Array;
+  touched: Int32Array;
+  touchedCount: number;
+}
+
+/**
  * Per-cell people counts and people per square metre.
  *
  * Reused in place every step — allocating two grids 3,600 times per run was the
@@ -50,7 +63,11 @@ export class DensityField {
     return new DensityField(map.width, map.height);
   }
 
-  update(dots: DotStore): void {
+  update(dots: DotStore, contribution?: DensityContribution): void {
+    if (contribution !== undefined) {
+      this.applyContribution(contribution);
+      return;
+    }
     // A cell can only be non-zero if a dot landed in it last step, and every
     // such cell is in `occupied`. Zeroing that list therefore leaves the whole
     // grid clean, with no sweep over the thousands of empty cells.
@@ -79,6 +96,58 @@ export class DensityField {
       this.counts[cell]!++;
       if (state[i] !== SEATED) this.standingCounts[cell]!++;
     }
+    // Ascending so consumers iterate deterministically. Order does not affect
+    // the values: each cell is converted from its own count, exactly as before.
+    this.occupied.subarray(0, this.occupiedCount).sort();
+    for (let k = 0; k < this.occupiedCount; k++) {
+      const cell = this.occupied[k]!;
+      this.peoplePerM2[cell] = (this.counts[cell]! * DOT_GROUP_SIZE) / CELL_AREA_M2;
+      this.standingPerM2[cell] = (this.standingCounts[cell]! * DOT_GROUP_SIZE) / CELL_AREA_M2;
+    }
+  }
+
+  /**
+   * The cheaper path: FlowMovement already rebuilt every cell's count this step,
+   * and its `touched` list names every cell that rebuild wrote — which is every
+   * cell that holds anyone now. Density can therefore take that occupancy
+   * wholesale instead of walking every dot again.
+   */
+  private applyContribution(contribution: DensityContribution): void {
+    const { counts, seated, touched, touchedCount } = contribution;
+
+    // The previous list can name cells that emptied this step, and those cells
+    // are not in `touched` because the rebuild never wrote them. Their counts
+    // are zero in the contribution, but the derived values here would linger, so
+    // the old prefix is zeroed before it is rebuilt. Every cell that still holds
+    // someone comes back below from `touched`, so nothing live is lost.
+    for (let k = 0; k < this.occupiedCount; k++) {
+      const cell = this.occupied[k]!;
+      this.counts[cell] = 0;
+      this.standingCounts[cell] = 0;
+      this.peoplePerM2[cell] = 0;
+      this.standingPerM2[cell] = 0;
+    }
+    this.occupiedCount = 0;
+
+    // Adopt only the cells that still hold someone, appending them in the order
+    // the movement pass touched them. A touched cell that emptied is zeroed
+    // here and left out of the list.
+    for (let k = 0; k < touchedCount; k++) {
+      const cell = touched[k]!;
+      const total = counts[cell]!;
+      if (total > 0) {
+        const sitting = seated[cell]!;
+        this.counts[cell] = total;
+        this.standingCounts[cell] = total > sitting ? total - sitting : 0;
+        this.occupied[this.occupiedCount++] = cell;
+      } else {
+        this.counts[cell] = 0;
+        this.standingCounts[cell] = 0;
+        this.peoplePerM2[cell] = 0;
+        this.standingPerM2[cell] = 0;
+      }
+    }
+
     // Ascending so consumers iterate deterministically. Order does not affect
     // the values: each cell is converted from its own count, exactly as before.
     this.occupied.subarray(0, this.occupiedCount).sort();

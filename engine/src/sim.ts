@@ -27,7 +27,7 @@ import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
 import { GAME_END_S, lateRushFor } from '../../world/src/incidents.ts';
 import { CLEAR_SKY, decisionWeather, walkFactor, weatherAt } from '../../world/src/weather.ts';
 import { TrafficModel } from './traffic.ts';
-import { DensityField } from './density.ts';
+import { DensityField, type DensityContribution } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
 import type { Barricade, DotEdit, DotInfo, GateStat, OfficerStatus, PoliceOrder } from './edits.ts';
 import { FlowFields, WALK_STEP } from './flowfield.ts';
@@ -79,6 +79,12 @@ export interface MovementModel {
   release?(ctx: SimContext): void;
   /** Movement state the inspector shows. */
   describe?(dot: number): Pick<DotInfo, 'homeGate' | 'seatCell' | 'admitted' | 'arriveAt'>;
+  /**
+   * The movement model's own per-cell counts for this step, so the density pass
+   * can adopt them instead of walking every dot; `touched` names the cells whose
+   * totals changed. Absent means the field counts the dots itself.
+   */
+  densityContribution?(): DensityContribution;
 }
 
 /** Everything needed to put a run back exactly where it was, inside one worker. */
@@ -610,6 +616,8 @@ export class Simulation {
     this.ctx.closed.clear();
     for (const id of snapshot.closed) this.ctx.closed.add(id);
     for (const officer of this.ctx.officers) this.officerPos.set(officer.id, this.cellCenter(officer.cell));
+    // Movement state is restored after this snapshot; its counts still describe
+    // the abandoned future. Scan the restored dots instead.
     this.ctx.density.update(this.ctx.dots);
   }
 
@@ -630,7 +638,7 @@ export class Simulation {
     await this.resolveDecisions();
     this.stepOfficers(SIM_DT);
     this.opts.movement.step(this.ctx, SIM_DT);
-    this.ctx.density.update(this.ctx.dots);
+    this.ctx.density.update(this.ctx.dots, this.opts.movement.densityContribution?.());
     this.traffic?.step({
       t: this.ctx.t,
       dt: SIM_DT,

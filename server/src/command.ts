@@ -17,21 +17,37 @@ const STADIUM_DIR = resolve(process.env.STADIUM_DIR ?? './data/stadiums');
 const FEED_TIMEOUT_MS = 8000;
 const FEED_MAX_BYTES = 512 * 1024;
 
+/** Byte progress is chatty: one line per 100 ms or 256 KB of growth, whichever comes first. */
+const IMPORT_PROGRESS_MS = 100;
+const IMPORT_PROGRESS_BYTES = 256 * 1024;
+
+/** Where the commander searched for the stadium, shown on the start screen. */
+interface ImportedLocation {
+  city?: string;
+  state?: string;
+  country?: string;
+  where?: string;
+}
+
 interface Imported {
   options: StadiumOptions;
   extract: OsmExtract;
+  location?: ImportedLocation;
 }
+
+/** The searched location, else the stadium's own name, else its id. */
+const whereOf = (saved: Imported) => saved.location?.where ?? saved.options.name ?? saved.options.id!;
 
 const idFor = (osmType: string, osmId: number) => `osm-${osmType}-${osmId}`;
 
-export function importedIds(): { id: string; name: string; theme: ReturnType<typeof themeFor> }[] {
+export function importedIds(): { id: string; name: string; where: string; theme: ReturnType<typeof themeFor> }[] {
   try {
     return readdirSync(STADIUM_DIR)
       .filter((f) => f.endsWith('.json'))
       .map((f) => {
         const saved = JSON.parse(readFileSync(resolve(STADIUM_DIR, f), 'utf8')) as Imported;
         const name = saved.options.name ?? saved.options.id!;
-        return { id: saved.options.id!, name, theme: saved.options.theme ?? themeFor(name) };
+        return { id: saved.options.id!, name, where: whereOf(saved), theme: saved.options.theme ?? themeFor(name) };
       });
   } catch {
     return [];
@@ -47,6 +63,87 @@ export function importedMap(id: string): MapBundle | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The import request: a search hit, plus the city/state/country it was found in. */
+interface ImportRequest {
+  name: string;
+  osmType: 'way' | 'relation';
+  osmId: number;
+  lat: number;
+  lon: number;
+  capacity?: number;
+  wikidata?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  where?: string;
+}
+
+/** One line of the streaming import: a stage, a byte count, the saved stadium or a failure. */
+type ImportEvent =
+  | { stage: 'facts' | 'download' | 'build' | 'save'; label: string; step: number; steps: number }
+  | { stage: 'download'; bytes: number }
+  | { done: true; id: string; name: string; gates: number; theme: MapBundle['theme'] }
+  | { error: string };
+
+const IMPORT_STEPS = 4;
+const importError = (error: unknown) => `Import failed: ${error instanceof Error ? error.message : String(error)}`;
+
+/** Download, build and save one stadium, narrating each stage through `report`. */
+async function importStadium(hit: ImportRequest, report: (event: ImportEvent) => void, forget: (id: string) => void) {
+  const id = idFor(hit.osmType, Number(hit.osmId));
+  const center = { lat: Number(hit.lat), lon: Number(hit.lon) };
+
+  // Start the facts lookup and the download together: Wikidata is best effort, so
+  // a slow or missing item must not hold up the map. Both are underway by the time
+  // the first line is sent, so it names both.
+  report({
+    stage: 'facts',
+    label: 'Reading team and capacity from Wikidata and downloading the map from OpenStreetMap',
+    step: 1,
+    steps: IMPORT_STEPS,
+  });
+  const factsPromise = hit.wikidata ? stadiumFacts(hit.wikidata) : Promise.resolve({ teams: [] as string[], capacity: undefined });
+  report({ stage: 'download', label: 'Downloading the map from OpenStreetMap', step: 2, steps: IMPORT_STEPS });
+
+  // Overpass answers in many small chunks, so throttle the byte lines and always
+  // close with the total. A download that sent no chunks still reports 0.
+  let totalBytes = 0;
+  let sentBytes = -1;
+  let sentAt = 0;
+  const extract = await fetchExtract(center, undefined, undefined, (bytes) => {
+    totalBytes = bytes;
+    const now = Date.now();
+    if (bytes - sentBytes < IMPORT_PROGRESS_BYTES && now - sentAt < IMPORT_PROGRESS_MS) return;
+    sentBytes = bytes;
+    sentAt = now;
+    report({ stage: 'download', bytes });
+  });
+  if (totalBytes !== sentBytes) report({ stage: 'download', bytes: totalBytes });
+  const facts = await factsPromise;
+
+  const options: StadiumOptions = {
+    id,
+    name: hit.name,
+    stadiumOsmId: Number(hit.osmId),
+    capacity: hit.capacity ?? facts.capacity,
+    theme: themeFor(hit.name, facts.teams),
+  };
+  const city = hit.city?.trim() || undefined;
+  const state = hit.state?.trim() || undefined;
+  const country = hit.country?.trim() || undefined;
+  const where = hit.where?.trim() || [city, state, country].filter(Boolean).join(', ') || undefined;
+  const location: ImportedLocation | undefined = city || state || country || where ? { city, state, country, where } : undefined;
+
+  // Build once before saving, so a stadium that cannot be mapped is refused now.
+  report({ stage: 'build', label: 'Building the walkable map', step: 3, steps: IMPORT_STEPS });
+  const map = buildStadiumMap(extract, options);
+  report({ stage: 'save', label: 'Saving the stadium', step: 4, steps: IMPORT_STEPS });
+  mkdirSync(STADIUM_DIR, { recursive: true });
+  writeFileSync(resolve(STADIUM_DIR, `${id}.json`), JSON.stringify({ options, extract, location } satisfies Imported));
+  forget(id);
+  return { id, name: map.name, gates: map.places.filter((p) => p.kind === 'gate').length, theme: map.theme };
 }
 
 export function migrateCommandTables(db: Db): void {
@@ -86,31 +183,38 @@ export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name:
   });
 
   app.post('/api/stadiums/import', async (c) => {
-    const hit = await c.req.json<{ name: string; osmType: 'way' | 'relation'; osmId: number; lat: number; lon: number; capacity?: number; wikidata?: string }>();
+    const hit = await c.req.json<ImportRequest>();
     if (hit.osmType !== 'way' && hit.osmType !== 'relation') return c.json({ error: 'need a stadium way or relation' }, 400);
-    const id = idFor(hit.osmType, Number(hit.osmId));
-    try {
-      // The map, and in parallel the home team and real capacity from Wikidata.
-      const [extract, facts] = await Promise.all([
-        fetchExtract({ lat: Number(hit.lat), lon: Number(hit.lon) }),
-        hit.wikidata ? stadiumFacts(hit.wikidata) : Promise.resolve({ teams: [] as string[], capacity: undefined }),
-      ]);
-      const options: StadiumOptions = {
-        id,
-        name: hit.name,
-        stadiumOsmId: Number(hit.osmId),
-        capacity: hit.capacity ?? facts.capacity,
-        theme: themeFor(hit.name, facts.teams),
-      };
-      // Build once before saving, so a stadium that cannot be mapped is refused now.
-      const map = buildStadiumMap(extract, options);
-      mkdirSync(STADIUM_DIR, { recursive: true });
-      writeFileSync(resolve(STADIUM_DIR, `${id}.json`), JSON.stringify({ options, extract } satisfies Imported));
-      forget(id);
-      return c.json({ id, name: map.name, gates: map.places.filter((p) => p.kind === 'gate').length, theme: map.theme });
-    } catch (error) {
-      return c.json({ error: `Import failed: ${error instanceof Error ? error.message : String(error)}` }, 502);
+
+    // Old callers ask for JSON and get the single response they always have.
+    if ((c.req.header('accept') ?? '').toLowerCase().includes('application/json')) {
+      try {
+        return c.json(await importStadium(hit, () => {}, forget));
+      } catch (error) {
+        return c.json({ error: importError(error) }, 502);
+      }
     }
+
+    // Everyone else gets one JSON object per line, flushed as each stage happens,
+    // so the start screen can show progress through the slow Overpass download.
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: ImportEvent) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        try {
+          send({ done: true, ...(await importStadium(hit, send, forget)) });
+        } catch (error) {
+          send({ error: importError(error) });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return c.body(body, 200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      'x-accel-buffering': 'no',
+    });
   });
 
   // History: every finished run adds its gate queues and stopped traffic by minute to kickoff.
