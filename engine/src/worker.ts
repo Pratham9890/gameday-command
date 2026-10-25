@@ -70,7 +70,18 @@ function emitFrame(): void {
   // Scene first, so the frame's redraw already has the officers it shows.
   const alerts = sim.takeAlerts();
   send(
-    { type: 'scene', scene: { t: sim.ctx.t, officers: sim.officerStatus(), gates: sim.gateStats(), closed: [...sim.ctx.closed], alerts } },
+    {
+      type: 'scene',
+      scene: {
+        t: sim.ctx.t,
+        officers: sim.officerStatus(),
+        gates: sim.gateStats(),
+        closed: [...sim.ctx.closed],
+        alerts,
+        barricades: sim.liveBarricades(),
+        orders: sim.ordersLog(),
+      },
+    },
     alerts.map((a) => a.dots.buffer),
   );
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));
@@ -188,6 +199,7 @@ host.onmessage = (event) => {
         checkpoints = checkpoints.filter((entry) => entry.t <= restartAt);
         lastCheckpointAt = restartAt;
         sim.dropEditsAfter(target);
+        sim.dropOrdersAfter(target);
         // Step forward to the moment asked for. Decisions on the way come from
         // the client's cache or its tape, so this repeats rather than re-asks.
         void (async () => {
@@ -201,6 +213,9 @@ host.onmessage = (event) => {
         return;
       case 'edit':
         sim?.queueEdit(message.edit);
+        return;
+      case 'order':
+        sim?.queueOrder(message.order);
         return;
       case 'inspect': {
         const info = sim?.inspect(message.dot);

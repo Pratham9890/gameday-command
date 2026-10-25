@@ -24,12 +24,12 @@ import { DecisionClient } from '../../brain/src/client.ts';
 import { sampleOdds } from '../../brain/src/sample.ts';
 import { Scorer, type ScorerState } from '../../world/src/scoring.ts';
 import { createWorldHooks, type WorldRuntime } from '../../world/src/hooks.ts';
-import { GAME_END_S } from '../../world/src/incidents.ts';
+import { GAME_END_S, lateRushFor } from '../../world/src/incidents.ts';
 import { CLEAR_SKY, decisionWeather, walkFactor, weatherAt } from '../../world/src/weather.ts';
 import { TrafficModel } from './traffic.ts';
 import { DensityField } from './density.ts';
 import { DotStore, STATE_INDEX } from './dots.ts';
-import type { DotEdit, DotInfo, GateStat, OfficerStatus } from './edits.ts';
+import type { Barricade, DotEdit, DotInfo, GateStat, OfficerStatus, PoliceOrder } from './edits.ts';
 import { FlowFields, WALK_STEP } from './flowfield.ts';
 import { Rng } from './rng.ts';
 
@@ -73,6 +73,10 @@ export interface MovementModel {
   sendTo?(ctx: SimContext, dot: number, place: number): void;
   /** Every gate's door and flow, for the app. */
   gateStats?(ctx: SimContext): GateStat[];
+  /** Turn `count` of the arrivals parked nearest `gate` into a rush on it between `fromS` and `toS`. */
+  lateRush?(ctx: SimContext, gate: number, count: number, fromS: SimSeconds, toS: SimSeconds): void;
+  /** The game was ended early: fans not yet arrived stay away. */
+  release?(ctx: SimContext): void;
   /** Movement state the inspector shows. */
   describe?(dot: number): Pick<DotInfo, 'homeGate' | 'seatCell' | 'admitted' | 'arriveAt'>;
 }
@@ -83,6 +87,19 @@ export interface Checkpoint {
   movement: unknown;
   scorer: ScorerState;
   traffic?: unknown;
+  /** Engine bookkeeping omitted by the frozen Snapshot; world hooks keep their own state. */
+  simulation?: {
+    officerTargets: [Id, number][];
+    officerPos: [Id, { x: number; y: number }][];
+    officerPost: [Id, number][];
+    officerTold: [Id, number][];
+    officerFollowed: [Id, number][];
+    redirects: [number, number][];
+    alerted: Uint8Array;
+    recalling: Id[];
+    raised: RaisedSituation[];
+    alerts: { t: SimSeconds; dots: Int32Array }[];
+  };
 }
 
 interface RaisedSituation {
@@ -118,6 +135,7 @@ export class Simulation {
   /** People each officer has spoken to, and how many of them did as told. */
   private readonly officerTold = new Map<Id, number>();
   private readonly officerFollowed = new Map<Id, number>();
+  private readonly recalling = new Set<Id>();
   /**
    * Officers' own routes. They ignore closures — police cross a closed street —
    * and keep out of the bowl the way fans do, so a dispatch is a walk along
@@ -137,6 +155,9 @@ export class Simulation {
    * so the edit is replayed at the same sim second instead of lost.
    */
   private edits: DotEdit[] = [];
+  /** Kept across rewinds so live orders replay at the same sim second. */
+  private orders: { t: SimSeconds; order: PoliceOrder }[] = [];
+  private readonly barricades: Barricade[] = [];
   /** Bumps whenever any dot's fan type may have changed. */
   typesVersion = 0;
 
@@ -191,6 +212,13 @@ export class Simulation {
       });
 
     opts.movement.spawn(this.ctx);
+    // A gate surge's late rush, turned from the ordinary arrivals so the crowd
+    // stays the same size and every plan meets the same rush.
+    const rush = lateRushFor(config.incident);
+    const rushGate = rush ? map.places.findIndex((p) => p.id === config.incident.placeId) : -1;
+    if (rush && rushGate >= 0) {
+      opts.movement.lateRush?.(this.ctx, rushGate, Math.round(rush.fans / DOT_GROUP_SIZE), rush.fromS, rush.toS);
+    }
     this.ctx.density.update(dots);
 
     this.traffic = config.traffic
@@ -248,10 +276,14 @@ export class Simulation {
       },
       moveOfficer: (officerId, toCell) => {
         this.officerTargets.set(officerId, toCell);
+        this.recalling.delete(officerId);
         // Remember what the officer was sent to manage, so fans who do as
         // they are told have somewhere to be told to go.
         const place = this.ctx.map.places.findIndex((p) => p.cells.includes(toCell));
         if (place >= 0) this.ctx.officerPost.set(officerId, place);
+        // Street targets have no place field; use the straight-line fallback,
+        // rather than routing the officer back to their previous post.
+        else this.ctx.officerPost.delete(officerId);
       },
       raiseSituation: (situation, cells, reachShare) => {
         this.raised.push({ situation, cells, reachShare });
@@ -307,6 +339,10 @@ export class Simulation {
       if (pos.x === goal.x && pos.y === goal.y) {
         officer.cell = target;
         this.officerTargets.delete(officer.id);
+        if (this.recalling.delete(officer.id)) {
+          this.ctx.officerPost.delete(officer.id);
+          continue;
+        }
         // An officer reaching their post starts giving instructions to the
         // people around them. Sending officers has to change what the crowd
         // does, or dispatching them is just a number on the scorecard and two
@@ -559,7 +595,7 @@ export class Simulation {
     return this.finished;
   }
 
-  /** Advance one sim second: world, decisions, movement, density, score. */
+  /** Advance one sim second: world, live orders, decisions, movement, density, score. */
   async step(): Promise<void> {
     if (this.finished) return;
     const { config } = this.opts;
@@ -568,6 +604,7 @@ export class Simulation {
 
     this.applyEdits();
     this.hooks.onStep(this.ctx.t, this.worldView(), this.worldActions());
+    this.applyOrders();
     await this.resolveDecisions();
     this.stepOfficers(SIM_DT);
     this.opts.movement.step(this.ctx, SIM_DT);
@@ -617,13 +654,53 @@ export class Simulation {
       movement: this.opts.movement.capture?.() ?? null,
       scorer: this.scorer.capture(),
       traffic: this.traffic?.capture(),
+      simulation: {
+        officerTargets: [...this.officerTargets],
+        officerPos: [...this.officerPos].map(([id, pos]) => [id, { ...pos }]),
+        officerPost: [...this.ctx.officerPost],
+        officerTold: [...this.officerTold],
+        officerFollowed: [...this.officerFollowed],
+        redirects: [...this.ctx.redirects],
+        alerted: this.alerted.slice(),
+        recalling: [...this.recalling],
+        // Arrival instructions wait until the next step's decision pass.
+        raised: structuredClone(this.raised),
+        alerts: this.alerts.map((alert) => ({ t: alert.t, dots: alert.dots.slice() })),
+      },
     };
   }
 
   /** Put the run back to a checkpoint. Stepping on from here repeats exactly. */
   rewind(point: Checkpoint): void {
     this.restore(point.snapshot);
-    this.opts.movement.restore?.(point.movement);
+    const state = point.simulation;
+    if (state) {
+      this.officerTargets.clear();
+      for (const [id, cell] of state.officerTargets) this.officerTargets.set(id, cell);
+      this.officerPos.clear();
+      for (const [id, pos] of state.officerPos) this.officerPos.set(id, { ...pos });
+      this.ctx.officerPost.clear();
+      for (const [id, place] of state.officerPost) this.ctx.officerPost.set(id, place);
+      this.officerTold.clear();
+      for (const [id, told] of state.officerTold) this.officerTold.set(id, told);
+      this.officerFollowed.clear();
+      for (const [id, followed] of state.officerFollowed) this.officerFollowed.set(id, followed);
+      this.ctx.redirects.clear();
+      for (const [from, to] of state.redirects) this.ctx.redirects.set(from, to);
+      this.alerted.set(state.alerted);
+      this.recalling.clear();
+      for (const id of state.recalling) this.recalling.add(id);
+      this.raised = structuredClone(state.raised);
+      this.alerts = state.alerts.map((alert) => ({ t: alert.t, dots: alert.dots.slice() }));
+    }
+    // FlowMovement's routes are cached against the closures they were built
+    // with, and its restored `closedKey` names the checkpoint's closures, not
+    // the abandoned future's the cache still holds: a gate shut after the
+    // checkpoint stayed shut in every route. A key that matches nothing makes
+    // its next step re-apply ctx.closed. Calling spawn() instead also fixed it
+    // but cost ~2.5 s per worker per seek on the stadium map.
+    const movement = point.movement && typeof point.movement === 'object' ? { ...point.movement, closedKey: '\u0000rewound' } : point.movement;
+    this.opts.movement.restore?.(movement);
     this.scorer.restore(point.scorer);
     if (point.traffic !== undefined) this.traffic?.restore(point.traffic);
     this.applyWeather();
@@ -646,6 +723,84 @@ export class Simulation {
   /** Forget edits after a moment the run was rewound to, as the frames after it are. */
   dropEditsAfter(t: SimSeconds): void {
     this.edits = this.edits.filter((e) => e.at <= t);
+  }
+
+  /** Queue a live police order for the next sim second. */
+  queueOrder(order: PoliceOrder): void {
+    this.orders.push({ t: this.ctx.t + SIM_DT, order });
+  }
+
+  /** Forget orders after a moment the run was rewound to. */
+  dropOrdersAfter(t: SimSeconds): void {
+    this.orders = this.orders.filter((entry) => entry.t <= t);
+  }
+
+  /** Live orders already applied, oldest first, for the commander's scene log. */
+  ordersLog(): { t: SimSeconds; order: PoliceOrder }[] {
+    return this.orders.filter((entry) => entry.t <= this.ctx.t).sort((a, b) => a.t - b.t);
+  }
+
+  /** Commander-placed barricades that are closed at this moment. */
+  liveBarricades(): Barricade[] {
+    return this.barricades.filter((barricade) => this.ctx.closed.has(barricade.id));
+  }
+
+  private applyOrders(): void {
+    const act = this.worldActions();
+    for (const { t, order } of this.orders) {
+      if (t !== this.ctx.t) continue;
+      switch (order.type) {
+        case 'dispatch':
+          for (const id of order.officerIds) {
+            if (this.officerHome.has(id)) act.moveOfficer(id, order.toCell);
+          }
+          break;
+        case 'recall':
+          for (const id of order.officerIds) {
+            const home = this.officerHome.get(id);
+            if (home === undefined) continue;
+            act.moveOfficer(id, home);
+            // Keep a place route until arrival, but returning home must not
+            // count as being on scene or trigger a crowd instruction.
+            this.recalling.add(id);
+          }
+          break;
+        case 'gate':
+          act.setClosed(order.closableId, order.closed);
+          break;
+        case 'barricade':
+          if (order.cells && !this.ctx.map.closables.some((c) => c.id === order.closableId)) {
+            const barricade = { id: order.closableId, name: order.name ?? order.closableId, cells: order.cells };
+            // Each worker owns its map; retaining the registration across
+            // rewinds lets closures replay without duplicate geometry.
+            this.ctx.map.closables.push(barricade);
+            this.barricades.push(barricade);
+          }
+          act.setClosed(order.closableId, order.closed);
+          break;
+        case 'redirect': {
+          act.setTarget(order.fromPlaceId, order.toPlaceId);
+          // World hooks' standing order is private, so a live redirect must
+          // reach the crowd through officers already on station here.
+          const cells = new Set<number>();
+          for (const officer of this.ctx.officers) {
+            if (!this.ctx.officerPost.has(officer.id) || this.officerTargets.has(officer.id)) continue;
+            for (const cell of this.cellsAround(officer.cell, officer.radiusCells)) cells.add(cell);
+          }
+          act.raiseSituation('officer_instruction', [...cells]);
+          break;
+        }
+        case 'alert':
+          act.raiseSituation('alert_received', order.zoneCells, Math.max(0, Math.min(1, order.reachShare)));
+          break;
+        case 'release':
+          act.raiseSituation('exit_route');
+          // exit_route only reaches fans on the map; the ones still on their
+          // way would otherwise arrive and walk into a stadium that is emptying.
+          this.opts.movement.release?.(this.ctx);
+          break;
+      }
+    }
   }
 
   private applyEdits(): void {

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import type { CellKind, MapBundle, VehicleFrame, VehicleKind, WeatherState } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
+import type { SceneInfo } from '../../engine/src/edits.ts';
+import { closedAreas, closureKey, type ClosedArea } from './barricadeArt.ts';
 import { roadNetFor } from '../../engine/src/traffic.ts';
 import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands } from './heat.ts';
@@ -458,9 +460,19 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
     const dotImage = ctx.createImageData(totalW, panelH);
     let raf = 0;
     let lastDraw = 0;
+    const closures: { scene: SceneInfo | null; key: string; areas: ClosedArea[] }[] = [];
 
     const draw = (now: number) => {
       const p = propsRef.current;
+      p.runs.forEach((run, index) => {
+        const scene = run.scene.current;
+        const cached = closures[index];
+        if (cached && cached.scene === scene) return;
+        const key = closureKey(scene);
+        closures[index] = { scene, key, areas: cached?.key === key ? cached.areas : closedAreas(map, scene) };
+        // A scene can arrive while paused without a new animation frame from the worker.
+        if (!cached || cached.key !== key) needsRef.current = true;
+      });
       const fly = flyRef.current;
       if (fly) {
         const k = Math.min(1, (now - fly.start) / fly.ms);
@@ -652,6 +664,39 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
             }
           }
           ctx.globalAlpha = 1;
+        }
+
+        ctx.setTransform(1, 0, 0, 1, ox, 0);
+        const closureScale = Math.max(1, totalW / Math.max(1, live.clientWidth));
+        for (const area of closures[index]?.areas ?? []) {
+          ctx.fillStyle = 'rgba(229,72,77,0.3)';
+          for (const cell of area.cells) {
+            const sx = toX((cell % map.width) * CELL_SIZE_M);
+            const sy = toY(Math.floor(cell / map.width) * CELL_SIZE_M);
+            const size = CELL_SIZE_M * m2px;
+            if (sx + size < 0 || sy + size < 0 || sx > panelW || sy > panelH) continue;
+            ctx.fillRect(sx, sy, size, size);
+          }
+          const sx = toX(area.x), sy = toY(area.y), k = closureScale;
+          if (sx < -24 * k || sy < -24 * k || sx > panelW + 24 * k || sy > panelH + 24 * k) continue;
+          ctx.save();
+          ctx.translate(sx, sy);
+          ctx.rotate(area.angle);
+          ctx.fillStyle = '#f58220';
+          ctx.fillRect(-16 * k, -3 * k, 32 * k, 6 * k);
+          ctx.fillStyle = '#fff4e1';
+          for (let stripe = -14; stripe < 16; stripe += 8) ctx.fillRect(stripe * k, -3 * k, 4 * k, 6 * k);
+          ctx.restore();
+          // The no-entry symbol stays upright while its barrier follows the street.
+          ctx.beginPath();
+          ctx.arc(sx, sy, 6 * k, 0, Math.PI * 2);
+          ctx.fillStyle = '#d7353e';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = k;
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(sx - 4 * k, sy - k, 8 * k, 2 * k);
         }
 
         // Officers: a blue disc with a white ring, a shield when close.

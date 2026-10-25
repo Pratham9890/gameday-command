@@ -75,9 +75,41 @@ export interface SceneInfo {
   closed: Id[];
   /** Alerts that went out since the last scene, with the dots each reached. */
   alerts: { t: SimSeconds; dots: Int32Array }[];
+  /** Road barricades the commander put up live, beyond the map's own closables. Their ids appear in `closed` while up. */
+  barricades?: Barricade[];
+  /** Live police orders this run has carried out, oldest first. */
+  orders?: { t: SimSeconds; order: PoliceOrder }[];
 }
 
-export type EditIn = { type: 'edit'; edit: DotEdit } | { type: 'inspect'; dot: number };
+/** A road barricade placed live: a stretch of road cells that closes like any closable. */
+export interface Barricade {
+  id: Id;
+  name: string;
+  cells: number[];
+}
+
+/**
+ * A live order from the commander to one plan's run (the plan on the map), on
+ * top of that plan's own steps. Not in contracts.ts: only the app and the
+ * engine's own worker speak these.
+ */
+export type PoliceOrder =
+  /** Send officers to a cell (a gate, a street, or any spot). */
+  | { type: 'dispatch'; officerIds: Id[]; toCell: number }
+  /** Send officers back to their police post. */
+  | { type: 'recall'; officerIds: Id[] }
+  /** Shut or reopen a gate door, by its closable id. */
+  | { type: 'gate'; closableId: Id; closed: boolean }
+  /** Put up or take down a road barricade: a map closable by id, or a new stretch of road (cells given). */
+  | { type: 'barricade'; closableId: Id; closed: boolean; name?: string; cells?: number[] }
+  /** Officers and the crowd heading for one place are sent to another. */
+  | { type: 'redirect'; fromPlaceId: Id; toPlaceId: Id }
+  /** A PA or phone alert with the commander's own words. */
+  | { type: 'alert'; channel: 'pa' | 'phone'; message: string; reachShare: number; zoneCells?: number[] }
+  /** End the game now: everyone heads for the exits. */
+  | { type: 'release' };
+
+export type EditIn = { type: 'edit'; edit: DotEdit } | { type: 'inspect'; dot: number } | { type: 'order'; order: PoliceOrder };
 
 export type EditOut =
   | { type: 'inspect'; info: DotInfo }

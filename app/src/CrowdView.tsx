@@ -35,6 +35,8 @@ export interface CrowdViewProps {
   onShowFlow: (on: boolean) => void;
   /** The most congested areas, pinned on the map. */
   hotspots: PoliceHotspot[];
+  /** A road cell was clicked (not a fan, officer or vehicle), for placing a barricade or sending officers there. */
+  onPickStreet?: (cell: number) => void;
 }
 
 /**
@@ -55,6 +57,8 @@ export function CrowdView(props: CrowdViewProps) {
   const alertsShown = useRef(0);
   const pickVehicleRef = useRef(onPickVehicle);
   pickVehicleRef.current = onPickVehicle;
+  const pickStreetRef = useRef(props.onPickStreet);
+  pickStreetRef.current = props.onPickStreet;
   // The weather layer is laid out in CSS pixels, so a flake is the same size
   // here as over the side-by-side maps.
   const [size, setSize] = useState({ w: 1000, h: 600 });
@@ -81,6 +85,8 @@ export function CrowdView(props: CrowdViewProps) {
       onPick: (dot) => pickRef.current(dot),
       onPickOfficer: (id) => pickOfficerRef.current(id),
       onPickVehicle: (vehicle) => pickVehicleRef.current(vehicle),
+      onPickStreet: (cell) => pickStreetRef.current?.(cell),
+      picking: () => pickStreetRef.current !== undefined,
       onFollowChange: setFollowing,
     });
     sceneRef.current = scene;
