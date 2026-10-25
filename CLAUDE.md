@@ -148,7 +148,7 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 - **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
 - **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work". See "Danger scoring" below for why they still barely separate the plans.
 - **Plan edits no longer restart the runs on every keystroke.** `inits` depends on `[loaded, generation]` only, and edits show **Restart with my changes**.
-- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The ⚠ button goes back there and ⤢ shows the whole map.
+- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The Incident button goes back there and Whole map shows all of it.
 - The canned briefing (template, used whenever `fm serve` is down) is folded under "Full numbers for every plan". It is a wall of raw figures, and the verdict sentence says the same thing in one line.
 
 ## Danger scoring
