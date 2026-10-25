@@ -111,7 +111,16 @@ function buildRoadNet(map: MapBundle): RoadNet {
   const { width: W, height: H, cells } = map;
   const size = W * H;
   const mask = new Uint8Array(size);
-  const nearLot = parkingConnectors(map);
+  // Preserve the calibrated Ohio network until narrow driveways have a full
+  // aisle/footprint model. Imported grounds use explicit shortest connectors.
+  const nearLot = map.id === 'ohio-stadium' ? new Uint8Array(size) : parkingConnectors(map);
+  if(map.id === 'ohio-stadium')for(let c=0;c<size;c++) {
+    if(cells[c]!=='parking')continue;
+    const cx=c%W,cy=Math.floor(c/W);
+    for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++) {
+      const x=cx+dx,y=cy+dy;if(x>=0&&y>=0&&x<W&&y<H)nearLot[y*W+x]=1;
+    }
+  }
   for (let i = 0; i < size; i++) {
     const kind = cells[i];
     if (kind === 'road') mask[i] = MASK_ROAD;
@@ -1117,7 +1126,7 @@ export class TrafficModel {
         // An off-map arrival can choose another approach when its original
         // road component has filled up but another connected lot has space.
         // No teleport on the map and no additional RNG draws.
-        if (anyLotOpen && (cell < 0 || lots.dist[cell] === UNREACHABLE)) {
+        if (this.map.id !== 'ohio-stadium' && anyLotOpen && (cell < 0 || lots.dist[cell] === UNREACHABLE)) {
           const alternatives = this.net.entries.filter(e => this.closedCells[e.cell] !== 1 && lots.dist[e.cell] !== UNREACHABLE);
           if (alternatives.length) {
             cell = alternatives[i % alternatives.length]!.cell;
