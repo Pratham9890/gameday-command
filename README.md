@@ -172,6 +172,16 @@ The map is now zoomable (scroll, drag, double-click, or Fit / Stadium / Incident
 - **Most congested right now:** a ranked list per plan, merging packed standing crowds and stopped traffic, with numbered pins on the map and a button to fly to each. Seated fans are left out.
 - **The Horseshoe in 3D:** tiered stands around a field with yard lines and end zones, the crowd sitting on the tiers, street centre lines and names from OpenStreetMap.
 
+### Commander's brief, any stadium, and real conditions
+
+- **Start empty, import any stadium.** With no `?map=`, the app opens on a stadium chooser. Search OpenStreetMap by name and import: the server downloads the stadium and half a mile around it and builds the map, streets, lots and gates (gate count scales with capacity; gates are placed evenly, an assumption shown as such). Imported stadiums are saved under `data/stadiums/`.
+- **Right now, low / medium / high.** Every gate's queue and every street's stopped vehicles, levelled against what is usual at that minute to kickoff from past runs of that stadium (each finished run adds to the history), or fixed thresholds until there is history.
+- **Real conditions.** Upload or fetch a JSON/CSV feed of gate queues and stopped vehicles (format in `app/src/conditions.ts`); the brief then reads it instead of the simulation and says where the numbers came from. Only what the feed reports is shown.
+- **Suggested plans.** One click builds three editable plans from the current conditions: redirect the busiest gate to a quiet one, close it and move its queue, or officers plus a street closure.
+- **Best for your priority.** Pick what matters most (clear fastest, least crush risk, fewest officers, ambulance access) and the plans are ranked by it. The tool still does not decide; it says "your call".
+- **What do you think?** After a comparison, the commander records the plan they would pick, whether they agree with the ranking, and a note.
+- **Plan-step dropdowns.** Add any step from menus: close or open a gate or street, send officers, redirect, alert, shelter.
+
 ## Rules this project holds to
 
 - No Claude API and no paid API. Models run locally: Kev via MLX, the briefing via Apple's on-device `fm serve`.

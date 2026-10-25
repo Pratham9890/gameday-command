@@ -43,6 +43,17 @@ Read `GOAL.md` for what this is and `contracts.ts` for the shared contract. **`c
 - **Hot reload of a 2D view can wedge the dev page** (main thread blocked; navigation then times out). A fresh tab runs fine. Reload rather than trust a page that has taken many HMR updates.
 - `window.gamedayMap.lookAt(xM, yM, zoom)`, `window.gamedayScene` (the 3D scene) and `window.gameday.vehiclesIn(run, state)` exist for unattended checks.
 
+## Commander's brief (feat/command-brief)
+
+- `app/src/command.ts` is the pure core: `levelOf` (history ratio over 1.3x is high, under 0.75x low, with absolute floors so tiny numbers stay low), `readings`, `suggestPlans`, `rankByPriority`, `noneAchieve`. `CommandPanel.tsx` is the UI; `StartScreen.tsx` the empty start.
+- History is recorded in the app once per sim minute per run (only moments later than that run's last, so a rewind does not double-count) and POSTed when all three plans finish (`/api/history`). The server averages by map, kind, subject and minute.
+- Real conditions are compared with history only when the feed gives `minuteToKickoff`; the simulation's clock says nothing about when real scans were taken.
+- Stadium import: `world/src/osm/fetch.ts` (Nominatim search, Overpass extract) is shared by `npm run fetch-map` and `/api/stadiums/import`. The server process can reach both; the Claude Code sandbox shell cannot reach Overpass. `buildStadiumMap(extract, options)` takes the stadium's OSM id, name and capacity; Ohio Stadium is the default, unchanged.
+- **Imported stadiums look like themselves.** `world/src/teams.ts` maps home teams (from Wikidata occupants, P466) or stadium names to colours; Wikidata rarely records team colours, so the table is the source and unknown teams get a generated pair, labelled as such. Wikidata also gives real capacity (P1083), which sets the gate count. `MapBundle.theme` drives seats, end zones, the midfield logo, gate badges and the app accent (`app/src/theme.ts`); Ohio Stadium keeps its exact original palette.
+- **Multipolygon outlines are stitched** (`assembleRings`): Lumen Field's outline is two ways, and taking the first alone gave a 20-point sliver. The field follows the bowl's long axis (`MapBundle.fieldAxis`, snapped to north-south within 8°) and the sport from OSM's tag (`MapBundle.sport`): gridiron, soccer pitch, cricket oval with the pitch, or a baseball diamond. Small grounds get a thinner concourse and narrower gates, and capacity is estimated from the outline when nothing gives it.
+- Stadium search is sorted by Nominatim importance: "Beaver Stadium" first found a high-school ground in Washington.
+- Kev on a 16 GB Mac: the first answer took 3 minutes (MLX warm-up plus swap), then about 1.2 s. Warm it before a demo.
+
 ## The OSM map
 
 `world/data/ohio-stadium.osm.json` is a committed 2.5 MB Overpass extract (6,291 elements) around Ohio Stadium, OSM way 119153498. Refetch with `npm run fetch-map`.
@@ -154,13 +165,20 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 
 ## The commander screen
 
-`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The map takes the left and one story runs down the right, as **1 · Situation**, **2 · Three plans, same crowd** and **3 · Verdict**. A dismissible "how it works" strip sits under the top bar. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The header names the stadium (team-colour stripe) and holds the situation tabs and clock; a transport bar above the map holds play, speed, weather, vehicles and restart. The map well is the one dark element; the right rail has tabs: **Brief** (situation, commander's brief, most congested), **Plans** (verdict and plan cards), **Gates**, **Map key** and **About**. The chosen tab is remembered in localStorage. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+
+**Visual language** (`styles.css` header comment): US road signage and incident-command boards. Overpass (open Highway Gothic) for headings and numbers, Public Sans for text, loaded from Google Fonts in `app/index.html`. Guide green is the primary action, warning yellow medium, stop red high; team colours appear only in the header stripe, plan letters and gate badges. Sentence case, no emoji or middle-dot strings in copy.
+
+- **Light and dark.** `ThemeToggle.tsx` sets `data-theme` on `<html>` and stores it as `gd-theme`; until someone picks, the stylesheet follows `prefers-color-scheme`. `index.html` applies a saved pick before first paint. Every colour is a token on `:root` with a dark set under `[data-theme='dark']` and the media query; selected tabs use `--inverse-bg`/`--inverse-ink` rather than `--ink` and white, which would invert badly. The map well is dark in both.
+- Text is 12px or larger and every text colour passes 4.5:1 in both modes (checked in the page); keep it that way when adding a colour.
+- The plan on the map is switched from the map itself (A/B/C in its top-left corner). The map key folds to a "Key" button and remembers it (`gd-legend`).
+- `Ranking` (priority, best plan, feedback) sits on the Plans tab under the verdict; `CommandPanel` on Brief is only the current levels and plan builder. The rail jumps to Plans once when all three runs finish.
 
 - **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
 - **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.
 - **Plan cards show only numbers that differ between plans.** These are time to clear, first officer and officer time (when the plan sends officers), and fans the alert reached (when it has one). Danger minutes and peak density sit under "How the AI and the numbers work". See "Danger scoring" below for why they still barely separate the plans.
 - **Plan edits no longer restart the runs on every keystroke.** `inits` depends on `[loaded, generation]` only, and edits show **Restart with my changes**.
-- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The ⚠ button goes back there and ⤢ shows the whole map.
+- **The close-up opens on the incident zone** at a zoom where the crowd already reads as people, with a labelled zone. The Incident button goes back there and Whole map shows all of it.
 - The canned briefing (template, used whenever `fm serve` is down) is folded under "Full numbers for every plan". It is a wall of raw figures, and the verdict sentence says the same thing in one line.
 
 ## Danger scoring

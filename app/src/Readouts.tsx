@@ -35,9 +35,6 @@ export function readoutOf(frame: TickFrame | undefined): Readout {
   return { weather: frame?.weather, moving, stopped, parked, ems, hasVehicles: !!v };
 }
 
-const WEATHER_ICON: Record<WeatherState['kind'], string> = {
-  clear: '☀', overcast: '☁', rain: '🌧', heavy_rain: '🌧', thunderstorm: '⛈', snow: '❄', fog: '🌫', heat: '🌡',
-};
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 const visibility = (m: number) => (m >= 5000 ? '5+ km' : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`);
@@ -48,12 +45,11 @@ export function ReadoutChips({ readout }: { readout: Readout }) {
     <>
       {w && (
         <div className={`chip weather-chip wx-${w.kind}`}>
-          <span className="wx-icon">{WEATHER_ICON[w.kind]}</span>
           <span>
             <strong>{WEATHER_LABELS[w.kind]}</strong>
-            {w.lightning && <span className="strike"> · lightning</span>}
+            {w.lightning && <span className="strike">, lightning</span>}
             <em>
-              {Math.round(w.tempC)}°C · wind {Math.round(w.windMps * 2.237)} mph {COMPASS[Math.round(w.windFromDeg / 45) % 8]} · vis{' '}
+              {Math.round(w.tempC)}°C, wind {Math.round(w.windMps * 2.237)} mph {COMPASS[Math.round(w.windFromDeg / 45) % 8]}, visibility{' '}
               {visibility(w.visibilityM)}
             </em>
           </span>
@@ -73,7 +69,7 @@ export function ReadoutChips({ readout }: { readout: Readout }) {
             <i className="dot parked" />
             {readout.parked.toLocaleString()} parked
           </span>
-          {readout.ems && <span className={`ems ${readout.ems.includes('blocked') ? 'hot' : ''}`}>🚑 {readout.ems}</span>}
+          {readout.ems && <span className={`ems ${readout.ems.includes('blocked') ? 'hot' : ''}`}>{readout.ems}</span>}
         </div>
       )}
     </>

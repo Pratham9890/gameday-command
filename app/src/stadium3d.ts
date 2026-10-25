@@ -35,6 +35,38 @@ const quad = (pts: [number, number, number][]) =>
     return [p.sx, p.sy];
   });
 
+const hexNum = (hex: string) => parseInt(hex.replace('#', ''), 16);
+const scale = (c: number, k: number) => {
+  const ch = (shift: number) => Math.max(0, Math.min(255, Math.round(((c >> shift) & 255) * k)));
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
+};
+
+/**
+ * Seat, end-zone and logo colours. Ohio Stadium keeps the exact scarlet and
+ * grey it always had; every other stadium is painted in its home team's two
+ * colours, shaded so alternate rows read as tiers.
+ */
+export function bowlPalette(map: MapBundle) {
+  const theme = map.theme;
+  if (!theme || theme.team === 'Ohio State Buckeyes') {
+    return { a1: 0x9c1c24, a2: 0x8a1820, b1: 0x6d7179, b2: 0x62666e, aisle: 0xb9b4aa, endZone: 0xa3161e, logo: 0xbb0000, logoRing: 0xf2f2ee, logoCore: 0x347c3a };
+  }
+  const p = hexNum(theme.primary);
+  const q = hexNum(theme.secondary);
+  // White or near-white secondaries would glare as whole sections; tone them to a light grey.
+  const lum = (c: number) => (0.299 * ((c >> 16) & 255) + 0.587 * ((c >> 8) & 255) + 0.114 * (c & 255)) / 255;
+  const q2 = lum(q) > 0.85 ? 0xd9dce1 : q;
+  return {
+    a1: scale(p, 0.95), a2: scale(p, 0.82),
+    b1: scale(q2, 0.9), b2: scale(q2, 0.78),
+    aisle: 0xb9b4aa,
+    endZone: scale(p, 0.92),
+    logo: p,
+    logoRing: q2,
+    logoCore: 0x347c3a,
+  };
+}
+
 /** Build diagonal tier batches and ground-level turf from the stadium cells. */
 export function buildBowl(map: MapBundle): Bowl | null {
   const { width: W, height: H, cells } = map;
@@ -92,6 +124,7 @@ export function buildBowl(map: MapBundle): Bowl | null {
   cx /= seats.length;
   cy /= seats.length;
 
+  const palette = bowlPalette(map);
   const shell: Bowl['shell'] = [];
   const hOf = (u: number, v: number) => (u >= 0 && v >= 0 && u < W && v < H ? height[v * W + u]! : 0);
   for (let start = 0; start < seats.length;) {
@@ -133,54 +166,143 @@ export function buildBowl(map: MapBundle): Bowl | null {
       const x1 = (u + 1) * C;
       const y0 = v * C;
       const y1 = (v + 1) * C;
-      // Seats: scarlet and grey sections around the bowl, a lighter aisle every few.
+      // Seats in sections of the home team's two colours, a lighter aisle every few.
       const angle = Math.atan2(v - cy, u - cx);
       const section = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * 28);
       const aisle = Math.abs(((angle + Math.PI) / (Math.PI * 2)) * 28 - section - 0.5) > 0.46;
       const row = Math.round(h / TIER_STEP) % 2;
-      const seat = aisle ? 0xb9b4aa : section % 2 ? (row ? 0x9c1c24 : 0x8a1820) : row ? 0x6d7179 : 0x62666e;
+      const seat = aisle ? palette.aisle : section % 2 ? (row ? palette.a1 : palette.a2) : row ? palette.b1 : palette.b2;
       g.poly(quad([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]]), true).fill(seat);
     }
     start = end;
   }
 
-  // The field: turf in ten-yard stripes, white lines every five yards, scarlet end zones.
+  // The field: turf in ten-yard stripes, white lines every five yards, end
+  // zones in the home team's colour, laid along the bowl's own axis.
   const turf = new Graphics();
   const fieldCells = map.field ?? [];
   if (fieldCells.length > 0) {
-    let fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity;
+    let mx = 0;
+    let my = 0;
     for (const c of fieldCells) {
-      fx0 = Math.min(fx0, (c % W) * C);
-      fx1 = Math.max(fx1, ((c % W) + 1) * C);
-      fy0 = Math.min(fy0, ((c / W) | 0) * C);
-      fy1 = Math.max(fy1, (((c / W) | 0) + 1) * C);
+      mx += ((c % W) + 0.5) * C;
+      my += (((c / W) | 0) + 0.5) * C;
     }
-    const midX = (fx0 + fx1) / 2;
-    const midY = (fy0 + fy1) / 2;
-    const yd = 0.9144;
-    const halfW = (53.3 * yd) / 2;
-    const halfL = (120 * yd) / 2;
-    turf.poly(quad([[fx0, fy0, 0], [fx1, fy0, 0], [fx1, fy1, 0], [fx0, fy1, 0]]), true).fill(0x2f6b34);
-    for (let k = 0; k < 12; k++) {
-      const a = midY - halfL + k * 10 * yd;
-      const b = a + 10 * yd;
-      const endZone = k === 0 || k === 11;
-      turf.poly(quad([[midX - halfW, a, 0], [midX + halfW, a, 0], [midX + halfW, b, 0], [midX - halfW, b, 0]]), true).fill(endZone ? 0xa3161e : k % 2 ? 0x3a8a40 : 0x347c3a);
+    mx /= fieldCells.length;
+    my /= fieldCells.length;
+    const axis = map.fieldAxis ?? 0;
+    const cos = Math.cos(axis);
+    const sin = Math.sin(axis);
+    // The field's own frame: u across it, v along it (same rotation the map builder used).
+    let uMax = 0;
+    let vMax = 0;
+    for (const c of fieldCells) {
+      const dx = ((c % W) + 0.5) * C - mx;
+      const dy = (((c / W) | 0) + 0.5) * C - my;
+      uMax = Math.max(uMax, Math.abs(dx * cos - dy * sin));
+      vMax = Math.max(vMax, Math.abs(dx * sin + dy * cos));
     }
-    const line = (y: number, w = 0.25) => turf.poly(quad([[midX - halfW, y - w, 0], [midX + halfW, y - w, 0], [midX + halfW, y + w, 0], [midX - halfW, y + w, 0]]), true).fill(0xf2f2ee);
-    for (let k = 0; k <= 20; k++) line(midY - 50 * yd + k * 5 * yd, k % 2 ? 0.12 : 0.22);
-    line(midY - halfL, 0.22);
-    line(midY + halfL, 0.22);
-    for (const side of [-1, 1]) {
-      const x = midX + side * halfW;
-      turf.poly(quad([[x - 0.22, midY - halfL, 0], [x + 0.22, midY - halfL, 0], [x + 0.22, midY + halfL, 0], [x - 0.22, midY + halfL, 0]]), true).fill(0xf2f2ee);
+    const at = (uu: number, vv: number): [number, number, number] => [mx + uu * cos + vv * sin, my - uu * sin + vv * cos, 0];
+    const rect = (u0: number, v0: number, u1: number, v1: number, colour: number) =>
+      turf.poly(quad([at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)]), true).fill(colour);
+    const sport = map.sport ?? 'football';
+    const white = 0xf2f2ee;
+    const ring = (ru: number, rv: number, w: number, colour: number, segments = 48) => {
+      // An ellipse outline in the field's frame, as a strip of thin quads.
+      for (let i = 0; i < segments; i++) {
+        const a0 = (i / segments) * Math.PI * 2;
+        const a1 = ((i + 1) / segments) * Math.PI * 2;
+        const p = (a: number, r: number): [number, number, number] => at(Math.cos(a) * (ru + r), Math.sin(a) * (rv + r));
+        turf.poly(quad([p(a0, -w), p(a1, -w), p(a1, w), p(a0, w)]), true).fill(colour);
+      }
+    };
+    const disc = (ru: number, rv: number, colour: number, segments = 48) => {
+      const pts: [number, number, number][] = [];
+      for (let i = 0; i < segments; i++) {
+        const a = (i / segments) * Math.PI * 2;
+        pts.push(at(Math.cos(a) * ru, Math.sin(a) * rv));
+      }
+      turf.poly(quad(pts), true).fill(colour);
+    };
+
+    if (sport === 'cricket' || sport === 'baseball') {
+      // An oval of grass, mown in rings, drawn cell by cell so it fills the ground's own shape.
+      for (const c of fieldCells) {
+        const x0 = (c % W) * C;
+        const y0 = ((c / W) | 0) * C;
+        const dx = x0 + C / 2 - mx;
+        const dy = y0 + C / 2 - my;
+        const band = Math.floor(Math.hypot(dx, dy) / 6) % 2;
+        turf.poly(quad([[x0, y0, 0], [x0 + C, y0, 0], [x0 + C, y0 + C, 0], [x0, y0 + C, 0]]), true).fill(band ? 0x3a8a40 : 0x347c3a);
+      }
+      if (sport === 'cricket') {
+        // The 30-yard circle, the square, and the pitch: 20 m of rolled clay between the creases.
+        ring(27.4, 27.4, 0.2, white);
+        rect(-6, -12, 6, 12, 0x3f7d42);
+        rect(-1.5, -11, 1.5, 11, 0xc8b27a);
+        for (const end of [-1, 1]) {
+          rect(-1.9, end * 10.06 - 0.06, 1.9, end * 10.06 + 0.06, white);
+          rect(-0.12, end * 10.06 - 0.25, 0.12, end * 10.06 + 0.25, 0x6b4a2b);
+        }
+      } else {
+        // The infield: a dirt diamond with bases 27.4 m apart, and the mound.
+        const d = 27.4 / Math.SQRT2;
+        const home = vMax * 0.45;
+        turf.poly(quad([at(0, home), at(d * 1.25, home - d * 1.25), at(0, home - d * 2.5), at(-d * 1.25, home - d * 1.25)]), true).fill(0xb7834f);
+        turf.poly(quad([at(0, home - 2), at(d * 0.8, home - d), at(0, home - d * 2 + 2), at(-d * 0.8, home - d)]), true).fill(0x3a8a40);
+        for (const [bu, bv] of [[0, home], [d, home - d], [0, home - 2 * d], [-d, home - d]] as const) rect(bu - 0.4, bv - 0.4, bu + 0.4, bv + 0.4, white);
+        disc(2.7, 2.7, 0xb7834f);
+      }
+    } else if (sport === 'soccer') {
+      const k = Math.min(1, (vMax + C / 2) / 54, (uMax + C / 2) / 35);
+      const hw = 34 * k;
+      const hl = 52.5 * k;
+      rect(-uMax - C / 2, -vMax - C / 2, uMax + C / 2, vMax + C / 2, 0x2f6b34);
+      for (let i = 0; i < 12; i++) rect(-hw, -hl + (i * 2 * hl) / 12, hw, -hl + ((i + 1) * 2 * hl) / 12, i % 2 ? 0x3a8a40 : 0x347c3a);
+      const line = (u0: number, v0: number, u1: number, v1: number) => rect(Math.min(u0, u1) - 0.12, Math.min(v0, v1) - 0.12, Math.max(u0, u1) + 0.12, Math.max(v0, v1) + 0.12, white);
+      line(-hw, -hl, hw, -hl);
+      line(-hw, hl, hw, hl);
+      line(-hw, -hl, -hw, hl);
+      line(hw, -hl, hw, hl);
+      line(-hw, 0, hw, 0);
+      ring(9.15 * k, 9.15 * k, 0.12, white);
+      for (const end of [-1, 1]) {
+        const v0 = end * hl;
+        const box = (half: number, depth: number) => {
+          line(-half, v0, -half, v0 - end * depth);
+          line(half, v0, half, v0 - end * depth);
+          line(-half, v0 - end * depth, half, v0 - end * depth);
+        };
+        box(20.15 * k, 16.5 * k);
+        box(9.16 * k, 5.5 * k);
+        rect(-3.66 * k, v0 - 0.3, 3.66 * k, v0 + 0.3 + end * 1.5, palette.endZone);
+      }
+      disc(1.2, 1.2, palette.logo);
+    } else {
+      const yd = 0.9144;
+      // A regulation field, shrunk to fit a smaller bowl.
+      const k = Math.min(1, (vMax + C / 2) / (60 * yd), (uMax + C / 2) / (26.65 * yd));
+      const halfW = 26.65 * yd * k;
+      const halfL = 60 * yd * k;
+      const step = 10 * yd * k;
+      rect(-uMax - C / 2, -vMax - C / 2, uMax + C / 2, vMax + C / 2, 0x2f6b34);
+      for (let i = 0; i < 12; i++) {
+        const a = -halfL + i * step;
+        const endZone = i === 0 || i === 11;
+        rect(-halfW, a, halfW, a + step, endZone ? palette.endZone : i % 2 ? 0x3a8a40 : 0x347c3a);
+      }
+      const line = (vv: number, w: number) => rect(-halfW, vv - w, halfW, vv + w, white);
+      for (let i = 0; i <= 20; i++) line(-50 * yd * k + i * 5 * yd * k, i % 2 ? 0.12 : 0.22);
+      line(-halfL, 0.22);
+      line(halfL, 0.22);
+      for (const side of [-1, 1]) rect(side * halfW - 0.22, -halfL, side * halfW + 0.22, halfL, white);
+      // The midfield logo: Ohio's block O, or a ring in the home team's colours.
+      const o = isoProject(mx, my, 0);
+      turf.ellipse(o.sx, o.sy, 9 * k, 4.5 * k).fill(palette.logo);
+      turf.ellipse(o.sx, o.sy, 6.2 * k, 3.1 * k).fill(palette.logoRing);
+      turf.ellipse(o.sx, o.sy, 3.6 * k, 1.8 * k).fill(palette.logo);
+      turf.ellipse(o.sx, o.sy, 2 * k, 1 * k).fill(palette.logoCore);
     }
-    // The block O at midfield.
-    const o = isoProject(midX, midY, 0);
-    turf.ellipse(o.sx, o.sy, 9, 4.5).fill(0xbb0000);
-    turf.ellipse(o.sx, o.sy, 6.2, 3.1).fill(0xf2f2ee);
-    turf.ellipse(o.sx, o.sy, 3.6, 1.8).fill(0xbb0000);
-    turf.ellipse(o.sx, o.sy, 2, 1).fill(0x347c3a);
   }
 
   return { shell, turf, height, seats: Int32Array.from(seats) };

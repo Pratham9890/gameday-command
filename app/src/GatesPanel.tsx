@@ -27,10 +27,28 @@ export function GatesPanel({ map, run, label, onToggle, disabled = false }: {
 
   return (
     <div className="gates">
-      <p className="muted">
-        Plan {label} · <strong className="ok">{open} open</strong> · <strong className={open < gates.length ? 'bad' : undefined}>{gates.length - open} closed</strong> ·{' '}
-        {n(totalIn)} in/min · {n(totalOut)} out/min · {n(waiting)} waiting
-      </p>
+      <dl className="stat-row" aria-label={`Gates for plan ${label}`}>
+        <div>
+          <dt>Open</dt>
+          <dd className="ok">{open}</dd>
+        </div>
+        <div>
+          <dt>Closed</dt>
+          <dd className={open < gates.length ? 'bad' : undefined}>{gates.length - open}</dd>
+        </div>
+        <div>
+          <dt>In per min</dt>
+          <dd>{n(totalIn)}</dd>
+        </div>
+        <div>
+          <dt>Out per min</dt>
+          <dd>{n(totalOut)}</dd>
+        </div>
+        <div>
+          <dt>Waiting</dt>
+          <dd>{n(waiting)}</dd>
+        </div>
+      </dl>
       {gates.length === 0 ? (
         <p className="muted">Starts with the run.</p>
       ) : (

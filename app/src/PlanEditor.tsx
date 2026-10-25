@@ -1,4 +1,5 @@
 import type { MapBundle, PlanAction, ResponsePlan } from '../../contracts.ts';
+import { StepAdder } from './StepAdder.tsx';
 
 /** A one-line description of what a plan step does, in the commander's words. */
 export function describeAction(action: PlanAction, map?: MapBundle): string {
@@ -39,6 +40,14 @@ export function PlanEditor({ plan, map, disabled, onChange }: PlanEditorProps) {
   const update = (index: number, patch: Partial<PlanAction>) => {
     const actions = plan.actions.map((action, i) => (i === index ? ({ ...action, ...patch } as PlanAction) : action));
     onChange({ ...plan, actions }, disabled);
+  };
+
+  // Removing a step shifts the ones after it, so the switched-off set shifts too.
+  const remove = (index: number) => {
+    const actions = plan.actions.filter((_, i) => i !== index);
+    const next = new Set<number>();
+    for (const i of disabled) if (i !== index) next.add(i > index ? i - 1 : i);
+    onChange({ ...plan, actions }, next);
   };
 
   const toggle = (index: number) => {
@@ -93,9 +102,15 @@ export function PlanEditor({ plan, map, disabled, onChange }: PlanEditorProps) {
               %
             </label>
           )}
+          <button className="small ghost step-remove" title="Remove this step" onClick={() => remove(index)}>
+            ✕
+          </button>
         </div>
       ))}
       {plan.actions.length === 0 && <p className="muted">This plan does nothing — a useful baseline.</p>}
+      {map && (
+        <StepAdder map={map} maxOfficers={plan.officersAvailable} onAdd={(step) => onChange({ ...plan, actions: [...plan.actions, step] }, disabled)} />
+      )}
     </div>
   );
 }

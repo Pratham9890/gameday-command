@@ -190,15 +190,15 @@ export function CrowdView(props: CrowdViewProps) {
       <div className="crowd-tools">
         <button title="Zoom in" onClick={() => sceneRef.current?.zoomBy(1.6)}>+</button>
         <button title="Zoom out" onClick={() => sceneRef.current?.zoomBy(1 / 1.6)}>−</button>
-        <button title="Whole map" onClick={() => sceneRef.current?.fit()}>⤢</button>
-        <button title="Back to the incident" onClick={() => sceneRef.current?.showIncident()}>⚠</button>
+        <button title="Show the whole map" onClick={() => sceneRef.current?.fit()}>Whole map</button>
+        <button title="Back to the incident" onClick={() => sceneRef.current?.showIncident()}>Incident</button>
       </div>
       <div className="crowd-toggles">
         <label>
-          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> crowd density
+          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> Crowd density
         </label>
         <label>
-          <input type="checkbox" checked={showFlow} onChange={(e) => onShowFlow(e.target.checked)} /> traffic flow
+          <input type="checkbox" checked={showFlow} onChange={(e) => onShowFlow(e.target.checked)} /> Traffic flow
         </label>
         {selected !== null && (
           <label>
@@ -214,7 +214,7 @@ export function CrowdView(props: CrowdViewProps) {
           </label>
         )}
       </div>
-      <div className="crowd-hint">scroll to zoom · drag to move · click a fan or an officer</div>
+      <div className="crowd-hint">Scroll to zoom, drag to move, click a fan or an officer</div>
     </div>
   );
 }

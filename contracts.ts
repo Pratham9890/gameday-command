@@ -94,6 +94,13 @@ export interface VehicleFrame {
   waitedS: Float32Array;                 // seconds spent stopped so far
 }
 
+export interface StadiumTheme {
+  team: string;                          // "Michigan Wolverines"
+  primary: string;                       // main colour, seats and end zones
+  secondary: string;                     // second colour, alternate sections and accents
+  source: string;                        // where the colours came from
+}
+
 // ───────────────────────────── Map [B] ─────────────────────────────
 
 export type CellKind = 'blocked' | 'walk' | 'road' | 'stands' | 'concourse' | 'shelter' | 'parking';
@@ -122,6 +129,12 @@ export interface MapBundle {
   streets?: { name: string; kind: string; points: number[] }[];
   /** v2: the playing field's cells, inside the bowl. Nobody is seated there. */
   field?: number[];
+  /** v2: the field's long axis, radians clockwise from north (0 = north-south). */
+  fieldAxis?: number;
+  /** v2: what the field is marked for, from OSM's sport tag. */
+  sport?: 'football' | 'soccer' | 'cricket' | 'baseball';
+  /** v2: the home team's colours, for the stands, field and gate badges. Hex like "#00274c". */
+  theme?: StadiumTheme;
 }
 
 // ─────────────────────────── Crowd [C] ─────────────────────────────
