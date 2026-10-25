@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install",
+  "buildCommand": "npm run build && node scripts/static-api.ts",
+  "outputDirectory": "app/dist",
+  "functions": {
+    "api/decide.js": { "includeFiles": "server/data/decision-seed.json" }
+  },
+  "rewrites": [
+    { "source": "/api/maps", "destination": "/static-api/maps.json" },
+    { "source": "/api/maps/:id", "destination": "/static-api/maps/:id.json" },
+    { "source": "/api/decision-defaults", "destination": "/static-api/decision-defaults.json" },
+    {
+      "source": "/api/plans",
+      "has": [{ "type": "query", "key": "incident", "value": "(?<kind>[a-z_]+)" }],
+      "destination": "/static-api/plans/:kind.json"
+    },
+    { "source": "/api/history", "destination": "/static-api/empty.json" },
+    { "source": "/api/feedback", "destination": "/static-api/empty.json" }
+  ]
+}
