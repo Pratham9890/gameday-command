@@ -5,7 +5,8 @@
   "buildCommand": "npm run build && node scripts/static-api.ts",
   "outputDirectory": "app/dist",
   "functions": {
-    "api/decide.js": { "includeFiles": "server/data/decision-seed.json" }
+    "api/decide.js": { "includeFiles": "server/data/decision-seed.json" },
+    "api/briefing.js": { "includeFiles": "server/src/briefing.ts" }
   },
   "rewrites": [
     { "source": "/api/maps", "destination": "/static-api/maps.json" },
