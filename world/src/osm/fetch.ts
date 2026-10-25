@@ -11,6 +11,8 @@ import type { OsmElement, OsmExtract } from './stadium.ts';
  */
 
 export const OVERPASS_URL = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
+/** Public mirrors, tried in turn when the main server is busy (504/429 are common at peak). */
+const OVERPASS_MIRRORS = ['https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 export const NOMINATIM_URL = process.env.NOMINATIM_URL ?? 'https://nominatim.openstreetmap.org';
 const USER_AGENT = 'GamedayCommand/0.1 (HackOHIO student project)';
 
@@ -67,15 +69,29 @@ export function trimElement(element: OsmElement): OsmElement | null {
   return out.geometry || out.members?.length ? out : null;
 }
 
-/** Download and trim the area around a stadium. Throws with Overpass's own message on failure. */
+/** Download and trim the area around a stadium, trying mirrors when a server is busy. */
 export async function fetchExtract(center: LatLon, radiusM = STADIUM_RADIUS_M, url = OVERPASS_URL): Promise<OsmExtract & { bbox: ReturnType<typeof bboxAround> }> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': USER_AGENT },
-    body: new URLSearchParams({ data: extractQuery(center, radiusM) }),
-  });
-  if (!res.ok) throw new Error(`Overpass returned ${res.status} ${res.statusText}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
-  const raw = (await res.json()) as { elements: OsmElement[] };
+  let raw: { elements: OsmElement[] } | null = null;
+  const errors: string[] = [];
+  for (const server of [url, ...OVERPASS_MIRRORS.filter((m) => m !== url)]) {
+    try {
+      const res = await fetch(server, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': USER_AGENT },
+        body: new URLSearchParams({ data: extractQuery(center, radiusM) }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!res.ok) {
+        errors.push(`${new URL(server).host} ${res.status}`);
+        continue;
+      }
+      raw = (await res.json()) as { elements: OsmElement[] };
+      break;
+    } catch (error) {
+      errors.push(`${new URL(server).host} ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!raw) throw new Error(`every Overpass server failed (${errors.join('; ')}). Try again in a minute.`);
   return {
     source: 'OpenStreetMap via Overpass API, © OpenStreetMap contributors, ODbL',
     fetchedAt: new Date().toISOString(),
@@ -94,6 +110,8 @@ export interface StadiumHit {
   lat: number;
   lon: number;
   capacity?: number;
+  /** Wikidata item, when OSM links one: where the home team and real capacity come from. */
+  wikidata?: string;
 }
 
 /** Find stadiums by name through Nominatim. Only leisure=stadium results come back. */
@@ -103,8 +121,11 @@ export async function searchStadiums(q: string, url = NOMINATIM_URL): Promise<St
   if (!res.ok) throw new Error(`Nominatim returned ${res.status} ${res.statusText}`);
   const rows = (await res.json()) as {
     category?: string; type?: string; osm_type: string; osm_id: number; lat: string; lon: string;
-    name?: string; display_name: string; extratags?: Record<string, string>;
+    name?: string; display_name: string; extratags?: Record<string, string>; importance?: number;
   }[];
+  // Most important first: "Beaver Stadium" should find Penn State's before a
+  // high-school ground of the same name.
+  rows.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
   return rows
     .filter((r) => r.category === 'leisure' && r.type === 'stadium' && (r.osm_type === 'way' || r.osm_type === 'relation'))
     .map((r) => ({
@@ -115,5 +136,25 @@ export async function searchStadiums(q: string, url = NOMINATIM_URL): Promise<St
       lat: Number(r.lat),
       lon: Number(r.lon),
       capacity: Number(r.extratags?.capacity) || undefined,
+      wikidata: /^Q\d+$/.test(r.extratags?.wikidata ?? '') ? r.extratags!.wikidata : undefined,
     }));
+}
+
+/** Home teams (in Wikidata's order) and maximum capacity for a stadium's Wikidata item. Best effort: empty on any failure. */
+export async function stadiumFacts(qid: string): Promise<{ teams: string[]; capacity?: number }> {
+  if (!/^Q\d+$/.test(qid)) return { teams: [] };
+  const query = `SELECT ?teamLabel ?cap WHERE { OPTIONAL { wd:${qid} wdt:P1083 ?cap } OPTIONAL { wd:${qid} wdt:P466 ?team } SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } }`;
+  try {
+    const res = await fetch(`https://query.wikidata.org/sparql?query=${encodeURIComponent(query)}`, {
+      headers: { accept: 'application/sparql-results+json', 'user-agent': USER_AGENT },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return { teams: [] };
+    const rows = ((await res.json()) as { results: { bindings: { teamLabel?: { value: string }; cap?: { value: string } }[] } }).results.bindings;
+    const teams = [...new Set(rows.map((r) => r.teamLabel?.value).filter((t): t is string => !!t && !/^Q\d+$/.test(t)))];
+    const caps = rows.map((r) => Number(r.cap?.value)).filter((n) => n > 1000);
+    return { teams, capacity: caps.length ? Math.max(...caps) : undefined };
+  } catch {
+    return { teams: [] };
+  }
 }

@@ -10,6 +10,7 @@ import { playbookFor } from '../../world/src/playbook.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from '../../world/src/osm/stadium.ts';
 import { openDb, type Db } from './db.ts';
 import { addCommandRoutes, importedMap } from './command.ts';
+import { OHIO_THEME } from '../../world/src/teams.ts';
 import { askKev } from './kev.ts';
 import { briefingIsSupported, templateBriefing } from './briefing.ts';
 import { askFm, briefingFrom } from './fm.ts';
@@ -145,7 +146,7 @@ export function createApp(db: Db): Hono {
   addCommandRoutes(
     app,
     db,
-    [...(extractExists() ? [{ id: STADIUM_MAP_ID, name: 'Ohio Stadium + 0.5 mi' }] : []), { id: TEST_MAP_ID, name: 'Three-gate test map' }],
+    [...(extractExists() ? [{ id: STADIUM_MAP_ID, name: 'Ohio Stadium + 0.5 mi', theme: OHIO_THEME }] : []), { id: TEST_MAP_ID, name: 'Three-gate test map' }],
     (id) => built.delete(id),
   );
 

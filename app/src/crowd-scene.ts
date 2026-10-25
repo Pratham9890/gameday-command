@@ -580,7 +580,8 @@ export class CrowdScene {
       const p = isoProject((sx / n) * CELL_SIZE_M, (sy / n) * CELL_SIZE_M, gate ? 6 : 20);
       const el = document.createElement('div');
       el.className = `crowd-label${gate ? ' gate' : ''}`;
-      el.textContent = gate ? place.name.replace(/\s*\(.*\)/, '') : place.kind === 'seating' ? 'Ohio Stadium' : place.name;
+      el.textContent = gate ? place.name.replace(/\s*\(.*\)/, '') : place.kind === 'seating' ? map.name.replace(/ \+ 0\.5 mi$/, '') : place.name;
+      if (gate) this.fillGateLabel(el, place.name, null);
       overlay.appendChild(el);
       this.labels.push({ el, sx: p.sx, sy: p.sy, gate, place: index });
     }
@@ -621,12 +622,23 @@ export class CrowdScene {
   private updateGateLabel(label: { el: HTMLElement; place: number }): void {
     const stat = this.scene?.gates.find((g) => g.place === label.place);
     const name = (this.init.map.places[label.place]?.name ?? '').replace(/\s*\(.*\)/, '');
-    const text = !stat ? name : stat.open ? `● ${name} · ${Math.round(stat.inPerMin)}/min` : `⛔ ${name} closed`;
+    const text = !stat ? name : stat.open ? `${Math.round(stat.inPerMin)}/min` : 'closed';
     if (this.gateText.get(label.place) === text) return;
     this.gateText.set(label.place, text);
-    label.el.textContent = text;
+    this.fillGateLabel(label.el, this.init.map.places[label.place]?.name ?? '', stat ? text : null);
     label.el.classList.toggle('open', !!stat?.open);
     label.el.classList.toggle('shut', !!stat && !stat.open);
+  }
+
+  /** A gate label: a round badge with its number in the home team's colours, then its status. */
+  private fillGateLabel(el: HTMLElement, name: string, status: string | null): void {
+    const number = /(\d+)/.exec(name)?.[1] ?? '?';
+    const badge = document.createElement('b');
+    badge.className = 'gnum';
+    badge.textContent = number;
+    const text = document.createElement('span');
+    text.textContent = status ? `Gate ${number} · ${status}` : `Gate ${number}`;
+    el.replaceChildren(badge, text);
   }
 
   /** Light up the people an alert just reached, and send a ring out over them. */

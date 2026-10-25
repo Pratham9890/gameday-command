@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { CellKind, Id, MapBundle, Place } from '../../../contracts.ts';
+import type { CellKind, Id, MapBundle, Place, StadiumTheme } from '../../../contracts.ts';
+import { OHIO_THEME, themeFor } from '../teams.ts';
 import { CELL_SIZE_M, CONTRACT_VERSION } from '../../../contracts.ts';
 import { fillPolygon, makeProjection, strokeLine, strokePolyline, type LatLon } from './raster.ts';
 
@@ -79,10 +80,44 @@ const isClosed = (geometry: OsmGeometryPoint[]) =>
   geometry[0]!.lat === geometry[geometry.length - 1]!.lat &&
   geometry[0]!.lon === geometry[geometry.length - 1]!.lon;
 
+/**
+ * A multipolygon's outer boundary is often split across several ways that only
+ * make a ring when joined end to end. Taking the first way on its own gave
+ * Lumen Field a 20-point sliver for a stadium. Pieces that never close are kept
+ * as they are, which is what OSM data that is mid-edit looks like.
+ */
+export function assembleRings(pieces: OsmGeometryPoint[][]): OsmGeometryPoint[][] {
+  const same = (a: OsmGeometryPoint, b: OsmGeometryPoint) => a.lat === b.lat && a.lon === b.lon;
+  const open = pieces.filter((p) => p.length > 1).map((p) => [...p]);
+  const rings: OsmGeometryPoint[][] = [];
+  while (open.length > 0) {
+    let ring = open.shift()!;
+    let grew = true;
+    while (!same(ring[0]!, ring[ring.length - 1]!) && grew) {
+      grew = false;
+      for (let i = 0; i < open.length; i++) {
+        const next = open[i]!;
+        const tail = ring[ring.length - 1]!;
+        if (same(tail, next[0]!)) ring = [...ring, ...next.slice(1)];
+        else if (same(tail, next[next.length - 1]!)) ring = [...ring, ...next.slice(0, -1).reverse()];
+        else continue;
+        open.splice(i, 1);
+        grew = true;
+        break;
+      }
+    }
+    rings.push(ring);
+  }
+  return rings;
+}
+
 function ringsOf(element: OsmElement): OsmGeometryPoint[][] {
   if (element.geometry) return [element.geometry];
-  return (element.members ?? []).filter((m) => m.role !== 'inner' && m.geometry).map((m) => m.geometry!);
+  return assembleRings((element.members ?? []).filter((m) => m.role !== 'inner' && m.geometry).map((m) => m.geometry!));
 }
+
+/** The biggest ring of an element: a stadium's outline, not a stray piece of it. */
+const outerRing = (element: OsmElement) => ringsOf(element).sort((a, b) => ringExtent(b) - ringExtent(a))[0] ?? [];
 
 /**
  * Paints the OSM extract onto a 2 m grid.
@@ -99,6 +134,8 @@ export interface StadiumOptions {
   /** The OSM id of the leisure=stadium way or relation to build around. */
   stadiumOsmId?: number;
   capacity?: number;
+  /** Home-team colours; worked out from the name when left out. */
+  theme?: StadiumTheme;
 }
 
 const OHIO_CAPACITY = 104_944;
@@ -161,9 +198,17 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   const stadium =
     (options.stadiumOsmId !== undefined ? stadiumCandidates.find((e) => e.id === options.stadiumOsmId) : undefined) ??
     stadiumCandidates.find((e) => (e.tags?.name ?? '').toLowerCase().includes((options.name ?? 'Ohio Stadium').toLowerCase())) ??
-    stadiumCandidates.sort((a, b) => ringExtent(ringsOf(b)[0] ?? []) - ringExtent(ringsOf(a)[0] ?? []))[0];
-  const capacity = options.capacity ?? (Number(stadium?.tags?.capacity) || OHIO_CAPACITY);
-  const gateCount = Math.max(4, Math.min(16, Math.round(capacity / SEATS_PER_GATE)));
+    stadiumCandidates.sort((a, b) => ringExtent(outerRing(b)) - ringExtent(outerRing(a)))[0];
+  // Capacity: what the import was told, else OSM's tag, else (for an imported
+  // stadium) an estimate from the outline at Ohio Stadium's ~2.7 people/m².
+  const outline = stadium ? project(outerRing(stadium)) : [];
+  let outlineCells = 0;
+  fillPolygon(outline, width, height, () => outlineCells++);
+  const estimated = options.id === undefined ? OHIO_CAPACITY : Math.round(outlineCells * CELL_SIZE_M * CELL_SIZE_M * 2.7);
+  const capacity = options.capacity ?? (Number(stadium?.tags?.capacity) || estimated);
+  const gateCount = Math.max(2, Math.min(16, Math.round(capacity / SEATS_PER_GATE)));
+  // A small ground gets narrow gate openings, or the openings are the stadium.
+  const gateHalfWidth = outlineCells > 4000 ? GATE_HALF_WIDTH_CELLS : 1;
 
   // 3. Buildings win over the ways that pass beside them. Any other stadium or
   // arena in the extract is just a building as far as the crowd is concerned.
@@ -184,12 +229,19 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   }
 
   if (!stadium) throw new Error('extract has no leisure=stadium element');
-  const stadiumRing = project(ringsOf(stadium)[0] ?? []);
+  const stadiumRing = project(outerRing(stadium));
   if (stadiumRing.length < 3) throw new Error('stadium element has no usable ring');
 
   // 5. The bowl: seating inside, a concourse ring around the rim.
-  fillPolygon(stadiumRing, width, height, set('stands'));
-  strokePolyline(stadiumRing, CONCOURSE_RADIUS_CELLS, width, height, set('concourse'));
+  let bowlArea = 0;
+  fillPolygon(stadiumRing, width, height, (cell) => {
+    bowlArea++;
+    set('stands')(cell);
+  });
+  // A small stadium (a high-school ground is a few hundred cells) would lose
+  // every seat to a two-cell concourse ring, so the ring thins with the bowl.
+  const concourseRadius = bowlArea > 4000 ? CONCOURSE_RADIUS_CELLS : bowlArea > 600 ? 1 : 0;
+  strokePolyline(stadiumRing, concourseRadius, width, height, set('concourse'));
 
   // The shell: every outside cell touching the concourse becomes wall, and the
   // gates below punch the only openings through it. Without it the rim was
@@ -253,7 +305,7 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     // A wide mouth: a three-cell gate gets permanently plugged by fans walking
     // past to the next gate and by fans already admitted walking inward, so
     // nobody who actually wants this gate can reach the turnstile.
-    strokeLine(outside, inside, GATE_HALF_WIDTH_CELLS, width, height, set('walk'));
+    strokeLine(outside, inside, gateHalfWidth, width, height, set('walk'));
 
     // The gate is a block of cells outside the mouth, not a single arc: the
     // queue standing on it is what gets admitted. A one-cell-deep arc fills with
@@ -266,7 +318,7 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     for (let depth = 0; depth < GATE_DEPTH_CELLS; depth++) {
       const cx = best.x + nx * (CONCOURSE_RADIUS_CELLS + 2 + depth);
       const cy = best.y + ny * (CONCOURSE_RADIUS_CELLS + 2 + depth);
-      for (let k = -GATE_HALF_WIDTH_CELLS; k <= GATE_HALF_WIDTH_CELLS; k++) {
+      for (let k = -gateHalfWidth; k <= gateHalfWidth; k++) {
         const x = Math.round(cx + px * k);
         const y = Math.round(cy + py * k);
         if (x < 0 || y < 0 || x >= width || y >= height) continue;
@@ -298,9 +350,12 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     else if (cells[i] === 'concourse') concourseCells.push(i);
   }
 
-  // The playing field: a regulation field plus sidelines, running north-south
-  // at the middle of the bowl. OSM draws the stadium as one polygon, so without
-  // this every cell of it was a seat and a seventh of the crowd sat on the turf.
+  // The playing field: a regulation field plus sidelines at the middle of the
+  // bowl, along the bowl's own long axis. OSM draws the stadium as one polygon,
+  // so without this every cell of it was a seat and a seventh of the crowd sat
+  // on the turf. Not every stadium runs north-south, so the axis comes from the
+  // shape (snapped to north-south when within 8°, which keeps Ohio Stadium
+  // exactly as it was), and a small bowl gets a field it can hold.
   let bx = 0;
   let by = 0;
   for (const c of bowlCells) {
@@ -309,14 +364,52 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   }
   bx /= Math.max(1, bowlCells.length);
   by /= Math.max(1, bowlCells.length);
-  const halfW = FIELD_WIDTH_M / 2 / CELL_SIZE_M;
-  const halfL = FIELD_LENGTH_M / 2 / CELL_SIZE_M;
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (const c of bowlCells) {
+    const dx = (c % width) + 0.5 - bx;
+    const dy = ((c / width) | 0) + 0.5 - by;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+  }
+  // Angle of the long axis from screen-north (the y axis), clockwise.
+  let axis = 0.5 * Math.atan2(2 * sxy, syy - sxx);
+  if (Math.abs(axis) < (8 * Math.PI) / 180) axis = 0;
+  // What the field is marked for. A cricket or baseball ground is a big oval of
+  // grass, not a gridiron; a football pitch is a little wider and shorter.
+  const sportTag = (stadium?.tags?.sport ?? '').toLowerCase();
+  const sport: NonNullable<MapBundle['sport']> = /american_football/.test(sportTag)
+    ? 'football'
+    : /cricket/.test(sportTag)
+      ? 'cricket'
+      : /baseball|softball/.test(sportTag)
+        ? 'baseball'
+        : /soccer/.test(sportTag)
+          ? 'soccer'
+          : 'football';
+  const [fieldW, fieldL] = sport === 'soccer' ? [76, 113] : [FIELD_WIDTH_M, FIELD_LENGTH_M];
+  const fit = Math.min(1, Math.sqrt((bowlCells.length * 0.24 * CELL_SIZE_M * CELL_SIZE_M) / (fieldW * fieldL)));
+  const halfW = (fieldW * fit) / 2 / CELL_SIZE_M;
+  const halfL = (fieldL * fit) / 2 / CELL_SIZE_M;
+  const cos = Math.cos(axis);
+  const sin = Math.sin(axis);
+  // An oval ground's outfield fills most of the bowl: an ellipse with the
+  // bowl's own proportions, holding about half its cells.
+  const spreadU = Math.sqrt(Math.max(1, (sxx + syy - Math.hypot(sxx - syy, 2 * sxy)) / 2 / Math.max(1, bowlCells.length)));
+  const spreadV = Math.sqrt(Math.max(1, (sxx + syy + Math.hypot(sxx - syy, 2 * sxy)) / 2 / Math.max(1, bowlCells.length)));
+  const oval = sport === 'cricket' || sport === 'baseball';
   const field: number[] = [];
   const standsCells: number[] = [];
   for (const c of bowlCells) {
     const dx = (c % width) + 0.5 - bx;
     const dy = ((c / width) | 0) + 0.5 - by;
-    if (Math.abs(dx) <= halfW && Math.abs(dy) <= halfL) field.push(c);
+    // Into the field's own frame: u across it, v along it.
+    const u = dx * cos - dy * sin;
+    const v = dx * sin + dy * cos;
+    const inside = oval ? (u / (spreadU * 1.35)) ** 2 + (v / (spreadV * 1.35)) ** 2 <= 1 : Math.abs(u) <= halfW && Math.abs(v) <= halfL;
+    if (inside) field.push(c);
     else standsCells.push(c);
   }
 
@@ -395,6 +488,9 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     closables,
     streets,
     field,
+    fieldAxis: axis,
+    sport,
+    theme: options.theme ?? (options.id === undefined ? OHIO_THEME : themeFor(options.name ?? stadium?.tags?.name ?? '')),
     sources: [
       { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: `https://www.openstreetmap.org/${stadium.type}/${stadium.id}` },
       { label: `Fetched ${extract.fetchedAt.slice(0, 10)} via Overpass API`, url: 'https://overpass-api.de/' },

@@ -14,6 +14,7 @@ import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
 import { CommandPanel } from './CommandPanel.tsx';
 import { StartScreen } from './StartScreen.tsx';
+import { applyTheme } from './theme.ts';
 import { rankByPriority, stoppedPerStreet, streetIndex, type HistorySample, type Priority } from './command.ts';
 import { OfficerPanel } from './OfficerPanel.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
@@ -365,6 +366,8 @@ export function App() {
       .catch(() => {});
   useEffect(() => {
     if (loaded) loadHistory(loaded.map.id);
+    // The whole app takes on the home team's colours; Ohio Stadium stays scarlet and grey.
+    applyTheme(loaded?.map.theme);
   }, [loaded]);
 
   const incidents = useMemo<Incident[]>(() => (loaded ? incidentsFor(loaded.map) : []), [loaded]);
@@ -707,6 +710,13 @@ export function App() {
       <header className="top">
         <div className="brand">
           <h1>Gameday Command</h1>
+          {loaded?.map.theme && (
+            <span className="team-chip" title={`Colours: ${loaded.map.theme.source}`}>
+              <i style={{ background: loaded.map.theme.primary }} />
+              <i style={{ background: loaded.map.theme.secondary }} />
+              {loaded.map.theme.team}
+            </span>
+          )}
           <span className="sub">
             Test crowd plans for {loaded ? loaded.map.name.replace(/ \+ 0\.5 mi$/, '') : '…'} before game day, not during it.{' '}
             <button

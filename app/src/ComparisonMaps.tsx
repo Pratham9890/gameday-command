@@ -60,15 +60,40 @@ function paintBase(map: MapBundle): HTMLCanvasElement {
   const data = image.data;
   const W = map.width;
   const field = new Set(map.field ?? []);
-  let fieldY0 = Infinity;
-  for (const c of field) fieldY0 = Math.min(fieldY0, (c / W) | 0);
+  // The field's own frame, so stripes run across it whatever way it faces.
+  let fx = 0;
+  let fy = 0;
+  for (const c of field) {
+    fx += c % W;
+    fy += (c / W) | 0;
+  }
+  fx /= Math.max(1, field.size);
+  fy /= Math.max(1, field.size);
+  const axis = map.fieldAxis ?? 0;
+  const sport = map.sport ?? 'football';
+  let vMax = 0;
+  const along = (c: number) => ((c % W) - fx) * Math.sin(axis) + (((c / W) | 0) - fy) * Math.cos(axis);
+  for (const c of field) vMax = Math.max(vMax, Math.abs(along(c)));
+  // Stands in the home team's colour, dark enough that crowds and heat read over it.
+  const team = map.theme && map.theme.team !== 'Ohio State Buckeyes' ? parseInt(map.theme.primary.slice(1), 16) : null;
+  const stands: [number, number, number] | null = team === null ? null : [((team >> 16) & 255) * 0.45, ((team >> 8) & 255) * 0.45, (team & 255) * 0.45];
   for (let i = 0; i < map.cells.length; i++) {
     const kind = map.cells[i]!;
-    let [r, g, b] = RGB[kind];
+    let [r, g, b] = kind === 'stands' && stands ? stands : RGB[kind];
     if (field.has(i)) {
-      // Turf in ten-yard stripes (about 4.6 cells), not a block of seating.
-      const stripe = Math.floor((((i / W) | 0) - fieldY0) / 4.57) % 2;
-      [r, g, b] = stripe ? [0x2f, 0x72, 0x36] : [0x36, 0x80, 0x3d];
+      const v = along(i);
+      const u = ((i % W) - fx) * Math.cos(axis) - (((i / W) | 0) - fy) * Math.sin(axis);
+      if (sport === 'cricket' || sport === 'baseball') {
+        // Mown in rings, with the pitch (or the dirt infield) at the middle.
+        const ringBand = Math.floor(Math.hypot(u, v) / 3) % 2;
+        const pitch = sport === 'cricket' ? Math.abs(u) < 0.8 && Math.abs(v) < 5.5 : Math.abs(u) + Math.abs(v - vMax * 0.25) < 10;
+        [r, g, b] = pitch ? [0xc8, 0xb2, 0x7a] : ringBand ? [0x2f, 0x72, 0x36] : [0x36, 0x80, 0x3d];
+      } else {
+        // Turf in stripes (about 4.6 cells); team-coloured end zones on a football field.
+        const stripe = Math.floor((v + vMax) / 4.57) % 2;
+        const endZone = sport === 'football' && team !== null && Math.abs(v) > vMax - 4.6;
+        [r, g, b] = endZone ? [((team! >> 16) & 255) * 0.85, ((team! >> 8) & 255) * 0.85, (team! & 255) * 0.85] : stripe ? [0x2f, 0x72, 0x36] : [0x36, 0x80, 0x3d];
+      }
     }
     const x = i % W;
     const y = (i / W) | 0;
@@ -247,6 +272,27 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
   const panelH = map.height * PX;
   const totalW = panelW * N + GAP_PX * (N - 1);
   const showFlow = props.showFlow ?? true;
+  // Gate badges: where each gate is and its number, in the home team's colours.
+  const gateBadges = useMemo(
+    () =>
+      map.places
+        .filter((p) => p.kind === 'gate' && p.cells.length > 0)
+        .map((p) => {
+          let x = 0;
+          let y = 0;
+          for (const c of p.cells) {
+            x += (c % map.width) + 0.5;
+            y += Math.floor(c / map.width) + 0.5;
+          }
+          return { x: (x / p.cells.length) * CELL_SIZE_M, y: (y / p.cells.length) * CELL_SIZE_M, n: /(\d+)/.exec(p.name)?.[1] ?? '?' };
+        }),
+    [map],
+  );
+  const team = map.theme ?? { primary: '#bb0000', secondary: '#666666' };
+  const teamInk = (() => {
+    const c = parseInt(team.primary.slice(1), 16);
+    return 0.299 * ((c >> 16) & 255) + 0.587 * ((c >> 8) & 255) + 0.114 * (c & 255) > 153 ? '#0b0f14' : '#ffffff';
+  })();
   const streetBoxes = useMemo(
     () =>
       (map.streets ?? [])
@@ -673,6 +719,30 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           }
         }
 
+        // Gate numbers, in the home team's colours.
+        {
+          ctx.setTransform(1, 0, 0, 1, ox, 0);
+          const k = Math.max(1, totalW / Math.max(1, live.clientWidth));
+          const r = Math.max(6, Math.min(11, 3 + z * 2)) * k;
+          ctx.font = `800 ${Math.round(r * 1.05)}px ui-sans-serif, system-ui`;
+          ctx.textAlign = 'center';
+          for (const g of gateBadges) {
+            const sx = toX(g.x);
+            const sy = toY(g.y);
+            if (sx < -r || sy < -r || sx > panelW + r || sy > panelH + r) continue;
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            ctx.fillStyle = team.primary;
+            ctx.fill();
+            ctx.lineWidth = 2 * k;
+            ctx.strokeStyle = team.secondary;
+            ctx.stroke();
+            ctx.fillStyle = teamInk;
+            ctx.fillText(g.n, sx, sy + r * 0.36);
+          }
+          ctx.textAlign = 'left';
+        }
+
         // Police pins: the most congested areas, numbered, the worst pulsing.
         const spots = p.hotspots?.[index] ?? [];
         if (spots.length > 0) {
@@ -770,7 +840,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [map, net, PX, panelW, panelH, totalW, clampView, viewFor, streetBoxes]);
+  }, [map, net, PX, panelW, panelH, totalW, clampView, viewFor, streetBoxes, gateBadges, team.primary, team.secondary, teamInk]);
 
   // ─── input: wheel zoom, drag pan, click to inspect ───
   const toCanvas = (event: { clientX: number; clientY: number }, el: HTMLElement) => {

@@ -2,7 +2,8 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Hono } from 'hono';
 import type { MapBundle } from '../../contracts.ts';
-import { fetchExtract, searchStadiums } from '../../world/src/osm/fetch.ts';
+import { fetchExtract, searchStadiums, stadiumFacts } from '../../world/src/osm/fetch.ts';
+import { themeFor } from '../../world/src/teams.ts';
 import { buildStadiumMap, type OsmExtract, type StadiumOptions } from '../../world/src/osm/stadium.ts';
 import type { Db } from './db.ts';
 
@@ -23,13 +24,14 @@ interface Imported {
 
 const idFor = (osmType: string, osmId: number) => `osm-${osmType}-${osmId}`;
 
-export function importedIds(): { id: string; name: string }[] {
+export function importedIds(): { id: string; name: string; theme: ReturnType<typeof themeFor> }[] {
   try {
     return readdirSync(STADIUM_DIR)
       .filter((f) => f.endsWith('.json'))
       .map((f) => {
         const saved = JSON.parse(readFileSync(resolve(STADIUM_DIR, f), 'utf8')) as Imported;
-        return { id: saved.options.id!, name: saved.options.name ?? saved.options.id! };
+        const name = saved.options.name ?? saved.options.id!;
+        return { id: saved.options.id!, name, theme: saved.options.theme ?? themeFor(name) };
       });
   } catch {
     return [];
@@ -68,7 +70,7 @@ export function migrateCommandTables(db: Db): void {
   `);
 }
 
-export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name: string }[], forget: (id: string) => void): void {
+export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name: string; theme?: unknown }[], forget: (id: string) => void): void {
   migrateCommandTables(db);
 
   app.get('/api/maps', (c) => c.json([...builtIn, ...importedIds().map((m) => ({ ...m, imported: true }))]));
@@ -84,18 +86,28 @@ export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name:
   });
 
   app.post('/api/stadiums/import', async (c) => {
-    const hit = await c.req.json<{ name: string; osmType: 'way' | 'relation'; osmId: number; lat: number; lon: number; capacity?: number }>();
+    const hit = await c.req.json<{ name: string; osmType: 'way' | 'relation'; osmId: number; lat: number; lon: number; capacity?: number; wikidata?: string }>();
     if (hit.osmType !== 'way' && hit.osmType !== 'relation') return c.json({ error: 'need a stadium way or relation' }, 400);
     const id = idFor(hit.osmType, Number(hit.osmId));
     try {
-      const extract = await fetchExtract({ lat: Number(hit.lat), lon: Number(hit.lon) });
-      const options: StadiumOptions = { id, name: hit.name, stadiumOsmId: Number(hit.osmId), capacity: hit.capacity };
+      // The map, and in parallel the home team and real capacity from Wikidata.
+      const [extract, facts] = await Promise.all([
+        fetchExtract({ lat: Number(hit.lat), lon: Number(hit.lon) }),
+        hit.wikidata ? stadiumFacts(hit.wikidata) : Promise.resolve({ teams: [] as string[], capacity: undefined }),
+      ]);
+      const options: StadiumOptions = {
+        id,
+        name: hit.name,
+        stadiumOsmId: Number(hit.osmId),
+        capacity: hit.capacity ?? facts.capacity,
+        theme: themeFor(hit.name, facts.teams),
+      };
       // Build once before saving, so a stadium that cannot be mapped is refused now.
       const map = buildStadiumMap(extract, options);
       mkdirSync(STADIUM_DIR, { recursive: true });
       writeFileSync(resolve(STADIUM_DIR, `${id}.json`), JSON.stringify({ options, extract } satisfies Imported));
       forget(id);
-      return c.json({ id, name: map.name, gates: map.places.filter((p) => p.kind === 'gate').length });
+      return c.json({ id, name: map.name, gates: map.places.filter((p) => p.kind === 'gate').length, theme: map.theme });
     } catch (error) {
       return c.json({ error: `Import failed: ${error instanceof Error ? error.message : String(error)}` }, 502);
     }

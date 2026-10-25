@@ -4,6 +4,7 @@ interface MapRow {
   id: string;
   name: string;
   imported?: boolean;
+  theme?: { team: string; primary: string; secondary: string };
 }
 
 interface Hit {
@@ -14,6 +15,7 @@ interface Hit {
   lat: number;
   lon: number;
   capacity?: number;
+  wikidata?: string;
 }
 
 /**
@@ -77,6 +79,13 @@ export function StartScreen({ onPick }: { onPick: (id: string) => void }) {
             <button key={m.id} className="start-map" onClick={() => onPick(m.id)}>
               <strong>{m.name.replace(/ \+ 0\.5 mi$/, '')}</strong>
               <em>{m.imported ? 'imported from OpenStreetMap' : m.id === 'test-3gate' ? 'small practice map' : 'ready to run'}</em>
+              {m.theme && (
+                <span className="swatch-pair" title={m.theme.team}>
+                  <i style={{ background: m.theme.primary }} />
+                  <i style={{ background: m.theme.secondary }} />
+                  <em>{m.theme.team}</em>
+                </span>
+              )}
             </button>
           ))}
         </div>
