@@ -7,6 +7,7 @@ import type { DensityField } from './density.ts';
 import type { DotStore } from './dots.ts';
 import { STATE_INDEX } from './dots.ts';
 import { DIR_DX, DIR_DY, UNREACHABLE } from './flowfield.ts';
+import { parkingConnectors } from './traffic-access.ts';
 import { Rng } from './rng.ts';
 
 /**
@@ -42,13 +43,6 @@ const MASK_ROAD = 1;
 const MASK_PARKING = 2;
 const MASK_DRIVEWAY = 3;
 const MASK_EMS_ONLY = 4;
-
-/**
- * Walk cells this close to a lot count as driveway. OSM rarely maps the short
- * stub from a street into a lot, so without this 43 of the 140 lots were
- * islands no car could reach; at three cells 97 connect.
- */
-const DRIVEWAY_REACH = 3;
 
 /** Lot layout: 2.7 m stalls, 5.5 m deep, back to back, with a 6 m aisle. */
 const STALL_PITCH_M = 2.7;
@@ -117,17 +111,14 @@ function buildRoadNet(map: MapBundle): RoadNet {
   const { width: W, height: H, cells } = map;
   const size = W * H;
   const mask = new Uint8Array(size);
-  const nearLot = new Uint8Array(size);
-  for (let i = 0; i < size; i++) {
-    if (cells[i] !== 'parking') continue;
-    const cx = i % W;
-    const cy = (i / W) | 0;
-    for (let dy = -DRIVEWAY_REACH; dy <= DRIVEWAY_REACH; dy++) {
-      for (let dx = -DRIVEWAY_REACH; dx <= DRIVEWAY_REACH; dx++) {
-        const x = cx + dx;
-        const y = cy + dy;
-        if (x >= 0 && y >= 0 && x < W && y < H) nearLot[y * W + x] = 1;
-      }
+  // Preserve the calibrated Ohio network until narrow driveways have a full
+  // aisle/footprint model. Imported grounds use explicit shortest connectors.
+  const nearLot = map.id === 'ohio-stadium' ? new Uint8Array(size) : parkingConnectors(map);
+  if(map.id === 'ohio-stadium')for(let c=0;c<size;c++) {
+    if(cells[c]!=='parking')continue;
+    const cx=c%W,cy=Math.floor(c/W);
+    for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++) {
+      const x=cx+dx,y=cy+dy;if(x>=0&&y>=0&&x<W&&y<H)nearLot[y*W+x]=1;
     }
   }
   for (let i = 0; i < size; i++) {
@@ -325,6 +316,13 @@ export function stallCount(map: MapBundle): number {
   return roadNetFor(map).stallX.length;
 }
 
+/** Leave headroom for arrivals and long vehicles instead of filling a small map at startup. */
+export function trafficCapacity(map: MapBundle) {
+  const net = roadNetFor(map);
+  return {stalls: net.stallX.length, entries: net.entries.length,
+    vehicles: Math.min(4500, Math.floor(net.stallX.length * 0.85))};
+}
+
 export interface TrafficInit {
   map: MapBundle;
   config: TrafficConfig;
@@ -337,6 +335,8 @@ export interface TrafficInit {
 }
 
 export interface TrafficStepInput {
+  /** Live officers meter entry to these junctions; routes and closures still apply. */
+  controlPoints?: readonly number[];
   t: SimSeconds;
   dt: SimSeconds;
   weather: WeatherState;
@@ -355,6 +355,8 @@ export interface TrafficMetrics {
 const GONE_DOT = STATE_INDEX.gone;
 
 export class TrafficModel {
+  private controlPoints: readonly number[] = [];
+  private signalTime = 0;
   readonly count: number;
   /** Index of the ambulance, or -1 when no emergency response was asked for. */
   readonly ambulance: number;
@@ -908,6 +910,32 @@ export class TrafficModel {
     return n > 1 || this.occOwner[cell] !== i + 1;
   }
 
+  /** A closure can strand an open road pocket with a car straddling its edge.
+   * Clear the rear into open space, then wait there for a usable route. This
+   * never enters a closure or jumps over traffic, pedestrians or a building.
+   */
+  private clearClosureTail(i: number, density: Float32Array, ems: boolean, dt: number): boolean {
+    const cell=this.cellAt(this.hx[i]!,this.hy[i]!);
+    if(cell<0 || this.closedCells[cell]===1)return false;
+    const dx=Math.cos(this.heading[i]!),dy=Math.sin(this.heading[i]!),length=this.type(i).lengthM;
+    let rearClosed=false;
+    for(let s=0;s<=length;s+=0.5) {
+      const c=this.cellAt(this.hx[i]!-dx*s,this.hy[i]!-dy*s);
+      if(c>=0 && this.closedCells[c]===1){rearClosed=true;break;}
+    }
+    if(!rearClosed)return false;
+    let remaining=CRAWL_SPEED_MPS*dt,moved=0;
+    while(remaining>0) {
+      const step=Math.min(0.5,remaining),x=Math.fround(this.hx[i]!+dx*step),y=Math.fround(this.hy[i]!+dy*step);
+      const from=this.cellAt(this.hx[i]!,this.hy[i]!),next=this.cellAt(x,y);
+      if(next<0 || !this.canStep(from,next,ems) || this.heldByOther(next,i) || density[next]!>(ems?CROWD_STOP_EMS:CROWD_STOP))break;
+      this.hx[i]=x;this.hy[i]=y;remaining-=step;moved+=step;
+      if(this.occCount[next]===0 || this.occOwner[next]!==i+1)this.claimCell(next,i);
+    }
+    if(moved===0)return false;
+    this.speed[i]=moved/dt;this.stuck[i]=0;return true;
+  }
+
   /**
    * Drive vehicle i up to `budget` meters along a field, one cell at a time,
    * steering for the centre of the next cell so traffic settles into lanes.
@@ -925,6 +953,16 @@ export class TrafficModel {
       if (here === 0) return 'arrived';
       const best = field.dir[cell]!;
       if (best === 0) return moved ? 'moved' : 'blocked';
+      // Enter on alternating axes; vehicles already inside the junction clear it.
+      // Six seconds each way with a one-second clearance interval between phases.
+      if (this.controlPoints.length && !ems) {
+        const phase = ((this.signalTime % 14) + 14) % 14;
+        const horizontal = Math.abs(DIR_DX[best]!) >= Math.abs(DIR_DY[best]!);
+        for (const point of this.controlPoints) {
+          const distance = Math.max(Math.abs(cell % W - point % W), Math.abs(Math.floor(cell / W) - Math.floor(point / W)));
+          if (distance > 2 && distance <= 6 && (phase === 6 || phase === 13 || horizontal !== (phase < 6))) return moved ? 'moved' : 'blocked';
+        }
+      }
       const cx = cell % W;
       const cy = (cell / W) | 0;
       let next = -1;
@@ -1056,6 +1094,8 @@ export class TrafficModel {
 
   step(input: TrafficStepInput): void {
     const { t, dt, weather, density, dots, closed } = input;
+    this.controlPoints = input.controlPoints ?? [];
+    this.signalTime = t;
     const rho = density.peoplePerM2;
     const { incident } = this.init;
 
@@ -1082,7 +1122,17 @@ export class TrafficModel {
           continue;
         }
         if (t < this.arriveT[i]!) continue;
-        const cell = this.entry[i]!;
+        let cell = this.entry[i]!;
+        // An off-map arrival can choose another approach when its original
+        // road component has filled up but another connected lot has space.
+        // No teleport on the map and no additional RNG draws.
+        if (this.map.id !== 'ohio-stadium' && anyLotOpen && (cell < 0 || lots.dist[cell] === UNREACHABLE)) {
+          const alternatives = this.net.entries.filter(e => this.closedCells[e.cell] !== 1 && lots.dist[e.cell] !== UNREACHABLE);
+          if (alternatives.length) {
+            cell = alternatives[i % alternatives.length]!.cell;
+            this.entry[i] = cell;
+          }
+        }
         if (cell < 0 || this.closedCells[cell] === 1 || this.occCount[cell]! > 0 || rho[cell]! > CROWD_STOP) continue;
         const field = anyLotOpen ? lots : exits;
         const dir = field.dir[cell]!;
@@ -1153,6 +1203,7 @@ export class TrafficModel {
       if (!field) continue;
       const at = this.cellAt(this.hx[i]!, this.hy[i]!);
       if (at >= 0 && field.dist[at] === UNREACHABLE) {
+        if (this.clearClosureTail(i,rho,ems,dt)) continue;
         // Cut off from where it was going (a closure, or every lot it could
         // reach filled up). Head for the edge instead; if even that is cut
         // off, it waits where it is, and is counted stopped.
@@ -1312,6 +1363,7 @@ export class TrafficModel {
       waited: this.waited.slice(),
       stuck: this.stuck.slice(),
       arriveT: this.arriveT.slice(),
+      entry: this.entry.slice(),
       departT: this.departT.slice(),
       stall: this.stall.slice(),
       stallRun: this.stallRun.slice(),
@@ -1335,6 +1387,7 @@ export class TrafficModel {
     const arrays: [{ set(a: ArrayLike<number>): void }, string][] = [
       [this.hx, 'hx'], [this.hy, 'hy'], [this.heading, 'heading'], [this.speed, 'speed'], [this.mode, 'mode'],
       [this.blocked, 'blocked'], [this.waited, 'waited'], [this.stuck, 'stuck'], [this.arriveT, 'arriveT'],
+      [this.entry, 'entry'],
       [this.departT, 'departT'], [this.stall, 'stall'], [this.stallRun, 'stallRun'], [this.targetX, 'targetX'],
       [this.targetY, 'targetY'], [this.targetHeading, 'targetHeading'], [this.stallTaken, 'stallTaken'],
       [this.lotFree, 'lotFree'], [this.lotDemand, 'lotDemand'], [this.dotCounted, 'dotCounted'],

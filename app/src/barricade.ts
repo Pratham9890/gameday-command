@@ -36,6 +36,7 @@ export function barricadeAt(
   map: MapBundle,
   cell: number,
   reachM = 40,
+  newGeometry = false,
 ): { closableId: string; name: string; cells: number[]; existing: boolean } | null {
   // A road is a few 2 m cells wide and the view is tilted, so a click a step
   // or two off the asphalt still means that street: snap to the nearest road
@@ -45,7 +46,7 @@ export function barricadeAt(
   cell = nearestRoad(map, cell);
   if (cell < 0) return null;
   const existing = map.closables.find((c) => c.cells.includes(cell) && !isGateDoor(map, c));
-  if (existing) return { closableId: existing.id, name: existing.name, cells: [...existing.cells], existing: true };
+  if (existing && !newGeometry) return { closableId: existing.id, name: existing.name, cells: [...existing.cells], existing: true };
 
   // Four-way steps cannot jump diagonally across a pavement corner, and each
   // BFS level costs exactly CELL_SIZE_M metres along the road.

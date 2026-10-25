@@ -3,6 +3,7 @@ import { FlowMovement } from './movement-flow.ts';
 import { Simulation, type Checkpoint } from './sim.ts';
 import type { EditIn, EditOut } from './edits.ts';
 import { FRAME_EVERY_S } from '../../contracts.ts';
+import { MotionRecorder } from './motion.ts';
 
 /**
  * Worker entry: one worker per plan, so three plans run in three isolated
@@ -22,6 +23,34 @@ let sim: Simulation | null = null;
 let playing = false;
 let speed = 1;
 let looping = false;
+// Crowd poses every three seconds: five sample intervals per replay gap.
+// Vehicles and officers keep one-second paths. Sampling every fan each second
+// exceeded the traffic budget; this bounded cadence avoids that allocation cost.
+let peopleMotion = new MotionRecorder(3);
+let vehicleMotion = new MotionRecorder();
+let officerMotion = new MotionRecorder();
+let officerMotionKey='';
+let responseTargets: number[] = [];
+let responseOfficer: string | undefined;
+
+function recordMotion(): void {
+  if (!sim) return;
+  const {t, dots} = sim.ctx;
+  peopleMotion.capture(t, dots.x, dots.y);
+  const v = sim.traffic?.frame();
+  if (v) vehicleMotion.capture(t, v.x, v.y, v.heading, v.speed);
+  const officers = sim.officerStatus();
+  const key=officers.map(o=>o.id).join(',');
+  if(key!==officerMotionKey){officerMotion=new MotionRecorder();officerMotionKey=key;}
+  officerMotion.capture(t, officers.map(o => o.x), officers.map(o => o.y));
+}
+
+function resetMotion(): void {
+  peopleMotion = new MotionRecorder(3);
+  vehicleMotion = new MotionRecorder();
+  officerMotion = new MotionRecorder();
+  recordMotion();
+}
 
 /**
  * Restart points kept as the run goes, so the commander can scrub backwards.
@@ -60,6 +89,8 @@ let typesSent = -1;
 
 function emitFrame(): void {
   if (!sim) return;
+  // Also flush a final frame whose timestamp is not a multiple of the cadence.
+  peopleMotion.capture(sim.ctx.t, sim.ctx.dots.x, sim.ctx.dots.y, undefined, undefined, true);
   // Fan types ride alongside frames only when they changed: they are fixed at
   // spawn and move only with a commander edit or a rewind.
   if (sim.typesVersion !== typesSent) {
@@ -69,20 +100,26 @@ function emitFrame(): void {
   }
   // Scene first, so the frame's redraw already has the officers it shows.
   const alerts = sim.takeAlerts();
+  const motion = { people: peopleMotion.take(), vehicles: vehicleMotion.take(), officers: officerMotion.take(),
+    officerIds: sim.ctx.officers.map(o => o.id) };
   send(
     {
       type: 'scene',
       scene: {
         t: sim.ctx.t,
-        officers: sim.officerStatus(),
+        motion,
+        officers: sim.officerStatus(true),
         gates: sim.gateStats(),
-        closed: [...sim.ctx.closed],
+        closed: sim.closedIds(),
         alerts,
         barricades: sim.liveBarricades(),
+        markers: sim.markerStatus(),
         orders: sim.ordersLog(),
+        responseArrivals: sim.responseArrivals(),
+        responses: sim.responseTimes(responseTargets,responseOfficer),
       },
     },
-    alerts.map((a) => a.dots.buffer),
+    [...alerts.map((a) => a.dots.buffer), ...[motion.people, motion.vehicles, motion.officers].flatMap(p => [p.offsets.buffer, p.samples.buffer])],
   );
   sendFrame(sim.frame(), sim.ctx.density.toGrid(sim.ctx.t));
 }
@@ -121,6 +158,7 @@ async function loop(): Promise<void> {
       let ran = 0;
       while (playing && sim && !sim.done && ran < MAX_CATCHUP_STEPS && performance.now() >= due) {
         await sim.step();
+        recordMotion();
         if (sim.isFrameTime()) {
           maybeCheckpoint();
           emitFrame();
@@ -161,6 +199,9 @@ host.onmessage = (event) => {
           emit: send,
         });
         typesSent = -1;
+        responseTargets = [];
+        responseOfficer = undefined;
+        resetMotion();
         checkpoints = [];
         lastCheckpointAt = Number.NEGATIVE_INFINITY;
         maybeCheckpoint();
@@ -192,6 +233,7 @@ host.onmessage = (event) => {
         }
         playing = false;
         sim.rewind(best.point);
+        resetMotion();
         // Restart points after this one were taken on a timeline that is now
         // being rewritten — an edit dropped below, or a new one made after the
         // rewind, would make them lie. Keep only what is still true.
@@ -204,6 +246,7 @@ host.onmessage = (event) => {
         // the client's cache or its tape, so this repeats rather than re-asks.
         void (async () => {
           while (sim && sim.ctx.t < target && !sim.done) await sim.step();
+          resetMotion();
           emitFrame();
         })();
         return;
@@ -216,6 +259,11 @@ host.onmessage = (event) => {
         return;
       case 'order':
         sim?.queueOrder(message.order);
+        return;
+      case 'response_targets':
+        responseOfficer = message.officerId;
+        responseTargets = [...new Set(message.cells.filter(c => Number.isInteger(c) && c >= 0 && c < (sim?.ctx.map.cells.length ?? 0)))].slice(0, 8);
+        if (sim) send({type: 'responses', t: sim.ctx.t, responses: sim.responseTimes(responseTargets,responseOfficer)});
         return;
       case 'inspect': {
         const info = sim?.inspect(message.dot);

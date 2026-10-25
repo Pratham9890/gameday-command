@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
-import type { CellKind, MapBundle, VehicleFrame, VehicleKind, WeatherState } from '../../contracts.ts';
+import type { CellKind, MapBundle, VehicleKind, WeatherState } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import type { SceneInfo } from '../../engine/src/edits.ts';
 import { closedAreas, closureKey, type ClosedArea } from './barricadeArt.ts';
@@ -9,6 +9,7 @@ import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands } from './heat.ts';
 import { STATE_RGB } from './people.ts';
 import type { RunHandle, RunSnapshotView } from './useRun.ts';
+import { blend, type Drawn } from './motion-view.ts';
 import { drawVehicle } from './vehicleArt.ts';
 import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { readoutOf, ReadoutChips } from './Readouts.tsx';
@@ -170,6 +171,7 @@ export interface FocusBox {
 }
 
 export interface ComparisonMapsProps {
+  showCoverage?: boolean;
   map: MapBundle;
   runs: RunHandle[];
   /** Replay frame to draw, or null to follow the live runs. */
@@ -187,78 +189,6 @@ export interface ComparisonMapsProps {
   showFlow?: boolean;
   /** The most congested areas for each run, pinned on its panel. */
   hotspots?: PoliceHotspot[][];
-}
-
-interface Drawn {
-  x: Float32Array;
-  y: Float32Array;
-  state: Uint8Array;
-  vehicles?: VehicleFrame;
-  vx?: Float32Array;
-  vy?: Float32Array;
-  vh?: Float32Array;
-}
-
-const lerpAngle = (a: number, b: number, t: number) => {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
-};
-
-/** Positions to draw this instant: the latest frame, or partway from the one before. */
-function blend(prev: RunSnapshotView | null, latest: RunSnapshotView, alpha: number, into: Drawn | undefined): Drawn {
-  const f = latest.frame;
-  if (!prev || alpha >= 1 || prev.frame.x.length !== f.x.length) {
-    return { x: f.x, y: f.y, state: f.state, vehicles: f.vehicles, vx: f.vehicles?.x, vy: f.vehicles?.y, vh: f.vehicles?.heading };
-  }
-  const n = f.x.length;
-  const x = into && into.x !== f.x && into.x.length === n ? into.x : new Float32Array(n);
-  const y = into && into.y !== f.y && into.y.length === n ? into.y : new Float32Array(n);
-  const px = prev.frame.x;
-  const py = prev.frame.y;
-  for (let i = 0; i < n; i++) {
-    const ax = px[i]!;
-    const bx = f.x[i]!;
-    // Fans who just arrived, or jumped (rewind), appear where they are.
-    if (ax < 0 || bx < 0 || Math.abs(bx - ax) > 40 || Math.abs(f.y[i]! - py[i]!) > 40) {
-      x[i] = bx;
-      y[i] = f.y[i]!;
-    } else {
-      x[i] = ax + (bx - ax) * alpha;
-      y[i] = py[i]! + (f.y[i]! - py[i]!) * alpha;
-    }
-  }
-  const out: Drawn = { x, y, state: f.state, vehicles: f.vehicles };
-  const va = prev.frame.vehicles;
-  const vb = f.vehicles;
-  if (va && vb && va.x.length === vb.x.length) {
-    const m = vb.x.length;
-    const vx = into?.vx && into.vx !== vb.x && into.vx.length === m ? into.vx : new Float32Array(m);
-    const vy = into?.vy && into.vy !== vb.y && into.vy.length === m ? into.vy : new Float32Array(m);
-    const vh = into?.vh && into.vh !== vb.heading && into.vh.length === m ? into.vh : new Float32Array(m);
-    for (let i = 0; i < m; i++) {
-      const ax = va.x[i]!;
-      const bx = vb.x[i]!;
-      if (ax < 0 || bx < 0 || Math.abs(bx - ax) > 260 || Math.abs(vb.y[i]! - va.y[i]!) > 260) {
-        vx[i] = bx;
-        vy[i] = vb.y[i]!;
-        vh[i] = vb.heading[i]!;
-      } else {
-        vx[i] = ax + (bx - ax) * alpha;
-        vy[i] = va.y[i]! + (vb.y[i]! - va.y[i]!) * alpha;
-        vh[i] = lerpAngle(va.heading[i]!, vb.heading[i]!, alpha);
-      }
-    }
-    out.vx = vx;
-    out.vy = vy;
-    out.vh = vh;
-  } else if (vb) {
-    out.vx = vb.x;
-    out.vy = vb.y;
-    out.vh = vb.heading;
-  }
-  return out;
 }
 
 const darkSky = (w?: WeatherState) =>
@@ -494,7 +424,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
 
   useEffect(() => {
     needsRef.current = true;
-  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked, props.hotspots]);
+  }, [ticks, scrubIndex, selectedBand, vehicleFocus, showVehicles, picked, props.hotspots, props.showCoverage]);
 
   // ─── the draw loop ───
   useEffect(() => {
@@ -585,7 +515,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           const span = Math.max(150, latest.at - prev.at);
           alpha = Math.min(1, Math.max(0, (now - latest.at) / span));
         }
-        const d = blend(alpha < 1 ? prev : null, view, alpha, drawnRef.current[index]);
+        const d = blend(alpha < 1 ? prev : null, view, alpha, drawnRef.current[index], run.scene.current);
         drawn[index] = d;
         const ox = index * (panelW + GAP_PX);
         const { x, y, state } = d;
@@ -668,6 +598,16 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           ctx.setLineDash([]);
         }
 
+        if (p.showCoverage && view) {
+          const seen = new Set<number>();
+          ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--info').trim();
+          ctx.globalAlpha = 0.09;
+          for (const o of p.runs[index]!.scene.current?.officers ?? []) {
+            if (seen.has(o.cell)) continue; seen.add(o.cell);
+            ctx.beginPath();ctx.arc(toX(o.x),toY(o.y),(o.radiusCells??10)*CELL_SIZE_M*m2px,0,Math.PI*2);ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
         // Vehicles at their real size.
         const vf = d?.vehicles;
         if (vf && d?.vx && d.vy && d.vh && p.showVehicles) {
@@ -694,7 +634,7 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
               index: i,
               scale: m2px,
               look: {
-                braking: st === VS.stopped || (st !== VS.parked && vf.speed[i]! < 0.5),
+                braking: st !== VS.parked && (d.vs?.[i] ?? vf.speed[i]!) < 0.5,
                 beams: beams && st !== VS.parked,
                 flashing: emergency && (st === VS.responding || st === VS.on_scene || st === VS.stopped),
                 flashPhase,
@@ -745,6 +685,19 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
           ctx.fillRect(sx - 4 * k, sy - k, 8 * k, 2 * k);
         }
 
+        ctx.setTransform(1,0,0,1,ox,0);
+        ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+        ctx.font='12px Public Sans, sans-serif';
+        for(const m of p.runs[index]!.scene.current?.markers??[]) {
+          const x=toX((m.cell%map.width+.5)*CELL_SIZE_M),y=toY((Math.floor(m.cell/map.width)+.5)*CELL_SIZE_M);
+          ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--info').trim();ctx.strokeRect(x-5,y-5,10,10);ctx.fillText(m.name+' marker',x+8,y);
+        }
+        if(p.showCoverage)for(const o of p.runs[index]!.scene.current?.officers??[]) {
+          const route=o.route??[];if(!route.length)continue;
+          ctx.beginPath();ctx.moveTo(toX(o.x),toY(o.y));
+          for(const c of route)ctx.lineTo(toX((c%map.width+.5)*CELL_SIZE_M),toY((Math.floor(c/map.width)+.5)*CELL_SIZE_M));
+          ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--info').trim();ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+        }
         // Officers: a blue disc with a white ring, a shield when close.
         ctx.setTransform(1, 0, 0, 1, ox, 0);
         if (view) {

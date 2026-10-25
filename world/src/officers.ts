@@ -1,5 +1,6 @@
 import type { Id, MapBundle, Officer } from '../../contracts.ts';
 import { CELL_SIZE_M } from '../../contracts.ts';
+import {FlowFields, UNREACHABLE} from '../../engine/src/flowfield.ts';
 
 /** A brisk jog: officers are on foot, but they are not strolling to a surge. */
 export const OFFICER_SPEED_MPS = 2.5;
@@ -98,4 +99,34 @@ export function makeOfficers(map: MapBundle, count: number): Officer[] {
     radiusCells: OFFICER_REACH_CELLS,
     speedMps: OFFICER_SPEED_MPS,
   }));
+}
+
+export interface PatrolBeat {name:string;waypoints:number[];loop:boolean}
+const beatsCache=new WeakMap<MapBundle,PatrolBeat[]>();
+/** Deterministic outdoor street loops; gate approaches are the road-free fallback. */
+export function patrolBeats(map:MapBundle):PatrolBeat[] {
+  const cached=beatsCache.get(map);if(cached)return cached;
+  const fields=new FlowFields(map),stations=policeStations(map),beats:PatrolBeat[]=[];
+  for(const station of stations) {
+    const field=fields.toCell(station.cell),sx=station.cell%map.width,sy=Math.floor(station.cell/map.width);
+    const waypoints=[station.cell];
+    for(const [dx,dy] of [[0,-1],[1,0],[0,1],[-1,0]]) {
+      const tx=sx+dx!*32,ty=sy+dy!*32;let best=-1,score=Infinity;
+      for(let y=Math.max(0,sy-50);y<=Math.min(map.height-1,sy+50);y++)for(let x=Math.max(0,sx-50);x<=Math.min(map.width-1,sx+50);x++) {
+        const cell=y*map.width+x;
+        if(map.cells[cell]!=='road'||field.dist[cell]===UNREACHABLE||waypoints.includes(cell))continue;
+        const d=Math.hypot(x-tx,y-ty);
+        if(d<score){score=d;best=cell;}
+      }
+      if(best>=0)waypoints.push(best);
+    }
+    if(waypoints.length>1)beats.push({name:`${streetNameNear(map,station.cell)??station.name} patrol`,waypoints,loop:true});
+  }
+  const gates=map.places.filter(p=>p.kind==='gate').flatMap(p=>p.cells.slice(0,1));
+  if(gates.length) {
+    const field=fields.toCell(gates[0]!);
+    const waypoints=gates.filter(c=>field.dist[c]!==UNREACHABLE);
+    if(waypoints.length>1)beats.push({name:'Gate approach loop',waypoints,loop:true});
+  }
+  beatsCache.set(map,beats);return beats;
 }

@@ -50,8 +50,8 @@ export function closureKey(info: SceneInfo | null): string {
   if (!info) return '';
   const closed = new Set(info.closed);
   return JSON.stringify([
-    [...closed].sort(),
-    (info.barricades ?? []).filter((b) => closed.has(b.id)).map((b) => [b.id, b.name, b.cells]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    [...closed].sort(),info.markers,
+    (info.barricades ?? []).filter((b) => closed.has(b.id)).map((b) => [b.id, b.name, b.cells,b.blocks]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   ]);
 }
 
@@ -62,7 +62,7 @@ export function closedAreas(map: MapBundle, info: SceneInfo | null): ClosedArea[
   const seen = new Set<string>();
   const gates = new Set(map.places.filter((p) => p.kind === 'gate').flatMap((p) => p.cells));
   const areas: ClosedArea[] = [];
-  for (const area of [...map.closables, ...(info.barricades ?? [])]) {
+  for (const area of [...(info.barricades ?? []), ...map.closables]) {
     if (!closed.has(area.id) || seen.has(area.id)) continue;
     seen.add(area.id);
     if (!area.cells.length) continue;

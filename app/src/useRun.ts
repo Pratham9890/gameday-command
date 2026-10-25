@@ -138,6 +138,12 @@ export function useRun(init: RunInit | null): RunHandle {
     worker.onmessage = (event: MessageEvent<WorkerOut | EditOut>) => {
       const out = event.data;
       switch (out.type) {
+        case 'responses':
+          if (scene.current && out.t >= scene.current.t) {
+            scene.current = {...scene.current, responses: out.responses};
+            setState(s=>({...s,tick:s.tick+1}));
+          }
+          return;
         case 'types':
           typeIndex.current = out.typeIndex;
           return;
