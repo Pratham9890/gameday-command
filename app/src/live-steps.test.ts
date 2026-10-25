@@ -18,7 +18,7 @@ describe('plan step status', () => {
 
   it('shows officers on their way, with the slowest one’s arrival', () => {
     const s = scene([officer('on_scene', null), officer('en_route', 100), officer('en_route', 170)]);
-    expect(stepStatus(send, 0, 10, s, [], map)).toBe('1 of 3 on scene, 2 on the way, ~3 min');
+    expect(stepStatus(send, 0, 10, s, [], map)).toBe('1 of 3 on scene, 2 on the way, about 3 min');
   });
 
   it('counts the fans officers have directed once they are all there', () => {
