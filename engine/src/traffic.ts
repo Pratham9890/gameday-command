@@ -526,6 +526,20 @@ export class TrafficModel {
           this.mode[i] = MODE_PARKED;
           placed = true;
         }
+        // Late windows cannot replay an hours-old arrival just because the
+        // random probes missed a long vehicle's contiguous stalls.
+        const lastArrival = Math.max(...types.map((type) => -Math.min(...type.arrivalWindowMin) * 60));
+        if (!placed && init.startAt >= lastArrival + 3600) {
+          for (let s = 0; s < net.stallX.length; s++) {
+            const run = this.runFrom(s, i);
+            if (run === 0) continue;
+            this.occupyStalls(i, s, run);
+            this.placeAtStall(i);
+            this.mode[i] = MODE_PARKED;
+            placed = true;
+            break;
+          }
+        }
         if (placed) {
           this.scheduleExodus(i);
           continue;
@@ -616,6 +630,18 @@ export class TrafficModel {
     return m !== 0 && (ems || m !== MASK_EMS_ONLY);
   }
 
+  /** Closed cells are escape-only; diagonals must not cut a barricade corner. */
+  private canStep(from: number, to: number, ems: boolean): boolean {
+    const open = (cell: number) => this.allowed(cell, ems) &&
+      (this.closedCells[cell] !== 1 || this.closedCells[from] === 1);
+    if (!open(to)) return false;
+    const W = this.map.width;
+    if (from % W !== to % W && Math.floor(from / W) !== Math.floor(to / W)) {
+      if (!open(Math.floor(from / W) * W + to % W) || !open(Math.floor(to / W) * W + from % W)) return false;
+    }
+    return true;
+  }
+
   /**
    * BFS from the seeds over open cells, then a second pass out into closed
    * cells. A vehicle on a street the moment it closes still needs a way off it;
@@ -641,7 +667,7 @@ export class TrafficModel {
     let head = 0;
     let tail = 0;
     for (const c of seeds) {
-      if (c < 0 || c >= size || !this.allowed(c, ems) || dist[c] === 0) continue;
+      if (c < 0 || c >= size || !this.allowed(c, ems) || closed[c] === 1 || dist[c] === 0) continue;
       dist[c] = 0;
       touched[touchedCount++] = c;
       q[tail & slot] = c;
@@ -696,10 +722,7 @@ export class TrafficModel {
         const y = cy + DIR_DY[d]!;
         if (x < 0 || y < 0 || x >= W || y >= H) continue;
         const n = y * W + x;
-        if (!this.allowed(n, ems) || dist[n]! >= best) continue;
-        if (DIR_DX[d] !== 0 && DIR_DY[d] !== 0) {
-          if (!this.allowed(cy * W + x, ems) || !this.allowed(y * W + cx, ems)) continue;
-        }
+        if (dist[n]! >= best || !this.canStep(c, n, ems)) continue;
         best = dist[n]!;
         bestDir = d;
       }
@@ -859,8 +882,7 @@ export class TrafficModel {
         const y = cy + DIR_DY[d]!;
         if (x < 0 || y < 0 || x >= W || y >= this.map.height) continue;
         const n = y * W + x;
-        if (!this.allowed(n, ems)) continue;
-        if (this.closedCells[n] === 1 && this.closedCells[cell] !== 1 && field.dist[n] !== 0) continue;
+        if (!this.canStep(cell, n, ems)) continue;
         const there = field.dist[n]!;
         if (there === UNREACHABLE || there > here || (turn !== 0 && there === here)) continue;
         if (density[n]! > crowdStop) continue;
@@ -1009,7 +1031,7 @@ export class TrafficModel {
         }
         if (t < this.arriveT[i]!) continue;
         const cell = this.entry[i]!;
-        if (cell < 0 || this.occCount[cell]! > 0 || rho[cell]! > CROWD_STOP) continue;
+        if (cell < 0 || this.closedCells[cell] === 1 || this.occCount[cell]! > 0 || rho[cell]! > CROWD_STOP) continue;
         const field = anyLotOpen ? lots : exits;
         const dir = field.dir[cell]!;
         this.hx[i] = ((cell % this.map.width) + 0.5) * CELL_SIZE_M;
@@ -1035,6 +1057,26 @@ export class TrafficModel {
         const dy = this.targetY[i]! - this.hy[i]!;
         const dist = Math.hypot(dx, dy);
         const step = PARK_SPEED_MPS * dt;
+        const travel = Math.min(step, dist);
+        let cell = this.cellAt(this.hx[i]!, this.hy[i]!);
+        let clear = cell >= 0;
+        // Parking bypasses the field; sample its segment so even a large dt
+        // cannot jump a barricade. Only closures turn a car away here: the
+        // straight line into a stall can clip a lot corner outside the drive
+        // mask, and that must not send a car that found its stall back out.
+        const samples = Math.max(1, Math.ceil(travel / (CELL_SIZE_M / 2)));
+        for (let sample = 1; clear && sample <= samples; sample++) {
+          const fraction = dist === 0 ? 0 : (travel / dist) * (sample / samples);
+          const next = this.cellAt(Math.fround(this.hx[i]! + dx * fraction), Math.fround(this.hy[i]! + dy * fraction));
+          clear = next >= 0 && (this.closedCells[next] !== 1 || this.closedCells[cell] === 1);
+          cell = next;
+        }
+        if (!clear) {
+          this.releaseStalls(i);
+          this.mode[i] = MODE_OUTBOUND;
+          this.speed[i] = 0;
+          continue;
+        }
         if (dist <= step) {
           this.placeAtStall(i);
           this.mode[i] = MODE_PARKED;
@@ -1129,16 +1171,14 @@ export class TrafficModel {
     let best = -1;
     let bestDist = UNREACHABLE;
     for (const e of this.net.entries) {
+      if (this.closedCells[e.cell] === 1) continue;
       const d = field.dist[e.cell]!;
       if (d < bestDist) {
         bestDist = d;
         best = e.cell;
       }
     }
-    if (best < 0) {
-      this.mode[i] = MODE_GONE;
-      return;
-    }
+    if (best < 0) return;
     const dir = field.dir[best]!;
     this.hx[i] = ((best % this.map.width) + 0.5) * CELL_SIZE_M;
     this.hy[i] = (((best / this.map.width) | 0) + 0.5) * CELL_SIZE_M;

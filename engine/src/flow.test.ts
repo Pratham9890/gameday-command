@@ -7,7 +7,7 @@ import { makeTestMap, TEST_GATE_THROUGHPUT_PER_MIN } from '../../world/src/test-
 import { playbookFor } from '../../world/src/playbook.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
-import { DIR_DX, DIR_DY, FlowFields, stepCost, UNREACHABLE } from './flowfield.ts';
+import { DIR_DX, DIR_DY, FlowFields, SIDEWALK_REACH, stepCost, UNREACHABLE, WALK_STEP } from './flowfield.ts';
 import { densityFactor, FlowMovement, MAX_DOTS_PER_CELL, RHO_JAM, SEATS_PER_STANDS_CELL } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
@@ -75,13 +75,13 @@ describe('FlowFields', () => {
   });
 });
 
-describe('routes prefer roads', () => {
-  // Open ground with a road two rows off the straight line between start and
-  // destination: walking down to it and along is a little longer, but a crowd
-  // takes the street.
+describe('routes prefer sidewalks', () => {
+  // Start and destination sit one row outside the sidewalk band, so keeping to
+  // the sidewalk is a detour the discount has to pay for.
   const W = 31;
-  const H = 12;
-  const ROAD_ROW = 6;
+  const H = 14;
+  const ROAD_ROW = 8;
+  const START_ROW = ROAD_ROW - SIDEWALK_REACH - 1;
   const cells = Array.from({ length: W * H }, (_, i) => (Math.floor(i / W) === ROAD_ROW ? 'road' : 'walk')) as MapBundle['cells'];
   const streetMap: MapBundle = {
     ...map,
@@ -89,13 +89,31 @@ describe('routes prefer roads', () => {
     width: W,
     height: H,
     cells,
-    places: [{ id: 'dest', name: 'Dest', kind: 'gate', cells: [4 * W + 30], capacity: 1 }],
+    places: [{ id: 'dest', name: 'Dest', kind: 'gate', cells: [START_ROW * W + 30], capacity: 1 }],
     closables: [],
   };
 
-  it('walks down the street rather than straight across open ground', () => {
+  it('walks beside the street rather than on it or straight across open ground', () => {
     const field = new FlowFields(streetMap).field(0);
-    let cell = 4 * W;
+    let cell = START_ROW * W;
+    let onRoad = 0;
+    let onSidewalk = 0;
+    for (let steps = 0; steps < 100 && field.dist[cell] !== 0; steps++) {
+      const dir = field.dir[cell]!;
+      expect(dir).not.toBe(0);
+      cell += DIR_DY[dir]! * W + DIR_DX[dir]!;
+      if (cells[cell] === 'road') onRoad++;
+      if (cells[cell] === 'walk' && Math.abs(Math.floor(cell / W) - ROAD_ROW) <= SIDEWALK_REACH) onSidewalk++;
+    }
+    expect(field.dist[cell]).toBe(0);
+    expect(onRoad).toBe(0);
+    // Most of the 30-cell walk, not just the cells where the routes happen to touch.
+    expect(onSidewalk).toBeGreaterThan(W / 2);
+  });
+
+  it('crosses a street when the destination is on the other side', () => {
+    const field = new FlowFields(streetMap).field(0);
+    let cell = (H - 1) * W;
     let onRoad = 0;
     for (let steps = 0; steps < 100 && field.dist[cell] !== 0; steps++) {
       const dir = field.dir[cell]!;
@@ -104,7 +122,20 @@ describe('routes prefer roads', () => {
       if (cells[cell] === 'road') onRoad++;
     }
     expect(field.dist[cell]).toBe(0);
-    expect(onRoad).toBeGreaterThan(20);
+    expect(onRoad).toBeGreaterThan(0);
+    expect(onRoad).toBeLessThanOrEqual(2);
+  });
+
+  it.each(['walk', 'stands', 'concourse', 'parking', 'shelter'] as const)('keeps %s away from roads at the open-ground step cost', (kind) => {
+    const bundle = { ...streetMap, width: 3, height: 1, cells: [kind, kind, kind],
+      places: [{ ...streetMap.places[0]!, cells: [2] }] };
+    expect(new FlowFields(bundle).field(0).dist[0]).toBe(2 * WALK_STEP);
+  });
+
+  it.each(['stands', 'concourse', 'parking', 'shelter'] as const)('does not discount %s beside a road', (kind) => {
+    const bundle = { ...streetMap, width: 2, height: 2, cells: [kind, kind, 'road', 'road'] as MapBundle['cells'],
+      places: [{ ...streetMap.places[0]!, cells: [1] }] };
+    expect(new FlowFields(bundle).field(0).dist[0]).toBe(WALK_STEP);
   });
 });
 
@@ -214,9 +245,10 @@ describe('FlowMovement on the test map', () => {
     }
 
     // 3 gates x 60 people/min / 5 fans per dot = 36 dots per minute, plus the
-    // one dot of budget each gate starts with.
+    // one dot of budget each gate starts with. Officers on station speed a
+    // gate up by at most 40%, and this plan posts six of them on one.
     const gates = map.places.filter((p) => p.kind === 'gate').length;
-    const ceiling = (gates * TEST_GATE_THROUGHPUT_PER_MIN / DOT_GROUP_SIZE) * minutes + gates;
+    const ceiling = ((gates * TEST_GATE_THROUGHPUT_PER_MIN * 1.4) / DOT_GROUP_SIZE) * minutes + gates;
     expect(through).toBeLessThanOrEqual(ceiling);
     expect(through).toBeGreaterThan(0);
   });
@@ -241,8 +273,11 @@ describe('FlowMovement on the test map', () => {
   });
 
   it('diverges when the plan changes but the seed does not', async () => {
-    const a = makeSim({ planIndex: 0, incidentAt: -600 });
-    const c = makeSim({ planIndex: 2, incidentAt: -600 });
+    // The incident comes while fans are still arriving: on this small map
+    // everyone is through the gates before kickoff, so a gate shut later
+    // changes nothing.
+    const a = makeSim({ planIndex: 0, incidentAt: -1800, endAt: -1200 });
+    const c = makeSim({ planIndex: 2, incidentAt: -1800, endAt: -1200 });
     // Final dot states can converge now that seating is instant, so compare the
     // gates' admitted flow over the run: plan C shuts the hot gate, plan A never
     // does. Summing each step's rolling in/min leaves a different per-gate total.
@@ -402,5 +437,37 @@ describe('FlowMovement on the test map', () => {
     expect(shut[0]!.capacityPerMin).toBe(0);
     // The open gates kept passing people after it shut.
     expect(openFlow).toBeGreaterThan(0);
+  });
+
+  it('puts a fan through the turnstile on the far side of it', async () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 1200, startAt: -1800, endAt: -1500, movement });
+    const { dots } = sim.ctx;
+    const before = new Uint8Array(dots.count);
+    let landed = 0;
+    while (!sim.done) {
+      for (let i = 0; i < dots.count; i++) before[i] = movement.describe(i).admitted ? 1 : 0;
+      await sim.step();
+      for (let i = 0; i < dots.count; i++) {
+        if (before[i] === 1 || !movement.describe(i).admitted) continue;
+        // Admitted this step: standing inside, not left behind the queue.
+        const cell = Math.floor(dots.y[i]! / CELL_SIZE_M) * map.width + Math.floor(dots.x[i]! / CELL_SIZE_M);
+        expect(['concourse', 'stands']).toContain(map.cells[cell]);
+        landed++;
+      }
+    }
+    expect(landed).toBeGreaterThan(0);
+  });
+
+  it('turns the fans parked nearest a gate into a late rush on it', () => {
+    const movement = new FlowMovement();
+    const sim = makeSim({ fans: 1200, movement });
+    const gate = map.places.findIndex((p) => p.kind === 'gate');
+    movement.lateRush(sim.ctx, gate, 50, -120, 60);
+    const rushing = Array.from({ length: sim.ctx.dots.count }, (_, i) => i).filter(
+      (i) => movement.describe(i).homeGate === gate && movement.describe(i).arriveAt >= -120 && movement.describe(i).arriveAt <= 60,
+    );
+    expect(rushing.length).toBeGreaterThanOrEqual(50);
+    expect(rushing.every((i) => sim.ctx.dots.targetPlace[i] === gate)).toBe(true);
   });
 });

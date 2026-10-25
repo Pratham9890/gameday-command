@@ -23,7 +23,16 @@ const MAX_SAMPLES = 240;
  * short history: `useRun` keeps none, so the panel accumulates its own samples
  * here. The limits of that are documented in `gate-health.ts`.
  */
-export function GatesPanel({ map, run, label }: { map: MapBundle; run: RunHandle; label: string }) {
+export function GatesPanel({ map, run, label, onToggle, disabled = false }: {
+  map: MapBundle;
+  run: RunHandle;
+  label: string;
+  onToggle?: (closableId: string, closed: boolean) => void;
+  disabled?: boolean;
+}) {
+  const doors = useMemo(() => map.places.map((place) => place.kind === 'gate'
+    ? map.closables.find((c) => c.cells.some((cell) => place.cells.includes(cell)))
+    : undefined), [map]);
   const scene = run.scene.current;
   const gates = scene?.gates ?? [];
   const t = scene?.t ?? null;
@@ -69,10 +78,28 @@ export function GatesPanel({ map, run, label }: { map: MapBundle; run: RunHandle
           ))}
         </div>
       )}
-      <p className="muted">
-        Plan {label} · <strong className="ok">{open} open</strong> · <strong className={open < gates.length ? 'bad' : undefined}>{gates.length - open} closed</strong> ·{' '}
-        {n(totalIn)} in/min · {n(totalOut)} out/min · {n(waiting)} waiting
-      </p>
+      <dl className="stat-row" aria-label={`Gates for plan ${label}`}>
+        <div>
+          <dt>Open</dt>
+          <dd className="ok">{open}</dd>
+        </div>
+        <div>
+          <dt>Closed</dt>
+          <dd className={open < gates.length ? 'bad' : undefined}>{gates.length - open}</dd>
+        </div>
+        <div>
+          <dt>In per min</dt>
+          <dd>{n(totalIn)}</dd>
+        </div>
+        <div>
+          <dt>Out per min</dt>
+          <dd>{n(totalOut)}</dd>
+        </div>
+        <div>
+          <dt>Waiting</dt>
+          <dd>{n(waiting)}</dd>
+        </div>
+      </dl>
       {gates.length === 0 ? (
         <p className="muted">Starts with the run.</p>
       ) : (
@@ -99,6 +126,11 @@ export function GatesPanel({ map, run, label }: { map: MapBundle; run: RunHandle
                   </td>
                   <td>
                     <span className={`door ${g.open ? 'open' : 'closed'}`}>{g.open ? 'Open' : 'Closed'}</span>
+                    {onToggle && doors[g.place] && (
+                      <button className="small ghost gate-order" disabled={disabled} onClick={() => onToggle(doors[g.place]!.id, g.open)}>
+                        {g.open ? 'Close' : 'Open'}
+                      </button>
+                    )}
                   </td>
                   <td>{n(g.inPerMin)}</td>
                   <td>{n(g.outPerMin)}</td>

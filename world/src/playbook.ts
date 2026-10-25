@@ -1,5 +1,5 @@
 import type { Id, IncidentKind, MapBundle, PlanAction, Place, ResponsePlan } from '../../contracts.ts';
-import { expandCells, placesOfKind } from './incidents.ts';
+import { biggestStreet, expandCells, placesOfKind, surgeGates } from './incidents.ts';
 
 const OFFICERS_AVAILABLE = 12;
 
@@ -25,9 +25,8 @@ function shelterIds(map: MapBundle): Id[] {
 const compact = (actions: (PlanAction | null)[]): PlanAction[] => actions.filter((a): a is PlanAction => a !== null);
 
 function gateSurgePlans(map: MapBundle): ResponsePlan[] {
-  const gates = placesOfKind(map, 'gate');
-  const hot = gates[0];
-  const relief = gates[1] ?? gates[0];
+  // The incident and its plans must agree on which gate is the hot one.
+  const { hot, relief } = surgeGates(map);
   if (!hot || !relief) return [];
   const hotDoor = doorFor(map, hot);
   const reliefDoor = doorFor(map, relief);
@@ -158,9 +157,81 @@ function packagePlans(map: MapBundle): ResponsePlan[] {
   ];
 }
 
+function gameEndPlans(map: MapBundle): ResponsePlan[] {
+  const gates = placesOfKind(map, 'gate');
+  if (gates.length === 0) return [];
+  const centre = (place: { cells: number[] }) => {
+    let x = 0;
+    let y = 0;
+    for (const cell of place.cells) { x += cell % map.width; y += Math.floor(cell / map.width); }
+    return { x: x / place.cells.length, y: y / place.cells.length };
+  };
+  const centres = gates.map(centre);
+  const load = gates.map(() => 0);
+  // Seats nearest each gate are a deterministic demand estimate, not a claim
+  // about measured traffic; this also works on maps without compass labels.
+  for (const cell of placesOfKind(map, 'seating')[0]?.cells ?? []) {
+    let nearest = 0;
+    let distance = Infinity;
+    centres.forEach((c, i) => {
+      const d = Math.hypot(cell % map.width - c.x, Math.floor(cell / map.width) - c.y);
+      if (d < distance) { nearest = i; distance = d; }
+    });
+    load[nearest]!++;
+  }
+  const ranked = gates.map((gate, i) => ({ gate, load: load[i]! })).sort((a, b) => b.load - a.load).map(({ gate }) => gate);
+  const hot = ranked.slice(0, Math.min(4, Math.ceil(gates.length / 2)));
+  const quiet = ranked.slice(hot.length).reverse();
+  const open: PlanAction[] = compact(gates.map((gate) => {
+    const door = doorFor(map, gate);
+    return door ? { at: 0, type: 'open', closableId: door } : null;
+  }));
+  const waves: PlanAction[] = [];
+  hot.forEach((gate, i) => {
+    const relief = quiet[i % quiet.length];
+    if (!relief) return;
+    const at = 30 + i * 120;
+    waves.push({ at, type: 'redirect', fromPlaceId: gate.id, toPlaceId: relief.id });
+    // Alerts only apply existing redirects. They cannot order a timed seat hold.
+    waves.push({ at, type: 'alert', channel: 'pa', message: `Use ${relief.name} instead of ${gate.name}.`, reachShare: 0.85,
+      zoneCells: expandCells(map, gate.cells, 35) });
+  });
+  // The longest street is a reproducible proxy for the main traffic corridor.
+  // Closing its nearest gates diverts walkers without making a false cars-only closure.
+  const street = biggestStreet(map);
+  const besideStreet = [...gates].sort((a, b) => {
+    if (!street) return 0;
+    const distance = (gate: Place) => {
+      const c = centre(gate);
+      return street.cells.reduce((best, cell) => Math.min(best, Math.hypot(cell % map.width - c.x, Math.floor(cell / map.width) - c.y)), Infinity);
+    };
+    return distance(a) - distance(b);
+  }).slice(0, Math.max(1, Math.floor(gates.length / 4)));
+  const relief = ranked.filter((g) => !besideStreet.includes(g));
+  return [
+    { id: 'plan-end-open', name: 'Open every gate, officers on the main exits', forIncident: 'game_end', officersAvailable: OFFICERS_AVAILABLE,
+      actions: [...open, ...hot.map((gate): PlanAction => ({ at: 0, type: 'send_officers', count: 2, toPlaceId: gate.id }))] },
+    { id: 'plan-end-spread', name: 'Spread the exits with PA redirects in waves', forIncident: 'game_end', officersAvailable: OFFICERS_AVAILABLE,
+      actions: [...open, ...waves] },
+    { id: 'plan-end-divert', name: `Close gates beside ${street?.name ?? 'the main approach'}, divert to other exits`, forIncident: 'game_end', officersAvailable: OFFICERS_AVAILABLE,
+      actions: [...open, ...compact(besideStreet.flatMap((gate, i): (PlanAction | null)[] => {
+        const door = doorFor(map, gate);
+        const to = relief[i % relief.length];
+        if (!to) return [];
+        return [door ? { at: 0, type: 'close', closableId: door } : null,
+          { at: 0, type: 'redirect', fromPlaceId: gate.id, toPlaceId: to.id },
+          { at: 0, type: 'send_officers', count: 3, toPlaceId: to.id },
+          { at: 0, type: 'alert', channel: 'pa', message: `${gate.name} is closed. Use ${to.name}.`, reachShare: 0.9,
+            zoneCells: expandCells(map, gate.cells, 35) }];
+      }))] },
+  ];
+}
+
 /** Three editable starting plans per incident, built from whatever places the map actually has. */
 export function playbookFor(kind: IncidentKind, map: MapBundle): ResponsePlan[] {
   switch (kind) {
+    case 'game_end':
+      return gameEndPlans(map);
     case 'gate_surge':
       return gateSurgePlans(map);
     case 'lightning_delay':

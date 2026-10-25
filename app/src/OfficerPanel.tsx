@@ -10,10 +10,13 @@ export interface OfficerPanelProps {
   label: string;
   officerId: string;
   onClose: () => void;
+  onSendTo?: () => void;
+  onRecall?: () => void;
+  disabled?: boolean;
 }
 
 /** The inspector for an officer: who they are, where they are going, and how much they have helped. */
-export function OfficerPanel({ map, run, label, officerId, onClose }: OfficerPanelProps) {
+export function OfficerPanel({ map, run, label, officerId, onClose, onSendTo, onRecall, disabled = false }: OfficerPanelProps) {
   const officer = run.scene.current?.officers.find((o) => o.id === officerId);
   const station = policeStations(map).find((s) => s.cell === officer?.homeCell);
   const fromHome = officer
@@ -54,6 +57,12 @@ export function OfficerPanel({ map, run, label, officerId, onClose }: OfficerPan
               <dt>did as told</dt>
               <dd>{share === null ? '—' : `${officer.followed.toLocaleString()} (${share}%)`}</dd>
             </dl>
+            {(onSendTo || onRecall) && (
+              <div className="police-actions">
+                {onSendTo && <button className="small" disabled={disabled} onClick={onSendTo}>Send to…</button>}
+                {onRecall && <button className="small ghost" disabled={disabled} onClick={onRecall}>Back to post</button>}
+              </div>
+            )}
           </section>
           <section>
             <h4>What they do</h4>

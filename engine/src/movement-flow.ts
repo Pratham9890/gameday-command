@@ -103,6 +103,8 @@ export class FlowMovement implements MovementModel {
   private seatingIndex = -1;
   private shelterIndex = -1;
   private parkingIndex = -1;
+  /** For every cell, the smallest parking place containing it, or -1. */
+  private parkingByCell!: Int32Array;
   private exitIndexes: number[] = [];
 
   private spawnT!: Float32Array;
@@ -114,6 +116,8 @@ export class FlowMovement implements MovementModel {
   private lotCell!: Int32Array;
   private homeGate!: Int32Array;
   private admitted!: Uint8Array;
+  /** Unscreened fans sent back to their own lot by a release; officers no longer redirect them. */
+  private returningToCar!: Uint8Array;
   /** Fans assigned to each seat cell, so placement cannot overfill one. */
   private seatLoad!: Int32Array;
   /** Sim time a seated fan who chose to wait gets up and leaves; 0 for nobody. */
@@ -284,6 +288,16 @@ export class FlowMovement implements MovementModel {
     this.shelterIndex = this.indexOfKind(map, 'shelter');
     if (this.shelterIndex < 0) this.shelterIndex = this.indexOfKind(map, 'concourse');
     this.parkingIndex = this.indexOfKind(map, 'parking');
+    // Once at spawn: scanning every parking place per released fan was too slow.
+    this.parkingByCell = new Int32Array(map.cells.length).fill(-1);
+    for (let p = 0; p < map.places.length; p++) {
+      const place = map.places[p]!;
+      if (place.kind !== 'parking') continue;
+      for (const cell of place.cells) {
+        const current = this.parkingByCell[cell]!;
+        if (current < 0 || place.cells.length < map.places[current]!.cells.length) this.parkingByCell[cell] = p;
+      }
+    }
     this.exitIndexes = map.places.map((p, i) => (p.kind === 'exit' ? i : -1)).filter((i) => i >= 0);
     if (this.exitIndexes.length === 0) this.exitIndexes = this.gateIndexes;
 
@@ -324,6 +338,7 @@ export class FlowMovement implements MovementModel {
     this.lotCell = new Int32Array(n);
     this.homeGate = new Int32Array(n).fill(-1);
     this.admitted = new Uint8Array(n);
+    this.returningToCar = new Uint8Array(n);
     this.leaveAt = new Float32Array(n);
     this.seatLoad = new Int32Array(map.width * map.height);
     this.occupancy = new Int32Array(map.width * map.height);
@@ -430,17 +445,45 @@ export class FlowMovement implements MovementModel {
    * build-up to place, so it starts everyone off-map.
    */
   private seatEarlyArrivals(ctx: SimContext): void {
-    if (ctx.t >= 0) return;
-    const { dots, map, rng } = ctx;
+    const { dots, map, rng, population } = ctx;
     if (this.seatingIndex < 0) return;
+    // A run that starts an hour past the last arrival (the game-end window)
+    // begins with the whole crowd in. A negative window endpoint is after kickoff.
+    const lastArrival = Math.max(...population.types.map((type) => -Math.min(...type.arrivalWindowMin) * 60));
+    const allIn = ctx.t >= lastArrival + 3600;
+    if (ctx.t >= 0 && !allIn) return;
     const occupied = new Int32Array(map.width * map.height);
     for (let i = 0; i < dots.count; i++) {
       const seat = this.seatCell[i]!;
       if (seat < 0 || this.spawnT[i]! > ctx.t - PRESEATED_LEAD_S) continue;
       if (occupied[seat]! >= SEATS_PER_STANDS_CELL) continue;
       occupied[seat]!++;
-      dots.x[i] = Math.fround(((seat % map.width) + 0.15 + rng.next() * 0.7) * CELL_SIZE_M);
-      dots.y[i] = Math.fround((((seat / map.width) | 0) + 0.15 + rng.next() * 0.7) * CELL_SIZE_M);
+      // A whole-crowd start takes no RNG draws, so where the run starts does
+      // not shift every random number after it.
+      const jx = allIn ? 0.5 : 0.15 + rng.next() * 0.7;
+      const jy = allIn ? 0.5 : 0.15 + rng.next() * 0.7;
+      dots.x[i] = Math.fround(((seat % map.width) + jx) * CELL_SIZE_M);
+      dots.y[i] = Math.fround((((seat / map.width) | 0) + jy) * CELL_SIZE_M);
+      this.admitted[i] = 1;
+      dots.targetPlace[i] = this.seatingIndex;
+      dots.setState(i, 'seated');
+    }
+    if (!allIn) return;
+    // Everyone is in: fans whose section was full take the first free seat in
+    // map order, so no extra RNG draws change the rest of the run.
+    const seats = map.places[this.seatingIndex]?.cells ?? [];
+    let next = 0;
+    for (let i = 0; i < dots.count; i++) {
+      if (dots.state[i] === SEATED) continue;
+      while (next < seats.length && occupied[seats[next]!]! >= SEATS_PER_STANDS_CELL) next++;
+      if (next >= seats.length) break;
+      const seat = seats[next]!;
+      occupied[seat]!++;
+      if (this.seatCell[i]! >= 0) this.seatLoad[this.seatCell[i]!]!--;
+      this.seatCell[i] = seat;
+      this.seatLoad[seat]!++;
+      dots.x[i] = Math.fround(((seat % map.width) + 0.5) * CELL_SIZE_M);
+      dots.y[i] = Math.fround((((seat / map.width) | 0) + 0.5) * CELL_SIZE_M);
       this.admitted[i] = 1;
       dots.targetPlace[i] = this.seatingIndex;
       dots.setState(i, 'seated');
@@ -561,7 +604,7 @@ export class FlowMovement implements MovementModel {
 
     for (let i = 0; i < dots.count; i++) {
       const state = dots.state[i]!;
-      if (state === SEATED && this.leaveAt[i]! > 0 && ctx.t >= this.leaveAt[i]!) {
+      if ((state === SEATED || state === SHELTERING) && this.leaveAt[i]! > 0 && ctx.t >= this.leaveAt[i]!) {
         this.leaveAt[i] = 0;
         this.leaveToLots(ctx, i);
         continue;
@@ -641,7 +684,8 @@ export class FlowMovement implements MovementModel {
       // fan whose chosen gate was on the far side otherwise walked out the
       // nearest opening and round the outside of the stadium to reach it first —
       // 1,406 fans more than 120 m from their gate, half an hour after the game.
-      if (this.admitted[i] === 1 && map.places[target]?.kind === 'gate' && !this.insideBowl(ctx, cell) && this.parkingIndex >= 0) {
+      if (this.admitted[i] === 1 && map.places[target]?.kind === 'gate' && !this.insideBowl(ctx, cell) && this.parkingIndex >= 0 &&
+          this.fields.field(this.parkingIndex, true).dist[cell] !== UNREACHABLE) {
         this.flowOut[target * FLOW_WINDOW_S + this.flowSlot]!++;
         this.retarget(ctx, i, this.parkingIndex);
         continue;
@@ -652,7 +696,11 @@ export class FlowMovement implements MovementModel {
       // in which case the way out is through the bowl by definition. Lots count
       // too: a fan leaving through a gate must not walk back in to cross to a
       // lot on the far side.
-      const field = this.fields.field(target, this.outsideBowl(map, target) && !this.insideBowl(ctx, cell));
+      let field = this.fields.field(target, this.outsideBowl(map, target) && !inside);
+      // Walk cells also occur inside gate corridors. They are not outside until
+      // an exterior route exists; otherwise the bowl exclusion strands them.
+      const leaving = this.admitted[i] === 1 && (targetKind === 'gate' || targetKind === 'parking');
+      if (leaving && field.dist[cell] === UNREACHABLE) field = this.fields.field(target);
       const best = field.dir[cell]!;
       if (best === 0) {
         // No route at all. For a gate that usually means it is shut or walled
@@ -704,7 +752,17 @@ export class FlowMovement implements MovementModel {
           if (nx < 0 || ny < 0 || nx >= map.width * CELL_SIZE_M || ny >= map.height * CELL_SIZE_M) continue;
           const nCell = ((ny / CELL_SIZE_M) | 0) * map.width + ((nx / CELL_SIZE_M) | 0);
           if (nCell === cell) {
-            if (pass === 1) continue; // shuffling inside one cell is not a detour
+            if (leaving) {
+              // At crowd speed a detour needs several steps within this cell.
+              // Only shuffle toward an available neighbour, or opposing flows
+              // bounce at a boundary forever without starting the detour.
+              const ax = (cell % map.width) + dx;
+              const ay = ((cell / map.width) | 0) + dy;
+              if (ax < 0 || ay < 0 || ax >= map.width || ay >= map.height) continue;
+              const ahead = ay * map.width + ax;
+              if (!this.fields.passable(ahead) || this.standingAt(ahead) >= MAX_DOTS_PER_CELL ||
+                  field.dist[ahead] === UNREACHABLE || field.dist[ahead]! > here + slack) continue;
+            } else if (pass === 1) continue; // shuffling inside one cell is not a detour
             dots.x[i] = nx;
             dots.y[i] = ny;
             dots.setState(i, 'walking');
@@ -724,6 +782,53 @@ export class FlowMovement implements MovementModel {
           dots.setState(i, 'walking');
           moved = true;
           break;
+        }
+      }
+      // Pinned in a corner: every short step lands in a full cell, yet a free
+      // neighbour no further from the goal is there across this cell. The
+      // passes above try fixed headings and skip moves that stay in the cell,
+      // so a fan wedged in its corner never walked back across it to the empty
+      // cell beside it. Head for that neighbour's centre, even if it takes a
+      // few steps to cross.
+      if (!moved) {
+        const cx = cell % map.width;
+        const cy = (cell / map.width) | 0;
+        let goal = -1;
+        let goalDist = here + DETOUR_SLACK * WALK_STEP + 1;
+        for (let k = 1; k <= 8; k++) {
+          const ax = cx + DIR_DX[k]!;
+          const ay = cy + DIR_DY[k]!;
+          if (ax < 0 || ay < 0 || ax >= map.width || ay >= map.height) continue;
+          const next = ay * map.width + ax;
+          if (!this.fields.passable(next) || this.standingAt(next) >= MAX_DOTS_PER_CELL) continue;
+          if (this.unscreenedEntry(ctx, i, cell, next)) continue;
+          // No squeezing diagonally between two walls.
+          if (k % 2 === 0 && (!this.fields.passable(cy * map.width + ax) || !this.fields.passable(ay * map.width + cx))) continue;
+          const there = field.dist[next]!;
+          if (there === UNREACHABLE || there >= goalDist) continue;
+          goalDist = there;
+          goal = next;
+        }
+        if (goal >= 0) {
+          const gx = ((goal % map.width) + 0.5) * CELL_SIZE_M - dots.x[i]!;
+          const gy = (((goal / map.width) | 0) + 0.5) * CELL_SIZE_M - dots.y[i]!;
+          const len = Math.hypot(gx, gy) || 1;
+          const nx = Math.fround(dots.x[i]! + (gx / len) * Math.min(stride, len));
+          const ny = Math.fround(dots.y[i]! + (gy / len) * Math.min(stride, len));
+          const nCell = ((ny / CELL_SIZE_M) | 0) * map.width + ((nx / CELL_SIZE_M) | 0);
+          // The straight line to a neighbour's centre crosses only this cell
+          // and that one; anything else (a corner clip) is refused.
+          if (nCell === cell || nCell === goal) {
+            if (nCell !== cell) {
+              occupancy[cell]!--;
+              this.bumpOccupancy(nCell);
+              cells[i] = nCell;
+            }
+            dots.x[i] = nx;
+            dots.y[i] = ny;
+            dots.setState(i, 'walking');
+            moved = true;
+          }
         }
       }
       // Hemmed in on every side, detour included. This is the queue.
@@ -974,15 +1079,17 @@ export class FlowMovement implements MovementModel {
     const cell = this.outsideGateCell(ctx, gate);
     if (cell < 0) return false;
     this.moveToCell(ctx, i, cell);
+    // Out through this gate: count it, as walking out through the door would.
+    this.flowOut[gate * FLOW_WINDOW_S + this.flowSlot]!++;
     const dest = this.parkingIndex >= 0 ? this.parkingIndex : (this.exitIndexes[0] ?? -1);
     ctx.dots.targetPlace[i] = dest;
     ctx.dots.setState(i, 'walking');
     return true;
   }
 
-  /** Leave by the nearest open gate, then walk to the lots. */
-  private leaveToLots(ctx: SimContext, i: number): void {
-    const nearest = this.nearestOpenGate(ctx, i, -1);
+  /** Leave by `via` if it is usable, else the nearest usable gate, then walk to the lots. */
+  private leaveToLots(ctx: SimContext, i: number, via = -1): void {
+    const nearest = this.usableExit(ctx, via) ? via : this.nearestExit(ctx, i);
     const gate = nearest >= 0 ? nearest : (this.gateIndexes[0] ?? -1);
     if (gate >= 0 && this.placeOutsideGate(ctx, i, gate)) return;
     // No room at the mouth: stay inside and retry next step; do not stack a
@@ -1049,6 +1156,7 @@ export class FlowMovement implements MovementModel {
       lotCell: this.lotCell.slice(),
       homeGate: this.homeGate.slice(),
       admitted: this.admitted.slice(),
+      returningToCar: this.returningToCar.slice(),
       seatLoad: this.seatLoad.slice(),
       shelterReserved: this.shelterReserved,
       wasLightning: this.wasLightning,
@@ -1058,7 +1166,6 @@ export class FlowMovement implements MovementModel {
       flowSlot: this.flowSlot,
       gateBudget: this.gateBudget.slice(),
       gateAssigned: this.gateAssigned.slice(),
-      closedKey: this.closedKey,
     };
   }
 
@@ -1076,6 +1183,7 @@ export class FlowMovement implements MovementModel {
     take(this.lotCell, (s as Record<string, unknown>).lotCell);
     take(this.homeGate, (s as Record<string, unknown>).homeGate);
     take(this.admitted, (s as Record<string, unknown>).admitted);
+    take(this.returningToCar, (s as Record<string, unknown>).returningToCar);
     take(this.seatLoad, (s as Record<string, unknown>).seatLoad);
     this.shelterReserved = Number((s as Record<string, unknown>).shelterReserved ?? 0);
     this.wasLightning = Boolean((s as Record<string, unknown>).wasLightning ?? false);
@@ -1085,7 +1193,9 @@ export class FlowMovement implements MovementModel {
     this.flowSlot = Number((s as Record<string, unknown>).flowSlot ?? 0);
     take(this.gateBudget, (s as Record<string, unknown>).gateBudget);
     take(this.gateAssigned, (s as Record<string, unknown>).gateAssigned);
-    this.closedKey = String((s as Record<string, unknown>).closedKey ?? '');
+    // A checkpoint restores the closure IDs, but fields may still hold routes
+    // built afterward. Force their cache to follow ctx.closed on the next step.
+    this.closedKey = '\u0000';
   }
 
   /** The post of the closest officer within earshot of this dot, or -1. */
@@ -1170,6 +1280,21 @@ export class FlowMovement implements MovementModel {
   private isOpen(ctx: SimContext, place: number): boolean {
     const door = this.gateDoor.get(place);
     return door === undefined || !ctx.closed.has(door);
+  }
+
+  /** An exit needs an open door and an exterior route onward to parking. */
+  private usableExit(ctx: SimContext, place: number): boolean {
+    if (place < 0 || !this.isOpen(ctx, place)) return false;
+    if (this.parkingIndex < 0 || ctx.map.places[place]?.kind !== 'gate') return true;
+    // Gate 8 on the stadium map opens into a pocket surrounded by the bowl.
+    const outside = this.fields.field(this.parkingIndex, true);
+    return ctx.map.places[place]!.cells.some((cell) => outside.dist[cell] !== UNREACHABLE);
+  }
+
+  /** The nearest usable gate to leave by; any gate if none is usable. */
+  private nearestExit(ctx: SimContext, dot: number): number {
+    const open = this.exitIndexes.filter((g) => this.usableExit(ctx, g));
+    return this.nearest(ctx, dot, open.length > 0 ? open : this.exitIndexes);
   }
 
   /**
@@ -1261,7 +1386,9 @@ export class FlowMovement implements MovementModel {
   private nearest(ctx: SimContext, i: number, candidates: number[], exclude = -1): number {
     const cell = this.cellOf(ctx, i);
     if (cell < 0) return -1;
-    const inside = this.insideBowl(ctx, cell);
+    // A corridor walk cell with no exterior route counts as inside.
+    const inside = this.insideBowl(ctx, cell) || (this.admitted[i] === 1 && this.parkingIndex >= 0 &&
+      this.fields.field(this.parkingIndex, true).dist[cell] === UNREACHABLE);
     let best = -1;
     let bestDist = UNREACHABLE;
     for (const index of candidates) {
@@ -1319,6 +1446,7 @@ export class FlowMovement implements MovementModel {
    * inside the bowl: they go to their gate first and on from there as usual.
    */
   sendTo(ctx: SimContext, dot: number, place: number): void {
+    this.returningToCar[dot] = 0;
     const kind = ctx.map.places[place]?.kind;
     const inside = kind === 'seating' || kind === 'concourse';
     if (kind === 'gate') {
@@ -1336,6 +1464,37 @@ export class FlowMovement implements MovementModel {
     this.retarget(ctx, dot, place);
   }
 
+  /**
+   * A late rush on one gate: the `count` fans parked nearest it (by walking
+   * distance) arrive in a burst between `fromS` and `toS` and all make for it.
+   * Taken from the crowd already spawned, so the crowd is the same size and
+   * the same fans rush in every plan.
+   */
+  lateRush(ctx: SimContext, gate: number, count: number, fromS: number, toS: number): void {
+    const { dots, rng } = ctx;
+    const field = this.fields.field(gate, true);
+    const candidates: number[] = [];
+    for (let i = 0; i < dots.count; i++) {
+      if (dots.state[i] !== ARRIVING || field.dist[this.lotCell[i]!] === UNREACHABLE) continue;
+      candidates.push(i);
+    }
+    candidates.sort((a, b) => field.dist[this.lotCell[a]!]! - field.dist[this.lotCell[b]!]! || a - b);
+    for (const i of candidates.slice(0, count)) {
+      const home = this.homeGate[i]!;
+      if (home >= 0) this.gateAssigned[home]!--;
+      this.homeGate[i] = gate;
+      this.gateAssigned[gate]!++;
+      dots.targetPlace[i] = gate;
+      this.spawnT[i] = fromS + (toS - fromS) * rng.next();
+    }
+  }
+
+  /** The game ended early: anyone still on their way turns round and never arrives. */
+  release(ctx: SimContext): void {
+    const { dots } = ctx;
+    for (let i = 0; i < dots.count; i++) if (dots.state[i] === ARRIVING) dots.setState(i, 'gone');
+  }
+
   describe(dot: number) {
     return {
       homeGate: this.homeGate[dot] ?? -1,
@@ -1347,6 +1506,8 @@ export class FlowMovement implements MovementModel {
 
   onChoice(ctx: SimContext, dot: number, situation: SituationId, option: string): void {
     const { dots } = ctx;
+    // A release supersedes entry-queue instructions still repeated by officers.
+    if (this.returningToCar[dot]) return;
 
     switch (situation) {
       case 'lightning_shelter':
@@ -1422,19 +1583,29 @@ export class FlowMovement implements MovementModel {
         return;
 
       case 'exit_route':
-        // On the way out a gate is a door, not a turnstile: mark them admitted.
-        // Inside the bowl they are placed outside the nearest open gate; someone
-        // already outside just walks to the lots, with no teleport.
-        this.admitted[dot] = 1;
+        if (dots.state[dot] === ARRIVING || dots.state[dot] === GONE) return;
+        if (this.admitted[dot] !== 1) {
+          // Unscreened fans have no seat to wait in. Keep them outside and send
+          // them to their own lot, preferring a named lot to the combined place.
+          const ownLot = this.parkingByCell[this.lotCell[dot]!]!;
+          this.returningToCar[dot] = 1;
+          this.retarget(ctx, dot, ownLot >= 0 ? ownLot : this.parkingIndex);
+          return;
+        }
         if (option === 'nearest_exit' || option === 'my_gate') {
+          // Inside the bowl they are placed outside the gate at once; someone
+          // already outside just walks to the lots, with no teleport.
           const cell = this.cellOf(ctx, dot);
           const inside = cell >= 0 && this.insideBowl(ctx, cell);
-          if (inside) this.leaveToLots(ctx, dot);
-          else if (this.parkingIndex >= 0) {
-            dots.targetPlace[dot] = this.parkingIndex;
-            dots.setState(dot, 'walking');
+          if (inside) this.leaveToLots(ctx, dot, option === 'my_gate' ? this.homeGate[dot]! : -1);
+          else if (this.parkingIndex >= 0) this.retarget(ctx, dot, this.parkingIndex);
+        } else if (option === 'wait_in_seat') {
+          if (dots.state[dot] !== SEATED && dots.state[dot] !== SHELTERING) {
+            // On their feet already: they leave now. retarget places a fan
+            // still inside outside a gate, and walks one outside to the lots.
+            this.retarget(ctx, dot, this.parkingIndex);
+            return;
           }
-        } else if (option === 'wait_in_seat' && dots.state[dot] === SEATED) {
           // Letting it thin out is not staying for good.
           const [lo, hi] = WAIT_IN_SEAT_S;
           this.leaveAt[dot] = ctx.t + lo + (hi - lo) * ctx.rng.next();

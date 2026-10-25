@@ -92,7 +92,7 @@ export function Inspector({ map, types, run, label, dot, scrubbing, appliedNote,
         <div>
           <h3>{groupName(dot)}</h3>
           <p className="muted">
-            {type?.label ?? 'Fan'} · a group of {DOT_GROUP_SIZE} · Plan {label}
+            {type?.label ?? 'Fan'}, a group of {DOT_GROUP_SIZE}, plan {label}
           </p>
         </div>
         <button className="small ghost" onClick={onClose} title="Close">

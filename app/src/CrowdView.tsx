@@ -35,6 +35,8 @@ export interface CrowdViewProps {
   onShowFlow: (on: boolean) => void;
   /** The most congested areas, pinned on the map. */
   hotspots: PoliceHotspot[];
+  /** A road cell was clicked (not a fan, officer or vehicle), for placing a barricade or sending officers there. */
+  onPickStreet?: (cell: number) => void;
 }
 
 /**
@@ -55,6 +57,8 @@ export function CrowdView(props: CrowdViewProps) {
   const alertsShown = useRef(0);
   const pickVehicleRef = useRef(onPickVehicle);
   pickVehicleRef.current = onPickVehicle;
+  const pickStreetRef = useRef(props.onPickStreet);
+  pickStreetRef.current = props.onPickStreet;
   // The weather layer is laid out in CSS pixels, so a flake is the same size
   // here as over the side-by-side maps.
   const [size, setSize] = useState({ w: 1000, h: 600 });
@@ -81,6 +85,8 @@ export function CrowdView(props: CrowdViewProps) {
       onPick: (dot) => pickRef.current(dot),
       onPickOfficer: (id) => pickOfficerRef.current(id),
       onPickVehicle: (vehicle) => pickVehicleRef.current(vehicle),
+      onPickStreet: (cell) => pickStreetRef.current?.(cell),
+      picking: () => pickStreetRef.current !== undefined,
       onFollowChange: setFollowing,
     });
     sceneRef.current = scene;
@@ -184,15 +190,15 @@ export function CrowdView(props: CrowdViewProps) {
       <div className="crowd-tools">
         <button title="Zoom in" onClick={() => sceneRef.current?.zoomBy(1.6)}>+</button>
         <button title="Zoom out" onClick={() => sceneRef.current?.zoomBy(1 / 1.6)}>−</button>
-        <button title="Whole map" onClick={() => sceneRef.current?.fit()}>⤢</button>
-        <button title="Back to the incident" onClick={() => sceneRef.current?.showIncident()}>⚠</button>
+        <button title="Show the whole map" onClick={() => sceneRef.current?.fit()}>Whole map</button>
+        <button title="Back to the incident" onClick={() => sceneRef.current?.showIncident()}>Incident</button>
       </div>
       <div className="crowd-toggles">
         <label>
-          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> crowd density
+          <input type="checkbox" checked={heat} onChange={(e) => setHeat(e.target.checked)} /> Crowd density
         </label>
         <label>
-          <input type="checkbox" checked={showFlow} onChange={(e) => onShowFlow(e.target.checked)} /> traffic flow
+          <input type="checkbox" checked={showFlow} onChange={(e) => onShowFlow(e.target.checked)} /> Traffic flow
         </label>
         {selected !== null && (
           <label>
@@ -208,7 +214,7 @@ export function CrowdView(props: CrowdViewProps) {
           </label>
         )}
       </div>
-      <div className="crowd-hint">scroll to zoom · drag to move · click a fan or an officer</div>
+      <div className="crowd-hint">Scroll to zoom, drag to move, click a fan or an officer</div>
     </div>
   );
 }

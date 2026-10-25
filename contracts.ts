@@ -12,7 +12,7 @@
  * optional, so a run with no traffic and no weather steps exactly as v1 did.
  */
 
-export const CONTRACT_VERSION = 'gameday.v2' as const;
+export const CONTRACT_VERSION = 'gameday.v3' as const;
 export const CELL_SIZE_M = 2;            // grid cell edge in meters
 export const DOT_GROUP_SIZE = 5;         // one dot = this many fans
 export const DEFAULT_DANGER_DENSITY = 4; // people per square meter, editable per run
@@ -94,6 +94,13 @@ export interface VehicleFrame {
   waitedS: Float32Array;                 // seconds spent stopped so far
 }
 
+export interface StadiumTheme {
+  team: string;                          // "Michigan Wolverines"
+  primary: string;                       // main colour, seats and end zones
+  secondary: string;                     // second colour, alternate sections and accents
+  source: string;                        // where the colours came from
+}
+
 // ───────────────────────────── Map [B] ─────────────────────────────
 
 export type CellKind = 'blocked' | 'walk' | 'road' | 'stands' | 'concourse' | 'shelter' | 'parking';
@@ -122,6 +129,12 @@ export interface MapBundle {
   streets?: { name: string; kind: string; points: number[] }[];
   /** v2: the playing field's cells, inside the bowl. Nobody is seated there. */
   field?: number[];
+  /** v2: the field's long axis, radians clockwise from north (0 = north-south). */
+  fieldAxis?: number;
+  /** v2: what the field is marked for, from OSM's sport tag. */
+  sport?: 'football' | 'soccer' | 'cricket' | 'baseball';
+  /** v2: the home team's colours, for the stands, field and gate badges. Hex like "#00274c". */
+  theme?: StadiumTheme;
 }
 
 // ─────────────────────────── Crowd [C] ─────────────────────────────
@@ -225,7 +238,7 @@ export interface DecisionTape {
 
 // ─────────────────── Incidents and responders [B] ──────────────────
 
-export type IncidentKind = 'lightning_delay' | 'gate_surge' | 'suspicious_package' | 'medical' | 'fight';
+export type IncidentKind = 'game_end' | 'lightning_delay' | 'gate_surge' | 'suspicious_package' | 'medical' | 'fight';
 
 export interface Incident {
   id: Id;
