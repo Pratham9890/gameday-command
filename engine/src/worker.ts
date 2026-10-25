@@ -23,7 +23,10 @@ let sim: Simulation | null = null;
 let playing = false;
 let speed = 1;
 let looping = false;
-let peopleMotion = new MotionRecorder();
+// Crowd poses every three seconds: five sample intervals per replay gap.
+// Vehicles and officers keep one-second paths. Sampling every fan each second
+// exceeded the traffic budget; this bounded cadence avoids that allocation cost.
+let peopleMotion = new MotionRecorder(3);
 let vehicleMotion = new MotionRecorder();
 let officerMotion = new MotionRecorder();
 
@@ -38,7 +41,7 @@ function recordMotion(): void {
 }
 
 function resetMotion(): void {
-  peopleMotion = new MotionRecorder();
+  peopleMotion = new MotionRecorder(3);
   vehicleMotion = new MotionRecorder();
   officerMotion = new MotionRecorder();
   recordMotion();
@@ -81,6 +84,8 @@ let typesSent = -1;
 
 function emitFrame(): void {
   if (!sim) return;
+  // Also flush a final frame whose timestamp is not a multiple of the cadence.
+  peopleMotion.capture(sim.ctx.t, sim.ctx.dots.x, sim.ctx.dots.y, undefined, undefined, true);
   // Fan types ride alongside frames only when they changed: they are fixed at
   // spawn and move only with a commander edit or a rewind.
   if (sim.typesVersion !== typesSent) {

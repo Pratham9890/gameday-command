@@ -25,7 +25,7 @@ for (const officers of [24, 60]) for (const traffic of [false, true]) {
     population: makePopulation(100_000, config.seed), defaults: DECISION_DEFAULTS,
     serverUrl: '', movement: new FlowMovement(), replay: {runId: config.runId, answers: []}});
   const hash = createHash('sha256');
-  const people = new MotionRecorder(), vehicles = new MotionRecorder(), units = new MotionRecorder();
+  const people = new MotionRecorder(3), vehicles = new MotionRecorder(), units = new MotionRecorder();
   let bytes = 0, packets = 0;
   const captureMotion = () => {
     people.capture(sim.ctx.t, sim.ctx.dots.x, sim.ctx.dots.y);

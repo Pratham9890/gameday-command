@@ -51,4 +51,30 @@ describe('motion paths between replay frames', () => {
     expect(at.h).toBeCloseTo(Math.PI);
     expect(at.speed).toBeCloseTo(1);
   });
+  it('transfers packets without detaching the recorder or changing earlier replay data', () => {
+    const r = new MotionRecorder();
+    r.capture(0, new Float32Array([10]), new Float32Array([10]));
+    r.capture(1, new Float32Array([11]), new Float32Array([10]));
+    const packet = r.take();
+    const received = structuredClone(packet, {transfer: [packet.offsets.buffer, packet.samples.buffer]});
+    expect(packet.samples.byteLength).toBe(0);
+    r.capture(2, new Float32Array([11]), new Float32Array([11]));
+    expect(poseOnPath(r.take(), 0, 1.5, 3)).toMatchObject({x: 11, y: 10.5});
+    expect(poseOnPath(received, 0, 0.5, 3)).toMatchObject({x: 10.5, y: 10});
+  });
+  it('bounds crowd sampling cadence and can flush a final partial interval', () => {
+    const r = new MotionRecorder(3);
+    r.capture(0, [10], [10]);
+    r.capture(1, [11], [10]);
+    r.capture(2, [12], [10]);
+    r.capture(3, [13], [10]);
+    const p = r.take();
+    expect(p.samples.length).toBe(10);
+    expect(poseOnPath(p, 0, 1.5, 3)?.x).toBe(11.5);
+    r.capture(4, [14], [10], undefined, undefined, true);
+    r.capture(4, [14], [10], undefined, undefined, true);
+    const partial = r.take();
+    expect(partial.to).toBe(4);
+    expect(poseOnPath(partial, 0, 3.5, 3)?.x).toBe(13.5);
+  });
 });
