@@ -1,4 +1,5 @@
 import type { Id, SimSeconds } from '../../contracts.ts';
+import type { MotionPath } from './motion.ts';
 
 /**
  * Commander edits to individual fans, and the extra worker messages that carry
@@ -69,6 +70,7 @@ export interface GateStat {
 /** What the close-up needs to make a plan visible, beyond a TickFrame. */
 export interface SceneInfo {
   t: SimSeconds;
+  motion?: { people: MotionPath; vehicles: MotionPath; officers: MotionPath; officerIds: Id[] };
   officers: OfficerStatus[];
   gates: GateStat[];
   /** Closable ids shut right now: gate doors and streets. */

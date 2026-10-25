@@ -2,6 +2,7 @@ import { Application, Container, Graphics, Matrix, Sprite, Texture } from 'pixi.
 import type { CellKind, FanType, MapBundle, VehicleFrame, VehicleKind, WeatherState } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import type { OfficerStatus, SceneInfo } from '../../engine/src/edits.ts';
+import { poseOnPath } from '../../engine/src/motion.ts';
 import { policeStations } from '../../world/src/officers.ts';
 import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands, type HeatBand } from './heat.ts';
@@ -40,8 +41,6 @@ const LEG_H = 0.95;
 const TORSO_H = 0.95;
 const HEAD_R = 0.34;
 const FIG_H = LEG_H + TORSO_H + HEAD_R * 2;
-/** Frames further apart than this are a jump (arrival, rewind), not a walk. */
-const MAX_TWEEN_M = 30;
 /** The ground overlays sit a little under full strength, so the model reads through them. */
 const HEAT_ALPHA = 0.8;
 const FLOW_ALPHA = 0.72;
@@ -113,7 +112,7 @@ const mix = (a: number, b: number, t: number) => {
   return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 };
 /** Frames further apart than this are a vehicle spawning or leaving, not driving. */
-const MAX_VEHICLE_TWEEN_M = 260;
+
 
 export interface CrowdSceneInit {
   host: HTMLElement;
@@ -409,7 +408,6 @@ export class CrowdScene {
   private routes = new Graphics();
   private ripple = new Graphics();
   private scene: SceneInfo | null = null;
-  private prevScene: SceneInfo | null = null;
   private closedKey = '';
   private barricades: BarricadeGroup[] = [];
   private closedTags: { el: HTMLElement; sx: number; sy: number }[] = [];
@@ -613,8 +611,7 @@ export class CrowdScene {
    * seen happening: officers walking in from their post, a gate door shut, the
    * people an alert reached.
    */
-  setScene(info: SceneInfo | null, live: boolean): void {
-    this.prevScene = live && this.scene && info && info.t > this.scene.t ? this.scene : null;
+  setScene(info: SceneInfo | null, _live: boolean): void {
     this.scene = info;
     const key = closureKey(info);
     if (key !== this.closedKey) {
@@ -1202,21 +1199,17 @@ export class CrowdScene {
   }
 
   /** Where a vehicle is right now (centre, heading), tweened between frames like the people. */
-  private vehicleAt(i: number, now: number): { x: number; y: number; h: number } | null {
+  private vehicleAt(i: number, now: number): { x: number; y: number; h: number; speed: number } | null {
     const v = this.cur?.vehicles;
     if (!v || i < 0 || i >= v.x.length) return null;
     const x1 = v.x[i]!;
     if (x1 < 0) return null;
-    const pv = this.prev?.vehicles;
-    if (!pv || !this.tween || pv.x.length !== v.x.length) return { x: x1, y: v.y[i]!, h: v.heading[i]! };
-    const x0 = pv.x[i]!;
-    const y0 = pv.y[i]!;
-    if (x0 < 0 || Math.hypot(x1 - x0, v.y[i]! - y0) > MAX_VEHICLE_TWEEN_M) return { x: x1, y: v.y[i]!, h: v.heading[i]! };
-    const a = this.tweenA(now);
-    let dh = v.heading[i]! - pv.heading[i]!;
-    while (dh > Math.PI) dh -= Math.PI * 2;
-    while (dh < -Math.PI) dh += Math.PI * 2;
-    return { x: x0 + (x1 - x0) * a, y: y0 + (v.y[i]! - y0) * a, h: pv.heading[i]! + dh * a };
+    const path = this.scene?.motion?.vehicles;
+    const t = path ? path.from + (path.to - path.from) * this.tweenA(now) : this.cur!.t;
+    const at = this.tween && this.prev ? poseOnPath(path, i, t, 40) : null;
+    if (at && at.x < 0) return null;
+    return at ?? { x: x1, y: v.y[i]!, h: v.heading[i]!, speed: v.speed[i]! };
+
   }
 
   /**
@@ -1224,7 +1217,7 @@ export class CrowdScene {
    * window bands on buses and RVs, and roof gear. Only the faces this viewpoint
    * can see (normals pointing east or south) are drawn, then the roof.
    */
-  private drawVehicle(g: Graphics, i: number, kind: VehicleKind, x: number, y: number, heading: number, opts: { detail: boolean; state: number; dim: boolean; flash: boolean; selected: boolean }): void {
+  private drawVehicle(g: Graphics, i: number, kind: VehicleKind, x: number, y: number, heading: number, opts: { detail: boolean; state: number; dim: boolean; flash: boolean; selected: boolean; braking?: boolean }): void {
     const type = VEHICLE_TYPES[kind];
     const { h: H, belt } = VEHICLE_HEIGHT[kind];
     const L = type.lengthM;
@@ -1324,7 +1317,7 @@ export class CrowdScene {
     }
 
     // Lamps: headlights always, tail lights bright red when braking.
-    const braking = opts.state === VSTATE.stopped;
+    const braking = opts.braking ?? opts.state === VSTATE.stopped;
     const tail = braking ? 0xff2a2a : 0x7d1d1d;
     for (const side of [-1, 1]) {
       const b = side * (hw - 0.35);
@@ -1383,8 +1376,11 @@ export class CrowdScene {
     // of parked vehicles changes, the detail level or highlighting changes, or
     // the camera leaves the padded window it was drawn for. Rebuilding it on
     // every frame cost 25-70 ms, a visible stutter each time a frame landed.
+    const path = this.scene?.motion?.vehicles;
+    const settling = this.tween && this.prev !== null && this.tweenA(now) < 1;
+    const movingPath = (i: number) => settling && path && path.offsets[i] !== path.offsets[i + 1];
     let sig = 0;
-    for (let i = 0; i < v.x.length; i++) if (v.state[i] === VSTATE.parked) sig = (sig + Math.imul(i + 1, 2654435761)) >>> 0;
+    for (let i = 0; i < v.x.length; i++) if (v.state[i] === VSTATE.parked && !movingPath(i)) sig = (sig + Math.imul(i + 1, 2654435761)) >>> 0;
     const win = this.parkedWindow;
     const inside = x0 >= win.x0 && x1 <= win.x1 && y0 >= win.y0 && y1 <= win.y1;
     const key = `${sig}|${detail}|${this.vehicleFocus}|${this.selectedVehicle}`;
@@ -1400,7 +1396,7 @@ export class CrowdScene {
       const pw = this.parkedWindow;
       const parked: number[] = [];
       for (let i = 0; i < v.x.length; i++) {
-        if (v.state[i] !== VSTATE.parked || v.x[i]! < 0) continue;
+        if (v.state[i] !== VSTATE.parked || v.x[i]! < 0 || movingPath(i)) continue;
         const p = isoProject(v.x[i]!, v.y[i]!);
         if (p.sx < pw.x0 - 10 || p.sx > pw.x1 + 10 || p.sy < pw.y0 - 10 || p.sy > pw.y1 + 10) continue;
         parked.push(i);
@@ -1423,10 +1419,10 @@ export class CrowdScene {
 
     for (let i = 0; i < v.x.length; i++) {
       const st = v.state[i]!;
-      if (st === VSTATE.parked || st === VSTATE.waiting || st === VSTATE.gone) continue;
+      if ((st === VSTATE.parked && !movingPath(i)) || st === VSTATE.waiting || st === VSTATE.gone) continue;
       order.push(i);
     }
-    const placed: { i: number; x: number; y: number; h: number }[] = [];
+    const placed: { i: number; x: number; y: number; h: number; speed: number }[] = [];
     for (const i of order) {
       const at = this.vehicleAt(i, now);
       if (!at) continue;
@@ -1435,7 +1431,7 @@ export class CrowdScene {
       placed.push({ i, ...at });
     }
     placed.sort((a, b) => a.x + a.y - (b.x + b.y));
-    for (const { i, x, y, h } of placed) {
+    for (const { i, x, y, h, speed } of placed) {
       const kind = VEHICLE_KINDS[v.kind[i]!]!;
       const st = v.state[i]!;
       const emergency = kind === 'police' || kind === 'ambulance';
@@ -1443,11 +1439,11 @@ export class CrowdScene {
       const dim = this.vehicleFocus !== null && this.vehicleFocus !== kind;
       if (!dim && detail) {
         const strobe = flash ? (strobePhase ? 0xff2a2a : kind === 'police' ? 0x2a6bff : 0xffffff) : null;
-        this.drawGlow(x, y, h, VEHICLE_TYPES[kind].lengthM, dark && st !== VSTATE.on_scene, st === VSTATE.stopped, strobe);
+        this.drawGlow(x, y, h, VEHICLE_TYPES[kind].lengthM, dark && st !== VSTATE.on_scene, speed < 0.5, strobe);
       }
       const type = VEHICLE_TYPES[kind];
       const d = vehicleDiagonal(x, y, h, type.lengthM, type.widthM);
-      this.drawVehicle(this.moving.get(d), i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
+      this.drawVehicle(this.moving.get(d), i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle, braking: speed < 0.5 });
     }
   }
 
@@ -1482,17 +1478,12 @@ export class CrowdScene {
     const x1 = cur.x[dot]!;
     const y1 = cur.y[dot]!;
     if (x1 < 0 || cur.state[dot] === DOT_STATES.length - 1) return null;
-    const prev = this.prev;
-    if (!prev || !this.tween) return { x: x1, y: y1, moving: false };
-    const x0 = prev.x[dot]!;
-    const y0 = prev.y[dot]!;
-    if (x0 < 0) return { x: x1, y: y1, moving: false };
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    const dist = Math.hypot(dx, dy);
-    if (dist > MAX_TWEEN_M) return { x: x1, y: y1, moving: false };
-    const a = this.tweenA(now);
-    return { x: x0 + dx * a, y: y0 + dy * a, moving: dist > 0.4 && a < 1 };
+    const path = this.scene?.motion?.people;
+    const t = path ? path.from + (path.to - path.from) * this.tweenA(now) : cur.t;
+    const at = this.tween && this.prev ? poseOnPath(path, dot, t, 3) : null;
+    if (at && at.x < 0) return null;
+    return at ? { ...at, moving: at.speed > 0.1 && this.tweenA(now) < 1 } : {x: x1, y: y1, moving: false};
+
   }
 
   /** The officer under a screen point, if any. */
@@ -1519,12 +1510,12 @@ export class CrowdScene {
   private officerPositions(now: number): (OfficerStatus & { x: number; y: number })[] {
     const scene = this.scene;
     if (!scene) return [];
-    const prev = this.prevScene;
-    const a = this.tweenA(now);
-    return scene.officers.map((o) => {
-      const before = prev?.officers.find((p) => p.id === o.id);
-      if (!before || Math.hypot(o.x - before.x, o.y - before.y) > MAX_TWEEN_M * 3) return o;
-      return { ...o, x: before.x + (o.x - before.x) * a, y: before.y + (o.y - before.y) * a };
+    const path = scene.motion?.officers;
+    const t = path ? path.from + (path.to - path.from) * this.tweenA(now) : scene.t;
+    return scene.officers.map(o => {
+      const i = scene.motion?.officerIds.indexOf(o.id) ?? -1;
+      const at = this.tween && this.prev ? poseOnPath(path, i, t, 3) : null;
+      return at ? {...o, x: at.x, y: at.y} : o;
     });
   }
 
