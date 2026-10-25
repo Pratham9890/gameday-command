@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { MapBundle } from '../../contracts.ts';
 import type { RunHandle } from './useRun.ts';
 
@@ -8,7 +9,16 @@ const n = (v: number) => Math.round(v).toLocaleString();
  * out, the queue waiting, and how much it can pass right now. Follows the plan
  * on the map, so a commander can watch a closed gate's queue move to the next.
  */
-export function GatesPanel({ map, run, label }: { map: MapBundle; run: RunHandle; label: string }) {
+export function GatesPanel({ map, run, label, onToggle, disabled = false }: {
+  map: MapBundle;
+  run: RunHandle;
+  label: string;
+  onToggle?: (closableId: string, closed: boolean) => void;
+  disabled?: boolean;
+}) {
+  const doors = useMemo(() => map.places.map((place) => place.kind === 'gate'
+    ? map.closables.find((c) => c.cells.some((cell) => place.cells.includes(cell)))
+    : undefined), [map]);
   const gates = run.scene.current?.gates ?? [];
   const totalIn = gates.reduce((s, g) => s + g.inPerMin, 0);
   const totalOut = gates.reduce((s, g) => s + g.outPerMin, 0);
@@ -65,6 +75,11 @@ export function GatesPanel({ map, run, label }: { map: MapBundle; run: RunHandle
                   </td>
                   <td>
                     <span className={`door ${g.open ? 'open' : 'closed'}`}>{g.open ? 'Open' : 'Closed'}</span>
+                    {onToggle && doors[g.place] && (
+                      <button className="small ghost gate-order" disabled={disabled} onClick={() => onToggle(doors[g.place]!.id, g.open)}>
+                        {g.open ? 'Close' : 'Open'}
+                      </button>
+                    )}
                   </td>
                   <td>{n(g.inPerMin)}</td>
                   <td>{n(g.outPerMin)}</td>

@@ -12,7 +12,7 @@
  * optional, so a run with no traffic and no weather steps exactly as v1 did.
  */
 
-export const CONTRACT_VERSION = 'gameday.v2' as const;
+export const CONTRACT_VERSION = 'gameday.v3' as const;
 export const CELL_SIZE_M = 2;            // grid cell edge in meters
 export const DOT_GROUP_SIZE = 5;         // one dot = this many fans
 export const DEFAULT_DANGER_DENSITY = 4; // people per square meter, editable per run
@@ -238,7 +238,7 @@ export interface DecisionTape {
 
 // ─────────────────── Incidents and responders [B] ──────────────────
 
-export type IncidentKind = 'lightning_delay' | 'gate_surge' | 'suspicious_package' | 'medical' | 'fight';
+export type IncidentKind = 'game_end' | 'lightning_delay' | 'gate_surge' | 'suspicious_package' | 'medical' | 'fight';
 
 export interface Incident {
   id: Id;

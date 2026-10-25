@@ -7,6 +7,9 @@ import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
 import { bandOf, heatBands, type HeatBand } from './heat.ts';
 import { isoProject, isoUnproject, rgbNum, shirtColor, skinOf, STATE_RGB } from './people.ts';
 import { paintFor } from './vehicleArt.ts';
+import { diagonalZ, heightAt, personZ, vehicleDiagonal } from './depth.ts';
+import { DiagonalPool } from './diagonal-pool.ts';
+import { barricadePlacements, buildBarricades, closedAreas, closureKey, type BarricadeGroup } from './barricadeArt.ts';
 import { FLOW_RGB, HOTSPOT_COLOUR, standingDensity, trafficFlow, type PoliceHotspot } from './congestion.ts';
 import { buildBowl, buildStreetLines, streetLabels, type Bowl } from './stadium3d.ts';
 
@@ -121,6 +124,10 @@ export interface CrowdSceneInit {
   onFollowChange: (following: boolean) => void;
   /** A vehicle was clicked. Checked before fans, since a car sits on top of them. */
   onPickVehicle?: (vehicle: number) => void;
+  /** While an order waits for a map click (`picking()` is true): the clicked open cell, taking the click before any fan, officer or vehicle. */
+  onPickStreet?: (cell: number) => void;
+  /** True while an order is waiting for a map click. A function, so a change does not rebuild the scene. */
+  picking?: () => boolean;
 }
 
 interface Layer {
@@ -237,18 +244,6 @@ function makeParts(): Parts {
   return { shadow, ring, legs, torso, head, bubble };
 }
 
-/** Screen depth of the bowl's centre line, in the units person zIndex uses. */
-function bowlDepth(map: MapBundle): number {
-  let sum = 0;
-  let n = 0;
-  for (let c = 0; c < map.cells.length; c++) {
-    if (map.cells[c] !== 'stands') continue;
-    sum += (c % map.width) + Math.floor(c / map.width);
-    n++;
-  }
-  return n > 0 ? ((sum / n + 1) * CELL_SIZE_M) / 2 : 0;
-}
-
 /** A police post: a small blue booth with a light bar, in the depth-sorted layer with everyone else. */
 function buildStation(cell: number, width: number): Graphics {
   const C = CELL_SIZE_M;
@@ -272,7 +267,7 @@ function buildStation(cell: number, width: number): Graphics {
   const mid = (x0 + x1) / 2;
   g.poly(quad([[mid - 1.2, y0 + 1, h], [mid, y0 + 1, h], [mid, y1 - 1, h], [mid - 1.2, y1 - 1, h]]), true).fill(0xe5484d);
   g.poly(quad([[mid, y0 + 1, h], [mid + 1.2, y0 + 1, h], [mid + 1.2, y1 - 1, h], [mid, y1 - 1, h]]), true).fill(OFFICER);
-  g.zIndex = ((u + v + 2) * C) / 2;
+  g.zIndex = diagonalZ(u + v);
   return g;
 }
 
@@ -388,8 +383,8 @@ function buildBuildings(map: MapBundle, snow = 0): Graphics[] {
     }
     if (!g) continue;
     roofs.forEach((r, k) => g!.poly(quad(r), true).fill(colors[k]!));
-    // Just before a figure standing on the line in front of this diagonal.
-    g.zIndex = ((d + 1) * C) / 2 - 0.001;
+    // Figures anywhere in this diagonal sort after its roofs.
+    g.zIndex = diagonalZ(d);
     diagonals.set(d, g);
   }
   return [...diagonals.values()];
@@ -413,6 +408,7 @@ export class CrowdScene {
   private scene: SceneInfo | null = null;
   private prevScene: SceneInfo | null = null;
   private closedKey = '';
+  private barricades: BarricadeGroup[] = [];
   private closedTags: { el: HTMLElement; sx: number; sy: number }[] = [];
   private selectedOfficer: string | null = null;
   /** Who the last alert reached, and when it went out (wall clock). */
@@ -421,8 +417,9 @@ export class CrowdScene {
   /** One Graphics per diagonal, sorted in with the people (see buildBuildings). */
   private buildings: Graphics[] = [];
   private buildingSnow = -1;
-  private parked = new Graphics();
-  private moving = new Graphics();
+  // Between seated tint (+0.0005) and figures (+0.001): pedestrians beside a car stay visible.
+  private parked = new DiagonalPool(this.people, 0.0008);
+  private moving = new DiagonalPool(this.people, 0.0008);
   private beams = new Graphics();
   private parkedKey = '';
   /** The padded window the parked layer was last drawn for, in world units. */
@@ -432,7 +429,7 @@ export class CrowdScene {
   private selectedVehicle: number | null = null;
   private bands: HeatBand[];
   private bowl: Bowl | null = null;
-  private standsCrowd = new Graphics();
+  private standsCrowd = new DiagonalPool(this.people, 0.0005);
   private flow!: Layer;
   private flowCells: Uint8Array | null = null;
   private standing: Float32Array | null = null;
@@ -537,22 +534,15 @@ export class CrowdScene {
     this.people.addChild(...this.buildings);
     for (const station of policeStations(map)) this.people.addChild(buildStation(station.cell, map.width));
     // Beams, glows and officer routes lie on the ground, under everything.
-    // Vehicles go above the depth-sorted layer: a car beside a wall is never
-    // cut off by it.
+    // Vehicles share the depth-sorted layer so cars behind pedestrians or buildings stay behind them.
     const lanes = buildStreetLines(map);
     this.world.addChild(slab, this.ground);
     if (this.bowl) {
       this.world.addChild(this.bowl.turf);
-      // The bowl sorts in with buildings and people at its centre line, so a
-      // building or fan behind the stadium goes behind it and one in front
-      // stays in front. As a layer of its own it either covered every building
-      // in front of it or was covered by every building behind it.
-      const depth = bowlDepth(map);
-      this.bowl.shell.zIndex = depth;
-      this.standsCrowd.zIndex = depth + 0.0005;
-      this.people.addChild(this.bowl.shell, this.standsCrowd);
+      // Per-diagonal tiers let fans on the far half of the bowl stand above their own seats.
+      for (const { g } of this.bowl.shell) this.people.addChild(g);
     }
-    this.world.addChild(lanes, this.beams, this.routes, this.people, this.parked, this.moving, this.ripple, this.officers, this.marker);
+    this.world.addChild(lanes, this.beams, this.routes, this.people, this.ripple, this.officers, this.marker);
     app.stage.addChild(this.world);
 
     this.makeLabels();
@@ -611,10 +601,12 @@ export class CrowdScene {
   setScene(info: SceneInfo | null, live: boolean): void {
     this.prevScene = live && this.scene && info && info.t > this.scene.t ? this.scene : null;
     this.scene = info;
-    const key = info ? [...info.closed].sort().join(',') : '';
+    const key = closureKey(info);
     if (key !== this.closedKey) {
       this.closedKey = key;
-      void this.ready.then(() => this.drawClosed(info?.closed ?? []));
+      void this.ready.then(() => {
+        if (!this.destroyed && key === this.closedKey) this.drawClosed(info);
+      });
     }
   }
 
@@ -622,7 +614,9 @@ export class CrowdScene {
   private updateGateLabel(label: { el: HTMLElement; place: number }): void {
     const stat = this.scene?.gates.find((g) => g.place === label.place);
     const name = (this.init.map.places[label.place]?.name ?? '').replace(/\s*\(.*\)/, '');
-    const text = !stat ? name : stat.open ? `${Math.round(stat.inPerMin)}/min` : 'closed';
+    // Whichever way the gate is busier: in before kickoff, out after the whistle.
+    const flow = !stat ? '' : stat.outPerMin > stat.inPerMin ? `${Math.round(stat.outPerMin)}/min out` : `${Math.round(stat.inPerMin)}/min`;
+    const text = !stat ? name : stat.open ? flow : 'closed';
     if (this.gateText.get(label.place) === text) return;
     this.gateText.set(label.place, text);
     this.fillGateLabel(label.el, this.init.map.places[label.place]?.name ?? '', stat ? text : null);
@@ -672,33 +666,38 @@ export class CrowdScene {
     this.selectedOfficer = id;
   }
 
-  private drawClosed(ids: string[]): void {
+  private clearBarricades(): void {
+    for (const { body, lights } of this.barricades) {
+      body.destroy();
+      lights.destroy();
+    }
+    this.barricades = [];
+  }
+
+  private drawClosed(info: SceneInfo | null): void {
     const { map, overlay } = this.init;
     const { width } = map;
     this.closedCells.clear();
+    this.clearBarricades();
     for (const tag of this.closedTags) tag.el.remove();
     this.closedTags = [];
-    for (const id of ids) {
-      const closable = map.closables.find((c) => c.id === id);
-      if (!closable || closable.cells.length === 0) continue;
-      let u = 0;
-      let v = 0;
-      for (const cell of closable.cells) {
-        this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
-        u += (cell % width) + 0.5;
-        v += Math.floor(cell / width) + 0.5;
-      }
-      // A gate's own label already says it is closed; streets need a tag of their own.
-      if (map.places.some((p) => p.kind === 'gate' && closable.cells.some((c) => p.cells.includes(c)))) continue;
-      const n = closable.cells.length;
-      const p = isoProject((u / n) * CELL_SIZE_M, (v / n) * CELL_SIZE_M, 4);
+    const areas = closedAreas(map, info);
+    this.barricades = buildBarricades(areas.flatMap((area) =>
+      barricadePlacements(area.cells, width, (c) => map.cells[c], area.isGate)));
+    for (const { body, lights } of this.barricades) this.people.addChild(body, lights);
+    for (const area of areas) {
+      for (const cell of area.cells) this.closedCells.rect(cell % width, Math.floor(cell / width), 1, 1);
+      // Map gates already have a status label; live barricades keep their supplied names.
+      const fromMap = map.closables.some((c) => c.id === area.id);
+      if (area.isGate && fromMap) continue;
+      const p = isoProject(area.x, area.y, 4);
       const el = document.createElement('div');
       el.className = 'crowd-label closed';
-      el.textContent = `⛔ ${closable.name.replace(/ door$/, '')} closed`;
+      el.textContent = `⛔ ${fromMap ? area.name.replace(/ door$/, '') : area.name} closed`;
       overlay.appendChild(el);
       this.closedTags.push({ el, sx: p.sx, sy: p.sy });
     }
-    this.closedCells.fill({ color: CLOSED, alpha: 0.7 });
+    this.closedCells.fill({ color: CLOSED, alpha: 0.3 });
   }
 
   private bindInput(canvas: HTMLCanvasElement): void {
@@ -726,6 +725,22 @@ export class CrowdScene {
     const onUp = (e: PointerEvent) => {
       if (down && !down.moved) {
         const p = local(e);
+        // An order waiting for a map click (picking() says so) takes the
+        // click outright: zoomed out, the nearest fan is almost
+        // always within reach and would otherwise swallow every click. Any
+        // open cell will do — officers can be sent anywhere, and the barricade
+        // order checks for a road itself.
+        if (this.init.onPickStreet && this.init.picking?.()) {
+          const { mx, my } = this.groundAt(p.x, p.y);
+          const { map } = this.init;
+          const u = Math.floor(mx / CELL_SIZE_M), v = Math.floor(my / CELL_SIZE_M);
+          // Check coordinates before flattening, so off-map clicks cannot wrap rows.
+          if (u >= 0 && u < map.width && v >= 0 && v < map.height && map.cells[v * map.width + u] !== 'blocked') {
+            this.init.onPickStreet(v * map.width + u);
+          }
+          down = null;
+          return;
+        }
         const officer = this.officerAt(p.x, p.y);
         const vehicle = officer === null ? this.pickVehicleAt(p.x, p.y) : null;
         if (officer !== null) this.init.onPickOfficer(officer);
@@ -894,10 +909,7 @@ export class CrowdScene {
     const bowl = this.bowl;
     if (!bowl) return 0;
     const { width, height } = this.init.map;
-    const u = Math.floor(x / CELL_SIZE_M);
-    const v = Math.floor(y / CELL_SIZE_M);
-    if (u < 0 || v < 0 || u >= width || v >= height) return 0;
-    return bowl.height[v * width + u]!;
+    return heightAt(bowl.height, width, height, x, y);
   }
 
   setHeat(on: boolean): void {
@@ -1025,8 +1037,7 @@ export class CrowdScene {
    */
   private paintStands(frame: SceneFrame): void {
     const bowl = this.bowl;
-    const g = this.standsCrowd;
-    g.clear();
+    this.standsCrowd.clear();
     if (!bowl || !frame.density || !this.standing || !this.seated) return;
     const { width } = this.init.map;
     const rho = this.standing;
@@ -1034,6 +1045,8 @@ export class CrowdScene {
     const bands = this.bands;
     const picked = this.selectedBand;
     const C = CELL_SIZE_M;
+    let diagonal = -1;
+    let g: Graphics | null = null;
     for (let k = 0; k < bowl.seats.length; k++) {
       const c = bowl.seats[k]!;
       const v = rho[c]!;
@@ -1056,12 +1069,16 @@ export class CrowdScene {
       }
       const u = c % width;
       const w = (c / width) | 0;
+      if (diagonal !== u + w) {
+        diagonal = u + w;
+        g = this.standsCrowd.get(diagonal);
+      }
       const h = bowl.height[c]! + 0.05;
       const pts = [
         isoProject(u * C + 0.2, w * C + 0.2, h), isoProject((u + 1) * C - 0.2, w * C + 0.2, h),
         isoProject((u + 1) * C - 0.2, (w + 1) * C - 0.2, h), isoProject(u * C + 0.2, (w + 1) * C - 0.2, h),
       ];
-      g.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
+      g!.poly(pts.flatMap((p) => [p.sx, p.sy]), true).fill({ color: colour, alpha });
     }
   }
 
@@ -1322,7 +1339,9 @@ export class CrowdScene {
       parked.sort((a, b) => v.x[a]! + v.y[a]! - (v.x[b]! + v.y[b]!));
       for (const i of parked) {
         const kind = VEHICLE_KINDS[v.kind[i]!]!;
-        this.drawVehicle(this.parked, i, kind, v.x[i]!, v.y[i]!, v.heading[i]!, {
+        const type = VEHICLE_TYPES[kind];
+        const d = vehicleDiagonal(v.x[i]!, v.y[i]!, v.heading[i]!, type.lengthM, type.widthM);
+        this.drawVehicle(this.parked.get(d), i, kind, v.x[i]!, v.y[i]!, v.heading[i]!, {
           detail,
           state: v.state[i]!,
           dim: this.vehicleFocus !== null && this.vehicleFocus !== kind,
@@ -1356,7 +1375,9 @@ export class CrowdScene {
         const strobe = flash ? (strobePhase ? 0xff2a2a : kind === 'police' ? 0x2a6bff : 0xffffff) : null;
         this.drawGlow(x, y, h, VEHICLE_TYPES[kind].lengthM, dark && st !== VSTATE.on_scene, st === VSTATE.stopped, strobe);
       }
-      this.drawVehicle(this.moving, i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
+      const type = VEHICLE_TYPES[kind];
+      const d = vehicleDiagonal(x, y, h, type.lengthM, type.widthM);
+      this.drawVehicle(this.moving.get(d), i, kind, x, y, h, { detail, state: st, dim, flash, selected: i === this.selectedVehicle });
     }
   }
 
@@ -1412,7 +1433,7 @@ export class CrowdScene {
     let best: string | null = null;
     let bestSq = reach * reach;
     for (const o of this.officerPositions(performance.now())) {
-      const p = isoProject(o.x, o.y, 1.2 * k);
+      const p = isoProject(o.x, o.y, 1.2 * k + this.liftAt(o.x, o.y));
       const dx = p.sx * s + this.cam.x - px;
       const dy = p.sy * s + this.cam.y - py;
       const sq = dx * dx + dy * dy;
@@ -1500,6 +1521,7 @@ export class CrowdScene {
     const app = this.app;
     if (!app) return;
     const now = performance.now();
+    for (const { d, lights } of this.barricades) lights.alpha = (Math.floor(now / 500) + d) % 2 ? 0.2 : 1;
     const { w, h } = this.viewSize();
 
     if (this.follow && this.selected !== null) {
@@ -1545,7 +1567,7 @@ export class CrowdScene {
         const person = this.person(used++);
         person.c.visible = true;
         person.c.position.set(p.sx, p.sy);
-        person.c.zIndex = p.sy;
+        person.c.zIndex = personZ(pos.x, pos.y);
         const state = cur.state[i]!;
         person.ring.tint = rgbNum(STATE_RGB[state] ?? STATE_RGB[3]!);
         person.torso.tint = shirtColor(types, this.typeIndex?.[i] ?? 0);
@@ -1631,16 +1653,17 @@ export class CrowdScene {
         }));
 
     for (const o of officers) {
-      const p = isoProject(o.x, o.y);
+      const p = isoProject(o.x, o.y, this.liftAt(o.x, o.y));
       // Where they are headed: a dotted line to the post, so a dispatch is visible.
       if (o.state === 'en_route' && o.targetCell >= 0) {
+        const ground = isoProject(o.x, o.y);
         const t = centre(o.targetCell);
-        const len = Math.hypot(t.sx - p.sx, t.sy - p.sy);
+        const len = Math.hypot(t.sx - ground.sx, t.sy - ground.sy);
         const dash = Math.max(1.5, 6 / s);
         for (let d = 0; d < len; d += dash * 2) {
           const a = d / len;
           const b = Math.min(1, (d + dash) / len);
-          this.routes.moveTo(p.sx + (t.sx - p.sx) * a, p.sy + (t.sy - p.sy) * a).lineTo(p.sx + (t.sx - p.sx) * b, p.sy + (t.sy - p.sy) * b);
+          this.routes.moveTo(ground.sx + (t.sx - ground.sx) * a, ground.sy + (t.sy - ground.sy) * a).lineTo(ground.sx + (t.sx - ground.sx) * b, ground.sy + (t.sy - ground.sy) * b);
         }
         this.routes.stroke({ color: OFFICER, width: Math.max(0.25, 2 / s), alpha: 0.85 });
         this.routes.circle(t.sx, t.sy, 1.4 * k).stroke({ color: OFFICER, width: Math.max(0.2, 1.5 / s) });
@@ -1708,6 +1731,7 @@ export class CrowdScene {
 
   destroy(): void {
     this.destroyed = true;
+    this.clearBarricades();
     for (const fn of this.cleanup) fn();
     for (const label of this.labels) label.el.remove();
     for (const tag of [...this.stationTags, ...this.closedTags]) tag.el.remove();

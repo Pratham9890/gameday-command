@@ -50,9 +50,9 @@ describe('plan editor', () => {
 });
 
 describe('what the app offers the commander', () => {
-  it('offers exactly the three incidents the demo calls for', () => {
+  it('offers exactly the four incidents the demo calls for', () => {
     const kinds = incidentsFor(map).map((i) => i.kind);
-    expect(kinds).toEqual(['gate_surge', 'lightning_delay', 'suspicious_package']);
+    expect(kinds).toEqual(['gate_surge', 'lightning_delay', 'suspicious_package', 'game_end']);
   });
 
   it('gives every incident at least three editable plans', () => {
@@ -64,10 +64,12 @@ describe('what the app offers the commander', () => {
     }
   });
 
-  it('always starts the clock at kickoff minus 60 and runs past the incident', () => {
+  it('starts the clock at kickoff minus 60, or just before the whistle for the game end, and runs past the incident', () => {
     for (const incident of incidentsFor(map)) {
       const window = windowFor(incident);
-      expect(window.startAt).toBe(-3600);
+      // Game end starts with everyone seated, so it skips the hour of arrivals.
+      if (incident.kind === 'game_end') expect(window.startAt).toBeLessThan(incident.at);
+      else expect(window.startAt).toBe(-3600);
       expect(window.endAt).toBeGreaterThan(incident.at);
     }
   });

@@ -1,4 +1,4 @@
-import type { Incident, IncidentKind, MapBundle } from '../../contracts.ts';
+import type { Incident, IncidentKind, MapBundle, Place } from '../../contracts.ts';
 import { CELL_SIZE_M } from '../../contracts.ts';
 
 /**
@@ -23,6 +23,7 @@ export function safeCountFor(cells: readonly number[]): number {
 }
 
 export const INCIDENT_LABELS: Record<IncidentKind, string> = {
+  game_end: 'Game ends',
   lightning_delay: 'Lightning delay',
   gate_surge: 'Gate surge',
   suspicious_package: 'Suspicious package',
@@ -68,11 +69,66 @@ export function northGate(map: MapBundle) {
   return gates.find((g) => /\(N\)/.test(g.name)) ?? gates[0];
 }
 
-/** A surge on the north gate at kickoff, on whichever map is loaded. */
+/**
+ * The gate that surges at kickoff, and the one its plans relieve it with.
+ *
+ * On the stadium map that is Gate 2 (NNE), relieved by Gate 1 (N). It used to
+ * be Gate 1: with fans walking down the middle of the streets the kickoff jam
+ * sat there, but once they keep to sidewalks it moves to Gate 2 (2,510 people
+ * in the zone at kickoff against Gate 1's 65, under its safe count), and a
+ * surge on Gate 1 never registered, so every plan read "never cleared".
+ * Elsewhere (the test map) it is the first gate, relieved by the second.
+ */
+export function surgeGates(map: MapBundle): { hot: Place | undefined; relief: Place | undefined } {
+  const gates = placesOfKind(map, 'gate');
+  const byId = (id: string) => gates.find((g) => g.id === id);
+  const hot = byId('gate-2') ?? gates[0];
+  const relief = byId('gate-2') ? (byId('gate-1') ?? gates[0]) : (gates[1] ?? gates[0]);
+  return { hot, relief };
+}
+
+/**
+ * Keep only the cells on the outside of a gate: no nearer the bowl's centre
+ * than the gate's own inner edge. A square around the gate reaches through
+ * the wall into the corridor beyond the turnstile, so "time to clear" counted
+ * people already admitted and walking to their seats, and the surge never read
+ * as cleared even after the queue outside had gone.
+ */
+function outsideGate(map: MapBundle, gate: Place, cells: number[]): number[] {
+  const bowl = placesOfKind(map, 'seating')[0];
+  if (!bowl || bowl.cells.length === 0) return cells;
+  let sx = 0;
+  let sy = 0;
+  for (const c of bowl.cells) {
+    sx += c % map.width;
+    sy += Math.floor(c / map.width);
+  }
+  const cx = sx / bowl.cells.length;
+  const cy = sy / bowl.cells.length;
+  const r = (c: number) => Math.hypot((c % map.width) - cx, Math.floor(c / map.width) - cy);
+  const inner = Math.min(...gate.cells.map(r));
+  const outside = cells.filter((c) => r(c) >= inner);
+  return outside.length > 0 ? outside : cells;
+}
+
+/**
+ * The late rush a gate surge is about: this many fans arriving in a burst
+ * around kickoff, all making for the surge gate. Without it the scenario had
+ * no surge of its own: it relied on a jam the engine used to make by mistake
+ * (fans admitted ten steps out, stuck behind the queue still waiting), and once
+ * that was fixed no gate ever crowded at kickoff. Only the stadium's own surge
+ * carries one; the test map's surge keeps its plain arrivals.
+ */
+export function lateRushFor(incident: Incident): { fans: number; fromS: number; toS: number } | null {
+  if (incident.id !== 'inc-gate-surge' || !incident.placeId) return null;
+  return { fans: 5_000, fromS: incident.at - 300, toS: incident.at + 120 };
+}
+
+/** A surge at kickoff on the gate `surgeGates` names, on whichever map is loaded. */
 export function gateSurge(map: MapBundle, at = 0): Incident {
-  const gate = northGate(map);
+  const gate = surgeGates(map).hot;
   if (!gate) throw new Error('map has no gate to surge');
-  const cells = expandCells(map, gate.cells, 6);
+  const cells = outsideGate(map, gate, expandCells(map, gate.cells, 6));
   return {
     id: 'inc-gate-surge',
     kind: 'gate_surge',
@@ -143,12 +199,28 @@ export function suspiciousPackage(map: MapBundle, at = GAME_END_S): Incident {
   };
 }
 
-/** The three incidents the commander can trigger. */
-export function incidentsFor(map: MapBundle): Incident[] {
-  return [gateSurge(map, 0), lightningDelay(map), suspiciousPackage(map)];
+/** The final whistle: clearance measures the fans remaining in the stands. */
+export function gameEnd(map: MapBundle, at = GAME_END_S): Incident {
+  const stands = placesOfKind(map, 'seating')[0];
+  const cells = stands?.cells ?? [];
+  return {
+    id: 'inc-game-end',
+    kind: 'game_end',
+    at,
+    placeId: stands?.id,
+    cells,
+    safeCount: safeCountFor(cells),
+    note: 'The final whistle. Everyone heads back to the parking lots.',
+  };
 }
 
-/** The sim window to run an incident in: the crowd still builds from kickoff minus 60. */
+/** The incidents the commander can trigger. */
+export function incidentsFor(map: MapBundle): Incident[] {
+  return [gateSurge(map, 0), lightningDelay(map), suspiciousPackage(map), gameEnd(map)];
+}
+
+/** Arrival incidents build from kickoff minus 60; game end opens on the seated crowd. */
 export function windowFor(incident: Incident): { startAt: number; endAt: number } {
+  if (incident.kind === 'game_end') return { startAt: incident.at - 300, endAt: incident.at + 3600 };
   return { startAt: -3600, endAt: Math.max(900, incident.at + 1800) };
 }

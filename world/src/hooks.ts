@@ -12,6 +12,7 @@ import type {
 
 /** What an incident makes dots ask themselves the moment it fires. */
 const SITUATION_FOR_INCIDENT: Record<IncidentKind, SituationId> = {
+  game_end: 'exit_route',
   lightning_delay: 'lightning_shelter',
   gate_surge: 'gate_jammed',
   suspicious_package: 'street_closed',
@@ -38,6 +39,7 @@ export interface WorldRuntime extends WorldHooks {
  * comparison run sees its plan at the same offset from the same moment.
  */
 export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEndAt?: SimSeconds): WorldRuntime {
+  const exodusAt = incident.kind === 'game_end' ? incident.at : gameEndAt;
   const applied = new Set<number>();
   let incidentRaised = false;
   let exodusRaised = false;
@@ -115,7 +117,7 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
     onStep(t: SimSeconds, world: WorldView, act: WorldActions): void {
       // The game ends and the stands empty, whatever else is happening. The
       // suspicious package scenario is about a street closing into that exodus.
-      if (gameEndAt !== undefined && !exodusRaised && t >= gameEndAt) {
+      if (exodusAt !== undefined && !exodusRaised && t >= exodusAt) {
         exodusRaised = true;
         act.raiseSituation('exit_route');
       }
@@ -124,7 +126,8 @@ export function createWorldHooks(incident: Incident, plan: ResponsePlan, gameEnd
 
       if (!incidentRaised) {
         incidentRaised = true;
-        act.raiseSituation(SITUATION_FOR_INCIDENT[incident.kind], incident.cells);
+        // The whistle reaches the concourse too; the map-wide exodus already raised it.
+        if (incident.kind !== 'game_end') act.raiseSituation(SITUATION_FOR_INCIDENT[incident.kind], incident.cells);
       }
 
       plan.actions.forEach((action, i) => {
