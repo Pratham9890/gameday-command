@@ -43,6 +43,14 @@ import { vehicleIcon } from './vehicleArt.ts';
 const SEED = 20251023;
 const LABELS = ['A', 'B', 'C'] as const;
 const params = new URLSearchParams(window.location.search);
+
+/** The demo sign-in plays once per browser session, not on every page load. */
+function signedInThisSession(): boolean {
+  try { return window.sessionStorage.getItem('gd-demo-seen') === '1'; } catch { return false; }
+}
+function markSignedIn(): void {
+  try { window.sessionStorage.setItem('gd-demo-seen', '1'); } catch { /* storage disabled: ask again next load */ }
+}
 /**
  * The server serves the stadium map when it has been fetched, else the test
  * map. `?map=test-3gate` forces the small one, which is handy for a quick look.
@@ -357,7 +365,7 @@ function VehicleIcon({ kind }: { kind: VehicleKind }) {
 
 export function App() {
   const [roleChoice,setRoleChoice]=useState<DemoRole>(()=>readRole());
-  const [showRole,setShowRole]=useState(!AUTORUN),[following,setFollowing]=useState(true);
+  const [showRole,setShowRole]=useState(()=>!AUTORUN&&!signedInThisSession()),[following,setFollowing]=useState(true);
   const officerRole=roleChoice.role==='officer';
   const [mapId, setMapId] = useState<string | null>(MAP_PARAM ?? (AUTORUN ? 'default' : null));
   const [priority, setPriority] = useState<Priority>('clear');
@@ -870,7 +878,7 @@ export function App() {
   const zoomTo = (h: Hotspot) => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() });
 
   const demoUnits=loaded?(liveScene?.officers??makeOfficers(loaded.map,OFFICERS)).map(o=>({id:o.id,unit:o.unit,post:loaded.map.places.find(p=>p.cells.includes('homeCell' in o?o.homeCell:o.cell))?.name??'Outdoor post'})):[];
-  const chooseRole=(choice:DemoRole)=>{saveRole(choice);setRoleChoice(choice);setShowRole(false);setFollowing(true);};
+  const chooseRole=(choice:DemoRole)=>{saveRole(choice);markSignedIn();setRoleChoice(choice);setShowRole(false);setFollowing(true);};
   const roleDialog=showRole?<DemoAccess choice={roleChoice} units={demoUnits} onChoose={chooseRole} onSkip={()=>chooseRole({role:'supervisor',unitId:roleChoice.unitId})}/>:null;
   if (!mapId) {
     return (

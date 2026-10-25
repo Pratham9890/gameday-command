@@ -119,11 +119,16 @@ export function PolicePanel({ map, run, label, disabled, started, onOrder, armPi
     }
     if (!last || last.t !== t) samples.push({t, gates: scene?.gates ?? []});
     if (samples.length > 240) samples.splice(0, samples.length - 240);
+    // Durations are continuous presence: a hotspot that went away starts over.
+    const present = new Set(targets.map((target) => target.spot.where));
+    for (const where of [...durations.current.keys()]) if (!present.has(where)) durations.current.delete(where);
     for (const target of targets) if (!durations.current.has(target.spot.where)) durations.current.set(target.spot.where, t);
   }, [scene?.t, scene?.gates, targets]);
   const health = useMemo(() => classifyGates(gateHistory.current, scene ? {t: scene.t, gates: scene.gates} : null), [scene?.t, scene?.gates]);
   const healthByPlace = useMemo(() => new Map(health.map((item) => [item.place, item])), [health]);
-  const suggestions = scene ? dispatchSuggestions(map, targets, scene, {durations: durations.current, gateHealth: healthByPlace}) : [];
+  // durations holds when each hotspot was first seen; suggestions want how long ago.
+  const seenFor = new Map([...durations.current].map(([where, since]) => [where, Math.max(0, (scene?.t ?? since) - since)]));
+  const suggestions = scene ? dispatchSuggestions(map, targets, scene, {durations: seenFor, gateHealth: healthByPlace}) : [];
   const [dismissReason, setDismissReason] = useState('');
   const reachCoverage=useMemo(()=>coverage(map,officers,hotspots,reachMinutes),[map,scene?.officers,hotspots,reachMinutes]);
   const officerIds = selected.filter((id) => officers.some((o) => o.id === id));
