@@ -140,7 +140,9 @@ The app's replay scrubber draws kept frames while you drag, because that is inst
 
 ## The commander screen
 
-`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The map takes the left and one story runs down the right, as **1 · Situation**, **2 · Three plans, same crowd** and **3 · Verdict**. A dismissible "how it works" strip sits under the top bar. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+`app/src/App.tsx` is built for someone seeing it for the first time, such as a judge. The header names the stadium (team-colour stripe) and holds the situation tabs and clock; a transport bar above the map holds play, speed, weather, vehicles and restart. The map well is the one dark element; the right rail has tabs: **Brief** (situation, commander's brief, most congested), **Plans** (verdict and plan cards), **Gates**, **Map key** and **About**. The chosen tab is remembered in localStorage. Before the first play, a card over the map states the situation in a sentence and holds the play button.
+
+**Visual language** (`styles.css` header comment): US road signage and incident-command boards. Overpass (open Highway Gothic) for headings and numbers, Public Sans for text, loaded from Google Fonts in `app/index.html`. Guide green is the primary action, warning yellow medium, stop red high; team colours appear only in the header stripe, plan letters and gate badges. Sentence case, no emoji or middle-dot strings in copy.
 
 - **Words live in `app/src/story.ts`** (clock text, incident status, live stats, ranking, the verdict sentence), so the phrasing and the ranking are tested in `story.test.ts`. Plan steps are shown with names, not ids, through `describeAction(action, map)`.
 - **Ranking:** clearing the zone sooner wins, never-cleared loses to cleared, and ties go to fewer danger minutes.

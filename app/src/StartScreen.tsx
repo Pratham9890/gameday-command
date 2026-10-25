@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 
 interface MapRow {
   id: string;
@@ -71,12 +71,12 @@ export function StartScreen({ onPick }: { onPick: (id: string) => void }) {
     <div className="start">
       <div className="start-card">
         <h1>Gameday Command</h1>
-        <p className="lead">Choose a stadium to plan for.</p>
+        <p className="lead">Test crowd and traffic plans for a stadium before game day. Pick one you have, or bring in any stadium from OpenStreetMap.</p>
 
         <h2>Your stadiums</h2>
         <div className="start-maps">
           {maps.map((m) => (
-            <button key={m.id} className="start-map" onClick={() => onPick(m.id)}>
+            <button key={m.id} className="start-map" onClick={() => onPick(m.id)} style={m.theme ? ({ '--edge': m.theme.primary } as CSSProperties) : undefined}>
               <strong>{m.name.replace(/ \+ 0\.5 mi$/, '')}</strong>
               <em>{m.imported ? 'imported from OpenStreetMap' : m.id === 'test-3gate' ? 'small practice map' : 'ready to run'}</em>
               {m.theme && (
@@ -98,8 +98,8 @@ export function StartScreen({ onPick }: { onPick: (id: string) => void }) {
             void search();
           }}
         >
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. Michigan Stadium, Beaver Stadium, Wembley" />
-          <button className="primary" disabled={q.trim().length < 3 || busy !== null}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Michigan Stadium, Beaver Stadium, Wembley" />
+          <button className="go" disabled={q.trim().length < 3 || busy !== null}>
             {busy === 'search' ? 'Searching…' : 'Search'}
           </button>
         </form>
@@ -112,7 +112,7 @@ export function StartScreen({ onPick }: { onPick: (id: string) => void }) {
                   <strong>{h.name}</strong>
                   <em>
                     {h.where}
-                    {h.capacity ? ` · ${h.capacity.toLocaleString()} seats` : ''}
+                    {h.capacity ? `, ${h.capacity.toLocaleString()} seats` : ''}
                   </em>
                 </span>
                 <button className="small" disabled={busy !== null} onClick={() => void importHit(h)}>

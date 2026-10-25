@@ -637,7 +637,7 @@ export class CrowdScene {
     badge.className = 'gnum';
     badge.textContent = number;
     const text = document.createElement('span');
-    text.textContent = status ? `Gate ${number} · ${status}` : `Gate ${number}`;
+    text.textContent = status ? `Gate ${number}, ${status}` : `Gate ${number}`;
     el.replaceChildren(badge, text);
   }
 

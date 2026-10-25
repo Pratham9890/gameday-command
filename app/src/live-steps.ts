@@ -29,9 +29,9 @@ export function stepStatus(
       const helped = sent.reduce((sum, o) => sum + o.told, 0);
       if (enRoute.length > 0) {
         const eta = Math.max(...enRoute.map((o) => o.etaS ?? 0));
-        return `${onScene.length} of ${sent.length} on scene · ${enRoute.length} on the way, ~${Math.max(1, Math.round(eta / 60))} min`;
+        return `${onScene.length} of ${sent.length} on scene, ${enRoute.length} on the way, ~${Math.max(1, Math.round(eta / 60))} min`;
       }
-      return `all ${sent.length} on scene${helped > 0 ? ` · ${n(helped)} fans directed` : ''}`;
+      return `all ${sent.length} on scene${helped > 0 ? `, ${n(helped)} fans directed` : ''}`;
     }
     case 'alert': {
       const sent = alerts.find((a) => a.t >= firedAt);

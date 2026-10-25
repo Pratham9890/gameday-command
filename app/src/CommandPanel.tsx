@@ -112,23 +112,23 @@ export function CommandPanel(props: CommandPanelProps) {
   };
 
   return (
-    <section className="panel command">
-      <h2>🧭 Commander&apos;s brief</h2>
+    <section className="block command">
+      <h2>Right now</h2>
 
       <div className="brief-source">
         {conditions ? (
           <>
-            <span className="src live">● Real conditions</span> {conditions.source}
-            {conditions.at && <em> · as of {new Date(conditions.at).toLocaleTimeString()}</em>}
-            {feedMinute === null ? <em> · no time to kickoff given, so fixed thresholds</em> : <em> · {Math.abs(feedMinute)} min {feedMinute < 0 ? 'before' : 'after'} kickoff</em>}
+            <span className="src live">Real conditions</span> {conditions.source}
+            {conditions.at && <em>, as of {new Date(conditions.at).toLocaleTimeString()}</em>}
+            {feedMinute === null ? <em>. No time to kickoff given, so fixed thresholds.</em> : <em>, {Math.abs(feedMinute)} min {feedMinute < 0 ? 'before' : 'after'} kickoff</em>}
             <button className="small ghost" onClick={() => setConditions(null)}>
               Back to simulation
             </button>
           </>
         ) : (
           <>
-            <span className="src sim">● Simulation</span> Plan {label}
-            {history.runs > 0 ? <em> · compared with {history.runs} past runs</em> : <em> · no history yet, so fixed thresholds</em>}
+            <span className="src sim">Simulation</span> Plan {label}
+            {history.runs > 0 ? <em>, compared with {history.runs} past runs</em> : <em>. No history yet, so fixed thresholds.</em>}
           </>
         )}
       </div>
@@ -165,7 +165,7 @@ export function CommandPanel(props: CommandPanelProps) {
           />
         </label>
         <div className="feed-url">
-          <input type="url" placeholder="https://… feed URL" value={feedUrl} onChange={(e) => setFeedUrl(e.target.value)} />
+          <input type="url" placeholder="Feed URL" value={feedUrl} onChange={(e) => setFeedUrl(e.target.value)} />
           <button className="small" disabled={!/^https?:\/\//.test(feedUrl)} onClick={() => void fetchFeed()}>
             Fetch
           </button>
@@ -175,12 +175,12 @@ export function CommandPanel(props: CommandPanelProps) {
 
       <div className="suggest">
         <button
-          className="primary wide"
+          className="go wide"
           disabled={now.length === 0}
           onClick={() => onSuggest(suggestPlans(map, incident.kind, now, incident.placeId))}
           title="Build three plans from the conditions above: redirect, close and reroute, officers and a street closure"
         >
-          Build 3 plans from these conditions
+          Build three plans from this
         </button>
         <p className="muted">Fills A, B and C with a redirect, a closure and an officer plan. Edit them, then run.</p>
       </div>
@@ -275,9 +275,9 @@ function Feedback({ mapId, incident, labels, best, priority }: { mapId: string; 
       )}
       {log.length > 0 && (
         <p className="muted">
-          {log.length} {log.length === 1 ? 'response' : 'responses'} so far · last: Plan {log[0]!.pick}
+          {log.length} {log.length === 1 ? 'response' : 'responses'} so far. Last: plan {log[0]!.pick}
           {log[0]!.agree === false ? ', disagreed with the ranking' : log[0]!.agree ? ', agreed' : ''}
-          {log[0]!.note ? ` · “${log[0]!.note}”` : ''}
+          {log[0]!.note ? `, “${log[0]!.note}”` : ''}
         </p>
       )}
     </div>

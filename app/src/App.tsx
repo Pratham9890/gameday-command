@@ -69,11 +69,15 @@ function pitchFor(incident: Incident, zoneName: string): string {
   }
 }
 
-const STEPS_HELP: { title: string; text: string }[] = [
-  { title: 'Pick a situation', text: 'Three real game-day problems at Ohio Stadium.' },
-  { title: 'Press play', text: 'Three response plans run at once on the exact same crowd.' },
-  { title: 'See which plan wins', text: 'The one that clears the danger zone fastest, with the least crush risk.' },
-];
+/** The side rail's tabs, in the order a commander works through them. */
+const RAIL_TABS = [
+  { id: 'brief', label: 'Brief' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'gates', label: 'Gates' },
+  { id: 'key', label: 'Map key' },
+  { id: 'about', label: 'About' },
+] as const;
+type RailTab = (typeof RAIL_TABS)[number]['id'];
 
 interface Loaded {
   map: MapBundle;
@@ -141,7 +145,7 @@ function PlanCard({
           const status = stepStatus(action, incident.at + action.at, run.t, run.scene.current, run.alerts.current ?? [], map);
           return (
             <li key={i} className={done ? 'done' : undefined}>
-              <span className="tick">{done ? '✓' : '·'}</span>
+              <span className="tick">{done ? '✓' : ''}</span>
               {describeAction(action, map)}
               {action.at > 0 && <span className="muted"> after {Math.round(action.at / 60) || '<1'} min</span>}
               {status && <span className={`live ${action.type}`}>{status}</span>}
@@ -238,11 +242,11 @@ function AlertBanner({ run, plan, incidentAt }: { run: RunHandle; plan: Response
   const step = plan.actions
     .filter((a): a is Extract<ResponsePlan['actions'][number], { type: 'alert' }> => a.type === 'alert' && incidentAt + a.at <= last.t)
     .sort((a, b) => b.at - a.at)[0];
-  const how = step?.channel === 'phone' ? '📱 Phone alert' : '📣 PA announcement';
+  const how = step?.channel === 'phone' ? 'Phone alert' : 'PA announcement';
   return (
     <div className="alert-banner">
       <strong>{how}</strong> reached {(last.dots.length * DOT_GROUP_SIZE).toLocaleString()} fans
-      {step?.message && <span className="muted"> · “{step.message}”</span>}
+      {step?.message && <span className="muted"> “{step.message}”</span>}
     </div>
   );
 }
@@ -273,7 +277,10 @@ function Legend() {
           <i className="zone" /> incident zone
         </span>
         <span>
-          <i className="cop" /> officer (click one) · <i className="route" /> on the way
+          <i className="cop" /> officer, click one
+        </span>
+        <span>
+          <i className="route" /> officer route
         </span>
         <span>
           <i className="shut" /> closed
@@ -336,13 +343,22 @@ export function App() {
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingBusy, setBriefingBusy] = useState(false);
-  const [showHelp, setShowHelp] = useState(() => {
+  const [railTab, setRailTabState] = useState<RailTab>(() => {
     try {
-      return localStorage.getItem('gd-help-hidden') !== '1';
+      const saved = localStorage.getItem('gd-rail-tab');
+      return RAIL_TABS.some((t) => t.id === saved) ? (saved as RailTab) : 'brief';
     } catch {
-      return true;
+      return 'brief';
     }
   });
+  const setRailTab = (tab: RailTab) => {
+    setRailTabState(tab);
+    try {
+      localStorage.setItem('gd-rail-tab', tab);
+    } catch {
+      // private window: the rail opens on Brief next time
+    }
+  };
 
   useEffect(() => {
     if (!mapId) return;
@@ -683,15 +699,6 @@ export function App() {
       : pickedCell;
   const zoomTo = (h: Hotspot) => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() });
 
-  const hideHelp = () => {
-    setShowHelp(false);
-    try {
-      localStorage.setItem('gd-help-hidden', '1');
-    } catch {
-      // private window: the strip just comes back next time
-    }
-  };
-
   if (!mapId) {
     return (
       <StartScreen
@@ -708,33 +715,40 @@ export function App() {
   return (
     <>
       <header className="top">
-        <div className="brand">
-          <h1>Gameday Command</h1>
-          {loaded?.map.theme && (
-            <span className="team-chip" title={`Colours: ${loaded.map.theme.source}`}>
-              <i style={{ background: loaded.map.theme.primary }} />
-              <i style={{ background: loaded.map.theme.secondary }} />
-              {loaded.map.theme.team}
-            </span>
-          )}
-          <span className="sub">
-            Test crowd plans for {loaded ? loaded.map.name.replace(/ \+ 0\.5 mi$/, '') : '…'} before game day, not during it.{' '}
-            <button
-              className="link"
-              onClick={() => {
-                setPlaying(false);
-                setLoaded(null);
-                setMapId(null);
-              }}
-            >
-              Change stadium
-            </button>
-          </span>
+        <div className="venue">
+          <span className="venue-stripe" aria-hidden="true" />
+          <div>
+            <h1>{loaded ? loaded.map.name.replace(/ \+ 0\.5 mi$/, '') : 'Loading stadium'}</h1>
+            <p>
+              {loaded?.map.theme ? <span title={`Colours: ${loaded.map.theme.source}`}>{loaded.map.theme.team}</span> : 'Gameday Command'}
+              <button
+                className="link"
+                onClick={() => {
+                  setPlaying(false);
+                  setLoaded(null);
+                  setMapId(null);
+                }}
+              >
+                Change stadium
+              </button>
+            </p>
+          </div>
         </div>
 
+        <nav className="situations" aria-label="Situation">
+          {incidents.map((candidate, i) => (
+            <button key={candidate.id} className={i === incidentIndex ? 'on' : undefined} onClick={() => setIncidentIndex(i)} aria-pressed={i === incidentIndex}>
+              <strong>{INCIDENT_LABELS[candidate.kind]}</strong>
+              <span>{clockText(candidate.at)}</span>
+            </button>
+          ))}
+        </nav>
+
         <div className="clock">
-          <strong>{clockText(t)}</strong>
-          {status && <span className={`status ${status.phase}`}>{status.text}</span>}
+          <div className="clock-read">
+            <strong>{clockText(t)}</strong>
+            {status && <span className={`status ${status.phase}`}>{status.text}</span>}
+          </div>
           <span className="progress">
             <i style={{ width: `${progress * 100}%` }} />
             {incident && (
@@ -747,59 +761,7 @@ export function App() {
           </span>
         </div>
 
-        <div className="controls">
-          <button className="primary play" onClick={() => setPlaying((p) => !p)} disabled={!loaded || allDone}>
-            {allDone ? 'Finished' : playing ? '❚❚ Pause' : started ? '▶ Resume' : '▶ Run all three plans'}
-          </button>
-          <span className="speed" title="How fast the simulated clock runs">
-            {SPEEDS.map((s) => (
-              <button key={s} className={speed === s ? 'on' : undefined} onClick={() => setSpeed(s)}>
-                {s}×
-              </button>
-            ))}
-          </span>
-          <select className="weather-select" value={weatherId} onChange={(e) => setWeatherId(e.target.value)} title="Weather, the same for all three plans">
-            {WEATHER_TIMELINES.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.label}
-              </option>
-            ))}
-          </select>
-          <label className="toggle" title="Simulate vehicle traffic alongside the crowd">
-            <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
-            vehicles
-          </label>
-          <button onClick={restart} disabled={!loaded}>
-            Restart
-          </button>
-          {!showHelp && (
-            <button className="ghost" onClick={() => setShowHelp(true)} title="How this works">
-              ?
-            </button>
-          )}
-        </div>
       </header>
-
-      {showHelp && (
-        <div className="howto">
-          {STEPS_HELP.map((step, i) => (
-            <div key={step.title}>
-              <span className="num">{i + 1}</span>
-              <div>
-                <strong>{step.title}</strong>
-                <p>{step.text}</p>
-              </div>
-            </div>
-          ))}
-          <p className="howto-note">
-            Every plan gets the same {loaded ? fanCount(loaded.map).toLocaleString() : '100,000'} fans, arriving the same way. Only the
-            plan changes. Each fan's choices (follow the officer? head for cover?) come from an AI model of how people behave.
-          </p>
-          <button className="ghost" onClick={hideHelp} title="Hide">
-            ✕
-          </button>
-        </div>
-      )}
 
       {loadError && (
         <p className="banner error">
@@ -809,6 +771,35 @@ export function App() {
 
       <div className="layout">
         <main>
+          <div className="controls transport">
+            <button className="go play" onClick={() => setPlaying((p) => !p)} disabled={!loaded || allDone}>
+              {allDone ? 'Finished' : playing ? 'Pause' : started ? 'Resume' : 'Run all three plans'}
+            </button>
+            <span className="speed" role="group" aria-label="Simulation speed" title="How fast the simulated clock runs">
+              {SPEEDS.map((s) => (
+                <button key={s} className={speed === s ? 'on' : undefined} onClick={() => setSpeed(s)}>
+                  {s}×
+                </button>
+              ))}
+            </span>
+            <label className="field">
+              <span>Weather</span>
+              <select value={weatherId} onChange={(e) => setWeatherId(e.target.value)} title="The same for all three plans">
+                {WEATHER_TIMELINES.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="toggle" title="Simulate vehicle traffic alongside the crowd">
+              <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
+              Vehicles
+            </label>
+            <button onClick={restart} disabled={!loaded}>
+              Restart
+            </button>
+          </div>
           {loaded && (
             <>
               <div className={`canvas-wrap${view === 'close' ? ' close' : view === 'plan' ? ' plan' : ''}`}>
@@ -898,7 +889,7 @@ export function App() {
                   </button>
                 </div>
                 {deciding > 0 && (
-                  <div className="deciding">AI is deciding what {deciding.toLocaleString()} groups of fans do… the clock waits</div>
+                  <div className="deciding">Kev is deciding what {deciding.toLocaleString()} groups of fans do. The clock waits.</div>
                 )}
                 {scrub !== null && <div className="replaying">Replay</div>}
                 {view === 'close' && <Legend />}
@@ -938,7 +929,7 @@ export function App() {
                       <div>
                         <h3>{vehicleInfo.type.label}</h3>
                         <p className="muted">
-                          Vehicle #{pickedVehicle.vehicle} · Plan {LABELS[pickedVehicle.run]}
+                          Vehicle {pickedVehicle.vehicle}, plan {LABELS[pickedVehicle.run]}
                         </p>
                       </div>
                       <button className="small ghost" onClick={() => setPickedVehicle(null)} title="Close">
@@ -971,7 +962,7 @@ export function App() {
                       <div>
                         <h3>{bands[pickedCell.band]!.label}</h3>
                         <p className="muted">
-                          {bands[pickedCell.band]!.range} · Plan {LABELS[pickedCell.run]}
+                          {bands[pickedCell.band]!.range}, plan {LABELS[pickedCell.run]}
                         </p>
                       </div>
                       <button className="small ghost" onClick={() => setPickedCell(null)} title="Close">
@@ -980,7 +971,7 @@ export function App() {
                     </header>
                     <section>
                       <p>
-                        <strong>{pickedCell.density.toFixed(2)} people/m²</strong> · {placeIndex.describe(pickedCell.cell)}
+                        <strong>{pickedCell.density.toFixed(2)} people/m²</strong> near {placeIndex.describe(pickedCell.cell)}
                       </p>
                       <p className="muted">{bands[pickedCell.band]!.note} Every area this colour is highlighted, and the list below the map shows where.</p>
                     </section>
@@ -990,7 +981,7 @@ export function App() {
                   <div className="map-cta">
                     <p>{incident && pitchFor(incident, zoneName)}</p>
                     <button className="primary" onClick={() => setPlaying(true)} disabled={!runs.every((r) => r.ready)}>
-                      ▶ Run all three plans
+                      Run all three plans
                     </button>
                     <span className="muted">Then scroll to zoom in and click any fan to see why they move.</span>
                   </div>
@@ -1009,7 +1000,7 @@ export function App() {
                   aria-label="Replay"
                 />
                 {scrub === null ? (
-                  <span className="muted">drag to look back</span>
+                  <span className="muted">Drag to look back</span>
                 ) : (
                   <>
                     <button
@@ -1042,9 +1033,9 @@ export function App() {
                 {traffic && (
                   <button className={`flow-key${showFlow ? ' on' : ''}`} onClick={() => setShowFlow((v) => !v)} title="Show or hide traffic flow on the roads">
                     <span className="legend-title">Traffic</span>
-                    <span><i style={{ background: '#2ed573' }} /> moving</span>
-                    <span><i style={{ background: '#ffb020' }} /> slow</span>
-                    <span><i style={{ background: '#ff3040' }} /> jammed</span>
+                    <span><i style={{ background: '#2ed573' }} /> Moving</span>
+                    <span><i style={{ background: '#ffb020' }} /> Slow</span>
+                    <span><i style={{ background: '#ff3040' }} /> Jammed</span>
                   </button>
                 )}
                 <span className="legend-title">How packed</span>
@@ -1069,10 +1060,10 @@ export function App() {
               </div>
 
               {selectedBand !== null && (
-                <section className="panel areas-panel">
+                <section className="block areas-panel">
                   <h2>
                     Where it is {bands[selectedBand]!.label.toLowerCase()}{' '}
-                    <span className="muted-inline">{bands[selectedBand]!.range} · biggest areas per plan</span>
+                    <span className="muted-inline">{bands[selectedBand]!.range}, biggest areas per plan</span>
                     <button className="small" onClick={() => setSelectedBand(null)}>
                       Show all colours
                     </button>
@@ -1081,7 +1072,7 @@ export function App() {
                     {spots.map((list, i) => (
                       <div key={i} className="spot-col">
                         <h3>
-                          <span className="label">{LABELS[i]}</span> {totals[i] ? `${n(totals[i]![selectedBand]!.people)} people · ${n(totals[i]![selectedBand]!.cells * CELL_SIZE_M * CELL_SIZE_M)} m²` : ''}
+                          <span className="label">{LABELS[i]}</span> {totals[i] ? `${n(totals[i]![selectedBand]!.people)} people in ${n(totals[i]![selectedBand]!.cells * CELL_SIZE_M * CELL_SIZE_M)} m²` : ''}
                         </h3>
                         {!list && <p className="muted">no frame yet</p>}
                         {list && list.length === 0 && <p className="muted">none right now</p>}
@@ -1089,9 +1080,9 @@ export function App() {
                           <button key={k} className="spot" onClick={() => zoomTo(h)}>
                             <span className="where">{h.where}</span>
                             <span className="nums">
-                              {n(h.people)} people · {n(h.cells * CELL_SIZE_M * CELL_SIZE_M)} m² · peak {h.peak.toFixed(1)}/m²
+                              {n(h.people)} people, {n(h.cells * CELL_SIZE_M * CELL_SIZE_M)} m², peak {h.peak.toFixed(1)}/m²
                             </span>
-                            <span className="go">zoom ↗</span>
+                            <span className="go">Show</span>
                           </button>
                         ))}
                       </div>
@@ -1100,229 +1091,269 @@ export function App() {
                 </section>
               )}
 
-              {traffic && (
-                <section className="panel vehicles-panel">
-                  <h2>
-                    Vehicles <span className="muted-inline">real sizes, drawn to scale · click one to pick it out</span>
-                    <label className="small-toggle">
-                      <input type="checkbox" checked={showVehicles} onChange={(e) => setShowVehicles(e.target.checked)} /> show on map
-                    </label>
-                  </h2>
-                  <div className="vehicle-grid">
-                    {VEHICLE_TYPE_LIST.map((type) => (
-                      <button
-                        key={type.kind}
-                        className={`vehicle-chip${vehicleFocus === type.kind ? ' on' : ''}${vehicleFocus !== null && vehicleFocus !== type.kind ? ' off' : ''}`}
-                        onClick={() => setVehicleFocus(vehicleFocus === type.kind ? null : type.kind)}
-                      >
-                        <VehicleIcon kind={type.kind} />
-                        <span className="vehicle-name">{type.label}</span>
-                        <span className="vehicle-size">
-                          {type.lengthM.toFixed(1)} × {type.widthM.toFixed(1)} m · {type.passengers} aboard
-                        </span>
-                        <span className="vehicle-count">{(vehicleCounts.get(type.kind) ?? 0).toLocaleString()} on the map</span>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
             </>
           )}
         </main>
 
         <aside className="side">
-          {loaded && incident && planStates.length === 3 && (
-            <CommandPanel
-              map={loaded.map}
-              incident={incident}
-              run={runs[closeRun]!}
-              label={LABELS[closeRun]!}
-              labels={LABELS}
-              planNames={planStates.map((p) => p.plan.name)}
-              cards={cards}
-              allDone={allDone}
-              history={history}
-              priority={priority}
-              onPriority={setPriority}
-              onSuggest={(plans) => {
-                if (plans.length < 3) return;
-                setPlanStates(plans.slice(0, 3).map((plan) => ({ plan, disabled: new Set<number>() })));
-                restart();
-              }}
-            />
-          )}
-          <section className="panel police">
-            <h2>
-              🚨 Most congested right now <Info>Ranked by people standing packed at 3 or more per m² and by vehicles stopped or crawling. Seated fans are left out: a full section is dense but safe. This ranks places to look at; where to send officers stays your call.</Info>
-            </h2>
-            <div className="police-tabs">
-              {LABELS.map((l, i) => (
-                <button
-                  key={l}
-                  className={closeRun === i ? 'on' : undefined}
-                  onClick={() => {
-                    setCloseRun(i);
-                    if (view === 'compare') setView('plan');
-                  }}
-                >
-                  Plan {l}
-                  {(police[i]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && <b className="crit-count">{police[i]!.filter((h) => h.level === 'critical').length}</b>}
-                </button>
-              ))}
-            </div>
-            {(police[closeRun] ?? []).length === 0 ? (
-              <p className="muted">{started ? 'Nothing congested at the moment.' : 'Run the plans to see where it gets congested.'}</p>
-            ) : (
-              <ol className="hotspots">
-                {(police[closeRun] ?? []).map((h) => (
-                  <li key={h.rank} className={h.level}>
-                    <button onClick={() => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() })} title="Show on the map">
-                      <span className="rank" style={{ background: HOTSPOT_COLOUR[h.level] }}>{h.rank}</span>
-                      <span className="what">
-                        <strong>{h.where}</strong>
-                        <em>
-                          {h.kind !== 'traffic' && `👥 ${n(h.crowdedPeople)} packed, peak ${h.peakDensity.toFixed(1)}/m²`}
-                          {h.kind === 'both' && ' · '}
-                          {h.kind !== 'crowd' && `🚗 ${h.stoppedVehicles} stopped${h.slowVehicles ? `, ${h.slowVehicles} slow` : ''}`}
-                        </em>
-                      </span>
-                      <span className={`level ${h.level}`}>{h.level}</span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-
-          <section className="panel">
-            <h2>1 · Situation</h2>
-            <div className="situations">
-              {incidents.map((candidate, i) => (
-                <button
-                  key={candidate.id}
-                  className={`situation${i === incidentIndex ? ' on' : ''}`}
-                  onClick={() => setIncidentIndex(i)}
-                >
-                  <strong>{INCIDENT_LABELS[candidate.kind]}</strong>
-                  <span>{clockText(candidate.at)}</span>
-                </button>
-              ))}
-            </div>
-            {incident && <p className="pitch">{pitchFor(incident, zoneName)}</p>}
-          </section>
-
-          <section className="panel">
-            <h2>
-              2 · Three plans, same crowd <Info>Click a plan to show it on the 3D map. The plans differ only in what you tell the crowd and staff to do.</Info>
-            </h2>
-            {loaded &&
-              incident &&
-              planStates.map((state, i) => (
-                <PlanCard
-                  key={state.plan.id}
-                  label={LABELS[i]}
-                  state={state}
-                  run={runs[i]!}
-                  map={loaded.map}
-                  incident={incident}
-                  totalFans={fanCount(loaded.map)}
-                  selected={view !== 'compare' && closeRun === i}
-                  rank={rankOf(i)}
-                  onSelect={() => {
-                    setCloseRun(i);
-                    setView('close');
-                    if (picked) setPicked({ run: i, dot: picked.dot });
-                  }}
-                  onEdit={(plan, disabled) => {
-                    setPlanStates((prev) => prev.map((p, j) => (j === i ? { plan, disabled } : p)));
-                    setPlansDirty(true);
-                  }}
-                />
-              ))}
-            {plansDirty && (
-              <button className="primary wide" onClick={restart}>
-                Restart with my changes
+          <div className="rail-tabs" role="tablist" aria-label="Side panel">
+            {RAIL_TABS.map((tab) => (
+              <button key={tab.id} role="tab" aria-selected={railTab === tab.id} className={railTab === tab.id ? 'on' : undefined} onClick={() => setRailTab(tab.id)}>
+                {tab.label}
+                {tab.id === 'brief' && (police[closeRun]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && (
+                  <b className="tab-count">{police[closeRun]!.filter((h) => h.level === 'critical').length}</b>
+                )}
+                {tab.id === 'plans' && allDone && <b className="tab-dot" title="Results are in" />}
               </button>
-            )}
-          </section>
+            ))}
+          </div>
 
-          {loaded && runs[closeRun] && (
-            <section className="panel">
-              <h2>
-                Gates <Info>Every gate's door and flow for the plan on the map: people through it per minute in and out, the queue waiting, and how much of what it can pass it is passing. A closed gate passes nobody and turns its queue away to the next open gate.</Info>
-              </h2>
-              <GatesPanel map={loaded.map} run={runs[closeRun]!} label={LABELS[closeRun]!} />
-            </section>
-          )}
-
-          <section className="panel verdict">
-            <h2>3 · Verdict</h2>
-            {!allDone && <p className="muted">Appears when all three plans finish.</p>}
-            {allDone && incident && (
+          <div className="rail-body">
+            {railTab === 'brief' && (
               <>
-                <p className="verdict-line">
-                  {verdictText(
-                    LABELS,
-                    planStates.map((p) => p.plan.name),
-                    cards.filter((c): c is Scorecard => c !== null),
-                    zoneName,
+                {incident && <p className="pitch">{pitchFor(incident, zoneName)}</p>}
+                {loaded && incident && planStates.length === 3 && (
+                  <CommandPanel
+                    map={loaded.map}
+                    incident={incident}
+                    run={runs[closeRun]!}
+                    label={LABELS[closeRun]!}
+                    labels={LABELS}
+                    planNames={planStates.map((p) => p.plan.name)}
+                    cards={cards}
+                    allDone={allDone}
+                    history={history}
+                    priority={priority}
+                    onPriority={setPriority}
+                    onSuggest={(plans) => {
+                      if (plans.length < 3) return;
+                      setPlanStates(plans.slice(0, 3).map((plan) => ({ plan, disabled: new Set<number>() })));
+                      restart();
+                      setRailTab('plans');
+                    }}
+                  />
+                )}
+                <section className="block police">
+                  <h2>
+                    Most congested now <Info>Ranked by people standing packed at 3 or more per m² and by vehicles stopped or crawling. Seated fans are left out: a full section is dense but safe. This ranks places to look at; where to send officers stays your call.</Info>
+                  </h2>
+                  <div className="seg" role="group" aria-label="Plan">
+                    {LABELS.map((l, i) => (
+                      <button
+                        key={l}
+                        className={closeRun === i ? 'on' : undefined}
+                        onClick={() => {
+                          setCloseRun(i);
+                          if (view === 'compare') setView('plan');
+                        }}
+                      >
+                        Plan {l}
+                        {(police[i]?.filter((h) => h.level === 'critical').length ?? 0) > 0 && <b className="crit-count">{police[i]!.filter((h) => h.level === 'critical').length}</b>}
+                      </button>
+                    ))}
+                  </div>
+                  {(police[closeRun] ?? []).length === 0 ? (
+                    <p className="muted">{started ? 'Nothing congested at the moment.' : 'Run the plans to see where it gets congested.'}</p>
+                  ) : (
+                    <ol className="hotspots">
+                      {(police[closeRun] ?? []).map((h) => (
+                        <li key={h.rank} className={h.level}>
+                          <button onClick={() => setFocusBox({ x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, nonce: Date.now() })} title="Show on the map">
+                            <span className="rank" style={{ background: HOTSPOT_COLOUR[h.level] }}>{h.rank}</span>
+                            <span className="what">
+                              <strong>{h.where}</strong>
+                              <em>
+                                {h.kind !== 'traffic' && `${n(h.crowdedPeople)} packed, peak ${h.peakDensity.toFixed(1)}/m²`}
+                                {h.kind === 'both' && '; '}
+                                {h.kind !== 'crowd' && `${h.stoppedVehicles} vehicles stopped${h.slowVehicles ? `, ${h.slowVehicles} slow` : ''}`}
+                              </em>
+                            </span>
+                            <span className={`level ${h.level}`}>{h.level}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
                   )}
-                </p>
-                {briefingBusy && <p className="muted">Writing the commander's briefing…</p>}
-                {briefing && (
-                  <details className="briefing" open={!briefing.canned}>
-                    <summary>{briefing.canned ? 'Full numbers for every plan' : "Commander's briefing"}</summary>
-                    <p className="briefing-text">{briefing.text}</p>
-                    <p className="muted">
-                      {briefing.canned
-                        ? 'Filled in from a template, because the on-device AI writer was not running.'
-                        : 'Written by an on-device AI model. Every number in it is checked against the results.'}
-                    </p>
-                  </details>
+                </section>
+              </>
+            )}
+
+            {railTab === 'plans' && (
+              <>
+                <section className="block verdict">
+                  <h2>Verdict</h2>
+                  {!allDone && <p className="muted">Appears when all three plans finish.</p>}
+                  {allDone && incident && (
+                    <>
+                      <p className="verdict-line">
+                        {verdictText(
+                          LABELS,
+                          planStates.map((p) => p.plan.name),
+                          cards.filter((c): c is Scorecard => c !== null),
+                          zoneName,
+                        )}
+                      </p>
+                      {briefingBusy && <p className="muted">Writing the commander's briefing…</p>}
+                      {briefing && (
+                        <details className="briefing" open={!briefing.canned}>
+                          <summary>{briefing.canned ? 'Full numbers for every plan' : "Commander's briefing"}</summary>
+                          <p className="briefing-text">{briefing.text}</p>
+                          <p className="muted">
+                            {briefing.canned
+                              ? 'Filled in from a template, because the on-device AI writer was not running.'
+                              : 'Written by an on-device AI model. Every number in it is checked against the results.'}
+                          </p>
+                        </details>
+                      )}
+                    </>
+                  )}
+                </section>
+                <section className="block">
+                  <h2>
+                    Three plans, same crowd <Info>Click a plan to show it on the map. The plans differ only in what you tell the crowd and staff to do.</Info>
+                  </h2>
+                  {loaded &&
+                    incident &&
+                    planStates.map((state, i) => (
+                      <PlanCard
+                        key={state.plan.id}
+                        label={LABELS[i]}
+                        state={state}
+                        run={runs[i]!}
+                        map={loaded.map}
+                        incident={incident}
+                        totalFans={fanCount(loaded.map)}
+                        selected={view !== 'compare' && closeRun === i}
+                        rank={rankOf(i)}
+                        onSelect={() => {
+                          setCloseRun(i);
+                          setView('close');
+                          if (picked) setPicked({ run: i, dot: picked.dot });
+                        }}
+                        onEdit={(plan, disabled) => {
+                          setPlanStates((prev) => prev.map((p, j) => (j === i ? { plan, disabled } : p)));
+                          setPlansDirty(true);
+                        }}
+                      />
+                    ))}
+                  {plansDirty && (
+                    <button className="go wide" onClick={restart}>
+                      Restart with my changes
+                    </button>
+                  )}
+                </section>
+              </>
+            )}
+
+            {railTab === 'gates' && loaded && runs[closeRun] && (
+              <section className="block">
+                <h2>
+                  Gates for plan {LABELS[closeRun]} <Info>Every gate's door and flow for the plan on the map: people through it per minute in and out, the queue waiting, and how much of what it can pass it is passing. A closed gate passes nobody and turns its queue away to the next open gate.</Info>
+                </h2>
+                <GatesPanel map={loaded.map} run={runs[closeRun]!} label={LABELS[closeRun]!} />
+              </section>
+            )}
+
+            {railTab === 'key' && (
+              <>
+                <section className="block">
+                  <h2>How packed</h2>
+                  <ul className="band-key">
+                    {bands.map((band) => (
+                      <li key={band.id}>
+                        <i style={{ background: `rgb(${band.rgb.join(',')})` }} />
+                        <span>
+                          <strong>{band.label}</strong> {band.range}
+                          <em>{band.note}</em>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="muted">Click a colour under the map to see every area at that level.</p>
+                </section>
+                {traffic && (
+                  <section className="block">
+                    <h2>Traffic on the roads</h2>
+                    <ul className="band-key">
+                      <li><i style={{ background: '#2ed573' }} /><span><strong>Moving</strong> 13 mph or faster</span></li>
+                      <li><i style={{ background: '#ffb020' }} /><span><strong>Slow</strong> 3 to 13 mph</span></li>
+                      <li><i style={{ background: '#ff3040' }} /><span><strong>Jammed</strong> stopped or crawling</span></li>
+                    </ul>
+                  </section>
+                )}
+                {traffic && (
+                  <section className="block vehicles-panel">
+                    <h2>
+                      Vehicles
+                      <label className="toggle">
+                        <input type="checkbox" checked={showVehicles} onChange={(e) => setShowVehicles(e.target.checked)} /> Show on map
+                      </label>
+                    </h2>
+                    <p className="muted">Real sizes, drawn to scale. Click a type to pick it out on the map.</p>
+                    <div className="vehicle-grid">
+                      {VEHICLE_TYPE_LIST.map((type) => (
+                        <button
+                          key={type.kind}
+                          className={`vehicle-chip${vehicleFocus === type.kind ? ' on' : ''}${vehicleFocus !== null && vehicleFocus !== type.kind ? ' off' : ''}`}
+                          onClick={() => setVehicleFocus(vehicleFocus === type.kind ? null : type.kind)}
+                        >
+                          <VehicleIcon kind={type.kind} />
+                          <span className="vehicle-name">{type.label}</span>
+                          <span className="vehicle-size">
+                            {type.lengthM.toFixed(1)} × {type.widthM.toFixed(1)} m, {type.passengers} aboard
+                          </span>
+                          <span className="vehicle-count">{(vehicleCounts.get(type.kind) ?? 0).toLocaleString()} on the map</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 )}
               </>
             )}
-          </section>
 
-          <details className="panel tech">
-            <summary>How the AI and the numbers work</summary>
-            <p>
-              {loaded ? fanCount(loaded.map).toLocaleString() : ''} fans are simulated as {loaded ? (fanCount(loaded.map) / DOT_GROUP_SIZE).toLocaleString() : ''}{' '}
-              groups of {DOT_GROUP_SIZE}, walking a real OpenStreetMap model of Ohio Stadium at 2 m resolution. When a group has to choose
-              (shelter or run to the car? follow the officer?), an AI model called Kev gives the odds of each choice for that kind of fan.
-            </p>
-            <dl className="detail">
-              <dt>fan choices made</dt>
-              <dd>{totalDecisions.toLocaleString()}</dd>
-              <dt>answered by the AI</dt>
-              <dd>{(totalDecisions - guessed).toLocaleString()}{kev > 0 && <span className="muted"> ({kev.toLocaleString()} live)</span>}</dd>
-              <dt>guessed from defaults</dt>
-              <dd className={guessed > 0 ? 'warn' : undefined}>{guessed.toLocaleString()}</dd>
-              {cards.some((c) => c) && (
-                <>
-                  <dt>crush-risk cell minutes</dt>
-                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.dangerMinutes) : '…'}`).join(' · ')}</dd>
-                  <dt>most packed spot</dt>
-                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? c.peakDensity.toFixed(1) : '…'}/m²`).join(' · ')}</dd>
-                </>
-              )}
-              {cards.some((c) => c?.vehicleDelayMin !== undefined) && (
-                <>
-                  <dt>vehicles that drove off</dt>
-                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.vehiclesOut ?? 0) : '…'}`).join(' · ')}</dd>
-                  <dt>most stopped at once</dt>
-                  <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.peakVehiclesStopped ?? 0) : '…'}`).join(' · ')}</dd>
-                </>
-              )}
-              <dt>weather</dt>
-              <dd>{weatherTimeline(weatherId).label}, the same for all three</dd>
-              <dt>random seed</dt>
-              <dd>{SEED}, the same for all three</dd>
-            </dl>
-            <p className="muted">
-              Fan behavior, traffic and weather are an assumption, not a forecast. The tool shows the tradeoffs between plans. The commander makes the call.
-            </p>
-          </details>
+            {railTab === 'about' && (
+              <section className="block tech">
+                <h2>How the AI and the numbers work</h2>
+                <p>
+                  {loaded ? fanCount(loaded.map).toLocaleString() : ''} fans are simulated as {loaded ? (fanCount(loaded.map) / DOT_GROUP_SIZE).toLocaleString() : ''}{' '}
+                  groups of {DOT_GROUP_SIZE}, walking a real OpenStreetMap model of {loaded ? loaded.map.name.replace(/ \+ 0\.5 mi$/, '') : 'the stadium'} at 2 m
+                  resolution. When a group has to choose (shelter or run to the car? follow the officer?), an AI model called Kev gives the odds of each
+                  choice for that kind of fan.
+                </p>
+                <dl className="detail">
+                  <dt>Fan choices made</dt>
+                  <dd>{totalDecisions.toLocaleString()}</dd>
+                  <dt>Answered by the AI</dt>
+                  <dd>{(totalDecisions - guessed).toLocaleString()}{kev > 0 && <span className="muted"> ({kev.toLocaleString()} live)</span>}</dd>
+                  <dt>Guessed from defaults</dt>
+                  <dd className={guessed > 0 ? 'warn' : undefined}>{guessed.toLocaleString()}</dd>
+                  {cards.some((c) => c) && (
+                    <>
+                      <dt>Crush-risk cell minutes</dt>
+                      <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.dangerMinutes) : '…'}`).join(', ')}</dd>
+                      <dt>Most packed spot</dt>
+                      <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? c.peakDensity.toFixed(1) : '…'}/m²`).join(', ')}</dd>
+                    </>
+                  )}
+                  {cards.some((c) => c?.vehicleDelayMin !== undefined) && (
+                    <>
+                      <dt>Vehicles that drove off</dt>
+                      <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.vehiclesOut ?? 0) : '…'}`).join(', ')}</dd>
+                      <dt>Most stopped at once</dt>
+                      <dd>{cards.map((c, i) => `${LABELS[i]} ${c ? n(c.peakVehiclesStopped ?? 0) : '…'}`).join(', ')}</dd>
+                    </>
+                  )}
+                  <dt>Weather</dt>
+                  <dd>{weatherTimeline(weatherId).label}, the same for all three</dd>
+                  <dt>Random seed</dt>
+                  <dd>{SEED}, the same for all three</dd>
+                </dl>
+                <p className="muted">
+                  Fan behaviour, traffic and weather are an assumption, not a forecast. The tool shows the tradeoffs between plans. The commander makes the call.
+                </p>
+              </section>
+            )}
+          </div>
         </aside>
       </div>
     </>
