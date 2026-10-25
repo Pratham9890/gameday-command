@@ -42,6 +42,9 @@ const HEAD_R = 0.34;
 const FIG_H = LEG_H + TORSO_H + HEAD_R * 2;
 /** Frames further apart than this are a jump (arrival, rewind), not a walk. */
 const MAX_TWEEN_M = 30;
+/** The ground overlays sit a little under full strength, so the model reads through them. */
+const HEAT_ALPHA = 0.8;
+const FLOW_ALPHA = 0.72;
 
 const GROUND: Record<CellKind, [number, number, number]> = {
   blocked: [0x2a, 0x2d, 0x33],
@@ -430,14 +433,20 @@ export class CrowdScene {
   private bands: HeatBand[];
   private bowl: Bowl | null = null;
   private standsCrowd = new DiagonalPool(this.people, 0.0005);
-  private flow!: Layer;
+  /** The flow of the frame on screen and of the frame it is coming from. */
+  private flowCur!: Layer;
+  private flowPrev!: Layer;
   private flowCells: Uint8Array | null = null;
+  private flowCellsPrev: Uint8Array | null = null;
   private standing: Float32Array | null = null;
+  /** The grid `heatPrev` was painted from, kept so a band change can repaint it. */
+  private standingPrev: Float32Array | null = null;
   private seated: Float32Array | null = null;
   private showFlow = true;
   private pins: { el: HTMLElement; sx: number; sy: number }[] = [];
   private selectedBand: number | null = null;
-  private heat!: Layer;
+  private heatCur!: Layer;
+  private heatPrev!: Layer;
   private dots!: Layer;
   private parts!: Parts;
   private pool: Person[] = [];
@@ -516,16 +525,22 @@ export class CrowdScene {
     this.ground.setFromMatrix(new Matrix(CELL_SIZE_M, CELL_SIZE_M / 2, -CELL_SIZE_M, CELL_SIZE_M / 2, 0, 0));
     const baseTexture = Texture.from(paintGround(map));
     baseTexture.source.scaleMode = 'nearest';
-    this.heat = makeLayer(map.width, map.height);
-    this.heat.sprite.alpha = 0.8;
+    this.heatPrev = makeLayer(map.width, map.height);
+    this.heatCur = makeLayer(map.width, map.height);
+    this.heatCur.sprite.alpha = HEAT_ALPHA;
+    this.heatPrev.sprite.alpha = 0;
     this.dots = makeLayer(map.width, map.height);
-    this.flow = makeLayer(map.width, map.height);
+    this.flowPrev = makeLayer(map.width, map.height);
+    this.flowCur = makeLayer(map.width, map.height);
     // Smoothed, so a jam reads as a red stretch of road rather than 2 m tiles.
-    this.flow.texture.source.scaleMode = 'linear';
-    this.flow.sprite.alpha = 0.72;
+    this.flowCur.texture.source.scaleMode = 'linear';
+    this.flowPrev.texture.source.scaleMode = 'linear';
+    this.flowCur.sprite.alpha = FLOW_ALPHA;
+    this.flowPrev.sprite.alpha = 0;
     this.cover.rect(0, 0, map.width, map.height).fill(0xffffff);
     this.cover.alpha = 0;
-    this.ground.addChild(new Sprite(baseTexture), this.cover, this.heat.sprite, this.flow.sprite, this.zone, this.closedCells, this.dots.sprite);
+    // The retiring layer of each pair sits under the current one: the ticker fades them.
+    this.ground.addChild(new Sprite(baseTexture), this.cover, this.heatPrev.sprite, this.heatCur.sprite, this.flowPrev.sprite, this.flowCur.sprite, this.zone, this.closedCells, this.dots.sprite);
     this.bowl = buildBowl(map);
 
     this.people.sortableChildren = true;
@@ -885,7 +900,17 @@ export class CrowdScene {
 
   setFlow(on: boolean): void {
     this.showFlow = on;
-    if (this.flow) this.flow.sprite.visible = on;
+    void this.ready.then(() => {
+      if (!this.flowCur) return;
+      this.flowPrev.sprite.visible = on;
+      this.flowCur.sprite.visible = on;
+      // Both layers keep whatever was last painted while hidden, so a repaint
+      // from the frame already in hand is enough to catch up.
+      if (on && this.cur) {
+        this.flowCells = trafficFlow(this.init.map, this.cur.vehicles);
+        this.paintFrame(this.cur);
+      }
+    });
   }
 
   /** Numbered pins on the most congested areas, from the police list. */
@@ -914,7 +939,12 @@ export class CrowdScene {
 
   setHeat(on: boolean): void {
     this.showHeat = on;
-    if (this.heat) this.heat.sprite.visible = on;
+    void this.ready.then(() => {
+      if (!this.heatCur) return;
+      this.heatPrev.sprite.visible = on;
+      this.heatCur.sprite.visible = on;
+      if (on && this.cur) this.paintFrame(this.cur);
+    });
   }
 
   /** The incident zone, tinted on the ground and labelled so a first-time viewer knows where to look. */
@@ -953,59 +983,56 @@ export class CrowdScene {
     this.cur = frame;
     this.arrivedAt = now;
     this.tween = live;
-    void this.ready.then(() => this.paintFrame(frame));
+    void this.ready.then(() => this.paintFrame(frame, true));
   }
 
-  private paintFrame(frame: SceneFrame): void {
+  /** The progress the figures are drawn at: 0 on arrival, 1 once the walk is done. */
+  private tweenA(now: number): number {
+    if (!this.tween) return 1;
+    return Math.min(1, Math.max(0, (now - this.arrivedAt) / this.interval));
+  }
+
+  /**
+   * One frame onto the layers. `fresh` means a new frame arrived: the heat and
+   * flow layers are swapped so the old picture fades out under the new one, in
+   * step with the people walking between the two frames. Everything else (a band
+   * picked, an alert) only repaints the grids already retained, never per tick.
+   */
+  private paintFrame(frame: SceneFrame, fresh = false): void {
     if (!this.app) return;
-    const { map, dangerDensity } = this.init;
-    void dangerDensity;
-    if (frame.density) {
+    const { map } = this.init;
+
+    if (fresh) {
+      [this.heatPrev, this.heatCur] = [this.heatCur, this.heatPrev];
+      [this.flowPrev, this.flowCur] = [this.flowCur, this.flowPrev];
+      // Each pair stays in order whatever the swap did: retiring under current.
+      for (const [prev, cur] of [[this.heatPrev, this.heatCur], [this.flowPrev, this.flowCur]] as const) {
+        const bottom = Math.min(this.ground.getChildIndex(prev.sprite), this.ground.getChildIndex(cur.sprite));
+        this.ground.setChildIndex(prev.sprite, bottom);
+        this.ground.setChildIndex(cur.sprite, bottom + 1);
+      }
+      // A replayed frame does not tween, so there is nothing to fade from: the
+      // previous grids are dropped and the new layer goes straight to full alpha.
+      this.standingPrev = this.tween ? this.standing : null;
+      this.flowCellsPrev = this.tween ? this.flowCells : null;
+    }
+    if (frame.density && (fresh || !this.standing)) {
       const n = frame.density.length;
       if (!this.seated || this.seated.length !== n) this.seated = new Float32Array(n);
-      this.standing = standingDensity(map, frame, frame.density, this.standing ?? undefined, this.seated);
+      // A new grid each frame: the one it replaces is still painted on heatPrev.
+      this.standing = standingDensity(map, frame, frame.density, undefined, this.seated);
     }
-    if (frame.density && this.showHeat) {
-      // The same five bands as the side-by-side maps, so a colour means the
-      // same thing in both views and the band picked in one stays picked.
-      const data = this.heat.image.data;
-      data.fill(0);
-      const rho = this.standing!;
-      const bands = this.bands;
-      const picked = this.selectedBand;
-      for (let i = 0; i < rho.length; i++) {
-        const b = bandOf(rho[i]!, bands);
-        if (b < 0) continue;
-        const band = bands[b]!;
-        const o = i * 4;
-        data[o] = band.rgb[0];
-        data[o + 1] = band.rgb[1];
-        data[o + 2] = band.rgb[2];
-        data[o + 3] = Math.round(255 * (picked === null ? band.alpha * 0.85 : picked === b ? 0.95 : 0.06));
-      }
-      this.heat.ctx.putImageData(this.heat.image, 0, 0);
-      this.heat.texture.source.update();
+    if (this.showHeat) {
+      this.paintHeatLayer(this.heatCur, this.standing);
+      this.paintHeatLayer(this.heatPrev, this.standingPrev);
     }
     this.paintWeather(frame.weather);
     this.paintStands(frame);
 
     if (this.showFlow) {
-      this.flowCells = trafficFlow(map, frame.vehicles, this.flowCells ?? undefined);
-      const fd = this.flow.image.data;
-      fd.fill(0);
-      const cells = this.flowCells;
-      for (let c = 0; c < cells.length; c++) {
-        const level = cells[c]!;
-        if (!level) continue;
-        const [r, g, b] = FLOW_RGB[level]!;
-        const o = c * 4;
-        fd[o] = r;
-        fd[o + 1] = g;
-        fd[o + 2] = b;
-        fd[o + 3] = 235;
-      }
-      this.flow.ctx.putImageData(this.flow.image, 0, 0);
-      this.flow.texture.source.update();
+      if (fresh || !this.flowCells) this.flowCells = trafficFlow(map, frame.vehicles);
+      this.paintFlowLayer(this.flowCur, this.flowCells);
+      this.paintFlowLayer(this.flowPrev, this.flowCellsPrev);
     }
 
     const data = this.dots.image.data;
@@ -1028,6 +1055,49 @@ export class CrowdScene {
     }
     this.dots.ctx.putImageData(this.dots.image, 0, 0);
     this.dots.texture.source.update();
+  }
+
+  /**
+   * The same five bands as the side-by-side maps, so a colour means the same
+   * thing in both views and the band picked in one stays picked.
+   */
+  private paintHeatLayer(layer: Layer, rho: Float32Array | null): void {
+    if (!rho) return;
+    const data = layer.image.data;
+    data.fill(0);
+    const bands = this.bands;
+    const picked = this.selectedBand;
+    for (let i = 0; i < rho.length; i++) {
+      const b = bandOf(rho[i]!, bands);
+      if (b < 0) continue;
+      const band = bands[b]!;
+      const o = i * 4;
+      data[o] = band.rgb[0];
+      data[o + 1] = band.rgb[1];
+      data[o + 2] = band.rgb[2];
+      data[o + 3] = Math.round(255 * (picked === null ? band.alpha * 0.85 : picked === b ? 0.95 : 0.06));
+    }
+    layer.ctx.putImageData(layer.image, 0, 0);
+    layer.texture.source.update();
+  }
+
+  /** Traffic flow per road cell, in the three colours the legend uses. */
+  private paintFlowLayer(layer: Layer, cells: Uint8Array | null): void {
+    if (!cells) return;
+    const data = layer.image.data;
+    data.fill(0);
+    for (let c = 0; c < cells.length; c++) {
+      const level = cells[c]!;
+      if (!level) continue;
+      const [r, g, b] = FLOW_RGB[level]!;
+      const o = c * 4;
+      data[o] = r;
+      data[o + 1] = g;
+      data[o + 2] = b;
+      data[o + 3] = 235;
+    }
+    layer.ctx.putImageData(layer.image, 0, 0);
+    layer.texture.source.update();
   }
 
   /**
@@ -1142,7 +1212,7 @@ export class CrowdScene {
     const x0 = pv.x[i]!;
     const y0 = pv.y[i]!;
     if (x0 < 0 || Math.hypot(x1 - x0, v.y[i]! - y0) > MAX_VEHICLE_TWEEN_M) return { x: x1, y: v.y[i]!, h: v.heading[i]! };
-    const a = Math.min(1, (now - this.arrivedAt) / this.interval);
+    const a = this.tweenA(now);
     let dh = v.heading[i]! - pv.heading[i]!;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
@@ -1421,7 +1491,7 @@ export class CrowdScene {
     const dy = y1 - y0;
     const dist = Math.hypot(dx, dy);
     if (dist > MAX_TWEEN_M) return { x: x1, y: y1, moving: false };
-    const a = Math.min(1, (now - this.arrivedAt) / this.interval);
+    const a = this.tweenA(now);
     return { x: x0 + dx * a, y: y0 + dy * a, moving: dist > 0.4 && a < 1 };
   }
 
@@ -1450,7 +1520,7 @@ export class CrowdScene {
     const scene = this.scene;
     if (!scene) return [];
     const prev = this.prevScene;
-    const a = this.tween ? Math.min(1, (now - this.arrivedAt) / this.interval) : 1;
+    const a = this.tweenA(now);
     return scene.officers.map((o) => {
       const before = prev?.officers.find((p) => p.id === o.id);
       if (!before || Math.hypot(o.x - before.x, o.y - before.y) > MAX_TWEEN_M * 3) return o;
@@ -1542,6 +1612,15 @@ export class CrowdScene {
     const asPeople = s >= PEOPLE_MIN_SCALE;
     this.dots.sprite.alpha = asPeople ? 0.22 : 1;
 
+    // The ground overlays cross-fade with the figures: the new frame's colour
+    // arrives exactly as the people walking into it do. Only these four alphas
+    // change between frames; the layers themselves are painted on arrival.
+    const a = this.tweenA(now);
+    this.heatCur.sprite.alpha = HEAT_ALPHA * (this.standingPrev ? a : 1);
+    this.heatPrev.sprite.alpha = HEAT_ALPHA * (this.standingPrev ? 1 - a : 0);
+    this.flowCur.sprite.alpha = FLOW_ALPHA * (this.flowCellsPrev ? a : 1);
+    this.flowPrev.sprite.alpha = FLOW_ALPHA * (this.flowCellsPrev ? 1 - a : 0);
+
     // An alert stays lit for a few seconds, then the dots go back to their state colours.
     const alertLive = this.alert !== null && now - this.alert.start < ALERT_MS;
     if (this.alert && !alertLive) {
@@ -1559,6 +1638,8 @@ export class CrowdScene {
       const y0 = -this.cam.y / s - 4;
       const y1 = (h - this.cam.y) / s + FIG_H + 4;
       const types = this.init.types;
+      const goneState = DOT_STATES.length - 1;
+      const prevFrame = this.prev;
       const show = (i: number) => {
         const pos = this.positionOf(i, now);
         if (!pos) return;
@@ -1568,7 +1649,10 @@ export class CrowdScene {
         person.c.visible = true;
         person.c.position.set(p.sx, p.sy);
         person.c.zIndex = personZ(pos.x, pos.y);
-        const state = cur.state[i]!;
+        // Ring colour and posture change when the walk is half done, not when
+        // the frame lands: until then the figure is still arriving.
+        const before = prevFrame && a < 0.5 && i < prevFrame.state.length ? prevFrame.state[i]! : goneState;
+        const state = before === goneState ? cur.state[i]! : before;
         person.ring.tint = rgbNum(STATE_RGB[state] ?? STATE_RGB[3]!);
         person.torso.tint = shirtColor(types, this.typeIndex?.[i] ?? 0);
         person.head.tint = skinOf(i);

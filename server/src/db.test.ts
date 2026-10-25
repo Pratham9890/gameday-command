@@ -18,12 +18,14 @@ describe('decision cache version', () => {
     const old = openDb(path);
     old.prepare('insert or replace into decision_cache (key, odds, model, ms, created_at) values (?, ?, ?, ?, ?)')
       .run('stale-key', '{"follow":1,"ignore":0}', 'kev-4b', 200, 0);
-    old.pragma('user_version = 0');
+    old.exec('PRAGMA user_version = 0');
     old.close();
 
     const db = openDb(path);
     expect(db.prepare('select key from decision_cache where key = ?').get('stale-key')).toBeUndefined();
-    expect(db.pragma('user_version', { simple: true })).toBe(DECISION_CACHE_VERSION);
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(
+      DECISION_CACHE_VERSION,
+    );
     db.close();
   });
 

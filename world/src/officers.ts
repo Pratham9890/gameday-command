@@ -21,6 +21,25 @@ const STATIONS = [
   { id: 'station-southwest', name: 'Southwest police post', bearing: (4 * Math.PI) / 3 },
 ];
 
+/** The nearest mapped street name to a cell, within a walkable block. */
+function streetNameNear(map: MapBundle, cell: number): string | undefined {
+  const x = (cell % map.width) * CELL_SIZE_M + CELL_SIZE_M / 2;
+  const y = Math.floor(cell / map.width) * CELL_SIZE_M + CELL_SIZE_M / 2;
+  let best = Infinity;
+  let name: string | undefined;
+  for (const street of map.streets ?? []) {
+    if (!street.name) continue;
+    for (let i = 0; i < street.points.length; i += 2) {
+      const d = Math.hypot(street.points[i]! - x, street.points[i + 1]! - y);
+      if (d < best) {
+        best = d;
+        name = street.name;
+      }
+    }
+  }
+  return best <= 200 ? name : undefined;
+}
+
 /**
  * Police posts on the streets around the stadium, at even bearings from the
  * bowl. Each is the first road cell along its bearing between the two
@@ -50,7 +69,9 @@ export function policeStations(map: MapBundle): PoliceStation[] {
       const x = Math.round(cx + dx * r);
       const y = Math.round(cy + dy * r);
       if (road(x, y) && road(x + 1, y) && road(x - 1, y) && road(x, y + 1) && road(x, y - 1)) {
-        out.push({ id: station.id, name: station.name, cell: y * width + x });
+        const cell = y * width + x;
+        const street = streetNameNear(map, cell);
+        out.push({ id: station.id, name: street ? `OSU PD post - ${street}` : station.name, cell });
         break;
       }
     }

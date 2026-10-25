@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig, VehicleKind } from '../../contracts.ts';
-import { CELL_SIZE_M, DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
+import { CELL_SIZE_M, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { DEFAULT_VEHICLES, VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
-import { WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
+import { WEATHER_LABELS, WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
 import type { PoliceOrder } from '../../engine/src/edits.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
 import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.tsx';
@@ -19,12 +19,14 @@ import { StartScreen } from './StartScreen.tsx';
 import { applyTheme } from './theme.ts';
 import { rankByPriority, stoppedPerStreet, streetIndex, type HistorySample, type Priority } from './command.ts';
 import { OfficerPanel } from './OfficerPanel.tsx';
+import { OfficerRoster, ZoneTable, LotBoard } from './SideBoards.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
 import { PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
 import { barricadeAt } from './barricade.ts';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
+import { wallClock } from './dayclock.ts';
 import { HOTSPOT_COLOUR, policeHotspots, standingDensity, type PoliceHotspot } from './congestion.ts';
 import { bandTotals, heatBands, hotspots, makePlaceIndex, type Hotspot } from './heat.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
@@ -49,7 +51,9 @@ const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
 const OFFICERS = 24;
 const SPEEDS = [5, 20, 60] as const;
-const DANGER = DEFAULT_DANGER_DENSITY;
+// Per-run danger line: 3.5 p/m2, not the contract default 4. A 4 p/m2 line
+// only fires at the 5 p/m2 cap in this model, so plans separated by noise.
+const DANGER = 3.5;
 
 /** A stadium's crowd is its capacity, up to the 100,000 the engine is sized for. */
 const fanCount = (map: MapBundle) =>
@@ -382,6 +386,8 @@ export function App() {
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingBusy, setBriefingBusy] = useState(false);
+  /** The synthetic-data note is shown on every load until dismissed; it is not remembered. */
+  const [showSynthetic, setShowSynthetic] = useState(true);
   const [railTab, setRailTabState] = useState<RailTab>(() => {
     try {
       const saved = localStorage.getItem('gd-rail-tab');
@@ -744,6 +750,18 @@ export function App() {
     return scrub === null ? run.latest.current : (kept[Math.min(scrub, kept.length - 1)] ?? run.latest.current);
   };
   const ticks = runs.map((r) => r.tick).join(',');
+  // The dot scale on screen. The fan count comes from the map's crowd, the dot
+  // count from the live frame's arrays, and the ratio from the two of them, so
+  // the line can never drift from what the workers are actually drawing.
+  const liveFans = loaded ? fanCount(loaded.map) : 0;
+  const liveDots = runs[closeRun]!.latest.current?.frame.x.length ?? 0;
+  const fansPerDot = liveDots > 0 ? Math.round(liveFans / liveDots) : null;
+  // The sky actually on the map for the run being shown, from its latest frame.
+  // The picker carries the scenario; a lightning delay overrides the scene after
+  // the scenario was picked, so the header must not read "Clear" over a storm.
+  // Null until the first frame, and nothing is rendered then.
+  const shownWeather = runs[closeRun]!.latest.current?.frame.weather ?? null;
+  const liveSky = shownWeather ? `${WEATHER_LABELS[shownWeather.kind]}, ${Math.round(shownWeather.tempC)}°C` : null;
   // People on their feet per run, which every colour and count below is built
   // from: seated fans are dense and safe, as in the scorecard's danger minutes.
   const standing = useMemo(
@@ -834,6 +852,10 @@ export function App() {
               >
                 Change stadium
               </button>
+              {/* The dot scale, worked out from the crowd and the live frame, never typed. */}
+              <span className="scale" title="How the crowd on the map is drawn: one dot per group of fans.">
+                1 dot = {fansPerDot === null ? '…' : n(fansPerDot)} fans, {liveDots > 0 ? n(liveDots) : '…'} dots, {liveFans > 0 ? n(liveFans) : '…'} fans
+              </span>
             </p>
           </div>
         </div>
@@ -866,6 +888,15 @@ export function App() {
         <ThemeToggle />
       </header>
 
+      {showSynthetic && (
+        <div className="banner notice">
+          <p>Crowd, traffic and sensors are synthetic. The forecast is a model output, not an observation.</p>
+          <button className="small ghost" onClick={() => setShowSynthetic(false)} aria-label="Dismiss the synthetic-data note">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loadError && (
         <p className="banner error">
           Could not reach the server: {loadError}. Start it with <code>npm run serve</code>.
@@ -895,6 +926,13 @@ export function App() {
                 ))}
               </select>
             </label>
+            {/* What the sky is doing on the map now, beside the scenario that was
+                picked: the two differ once an incident changes the weather. */}
+            {liveSky && (
+              <span className="live-sky" title="The sky in the run on the map right now">
+                On the map: {liveSky}
+              </span>
+            )}
             <label className="toggle" title="Simulate vehicle traffic alongside the crowd">
               <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
               Vehicles
@@ -1124,7 +1162,7 @@ export function App() {
               </div>
 
               <div className="replay">
-                <span className="replay-label">{scrub === null ? 'Live' : clockText(scrubT ?? t)}</span>
+                <span className="replay-label">{wallClock(scrubT ?? t)} · {scrub === null ? 'Live' : clockText(scrubT ?? t)}</span>
                 <input
                   type="range"
                   min={0}
@@ -1311,6 +1349,11 @@ export function App() {
               <>
                 <section className="block verdict">
                   <h2>Verdict</h2>
+                  {/* Who wrote this, at the top: a template summary folded into grey
+                      type under the text still read as if a model had written it. */}
+                  {allDone && briefing?.canned && (
+                    <p className="verdict-template">Template briefing: the AI writer was not running, so this wording is fixed.</p>
+                  )}
                   {!allDone && <p className="muted">Appears when all three plans finish.</p>}
                   {allDone && incident && (
                     <>
@@ -1405,6 +1448,7 @@ export function App() {
                 />
               </section>
             )}
+            {railTab === 'orders' && loaded && runs[closeRun] && <OfficerRoster map={loaded.map} run={runs[closeRun]!} />}
 
             {railTab === 'gates' && loaded && runs[closeRun] && (
               <section className="block">
@@ -1415,6 +1459,8 @@ export function App() {
                   onToggle={(closableId, closed) => sendOrder({ type: 'gate', closableId, closed })} disabled={ordersDisabled} />
               </section>
             )}
+            {railTab === 'gates' && loaded && runs[closeRun] && <ZoneTable map={loaded.map} run={runs[closeRun]!} />}
+            {railTab === 'gates' && loaded && runs[closeRun] && <LotBoard map={loaded.map} run={runs[closeRun]!} />}
 
             {railTab === 'key' && (
               <>

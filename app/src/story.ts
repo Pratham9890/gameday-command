@@ -86,19 +86,27 @@ export function liveStats(
 }
 
 /**
- * Best plan first. Clearing the danger zone sooner wins; a plan that never
- * clears loses to one that does. Ties go to less time spent dangerously packed.
+ * Best plan first. Moving the crush out of the incident zone is not a win:
+ * weighted danger near the incident plus spillover is the first criterion.
+ * Clearing time breaks ties, then a plan that never clears loses.
  */
 export function rankPlans(cards: (Scorecard | null)[]): number[] {
+  const danger = (c: Scorecard | null) => c?.dangerMinutes ?? Number.POSITIVE_INFINITY;
   const clear = (c: Scorecard | null) => c?.timeToClearMin ?? Number.POSITIVE_INFINITY;
-  return cards
-    .map((_, i) => i)
-    .sort((a, b) => {
-      const byClear = clear(cards[a]!) - clear(cards[b]!);
-      if (byClear !== 0 && Number.isFinite(byClear)) return byClear;
-      if (clear(cards[a]!) !== clear(cards[b]!)) return clear(cards[a]!) === Number.POSITIVE_INFINITY ? 1 : -1;
-      return (cards[a]?.dangerMinutes ?? 0) - (cards[b]?.dangerMinutes ?? 0);
-    });
+  const compare = (a: number, b: number) => {
+    const da = danger(cards[a]!);
+    const db = danger(cards[b]!);
+    if (Number.isFinite(da) && Number.isFinite(db) && da !== db) return da - db;
+    if (!Number.isFinite(da) && Number.isFinite(db)) return 1;
+    if (Number.isFinite(da) && !Number.isFinite(db)) return -1;
+    const ca = clear(cards[a]!);
+    const cb = clear(cards[b]!);
+    if (Number.isFinite(ca) && Number.isFinite(cb) && ca !== cb) return ca - cb;
+    if (!Number.isFinite(ca) && Number.isFinite(cb)) return 1;
+    if (Number.isFinite(ca) && !Number.isFinite(cb)) return -1;
+    return a - b;
+  };
+  return cards.map((_, i) => i).sort(compare);
 }
 
 export const clearText = (card: Scorecard) =>
@@ -116,5 +124,11 @@ export function verdictText(labels: readonly string[], names: string[], cards: S
     .slice(1)
     .map((i) => `${labels[i]} ${clearText(cards[i]!)}`)
     .join(', ');
-  return `Plan ${labels[best]} (${names[best]}) cleared the crowd at ${zoneName} fastest, in ${clearText(card)}. Others: ${others}.`;
+  const danger = order
+    .map((i) => `${labels[i]} ${(cards[i]?.dangerMinutes ?? 0).toFixed(1)}`)
+    .join(', ');
+  return (
+    `Plan ${labels[best]} (${names[best]}) cleared the crowd at ${zoneName} fastest, in ${clearText(card)}. ` +
+    `Weighted danger near the incident plus spillover: ${danger}. Others: ${others}.`
+  );
 }

@@ -28,18 +28,33 @@ describe('commander screen words', () => {
     expect(incidentStatus(incident, 180).phase).toBe('during');
   });
 
-  it('ranks the plan that clears first, and never-cleared last', () => {
+  it('ranks on weighted danger first, not on clearing the zone by moving the crush', () => {
     const cards = [card('A', null, 10), card('B', 8.6, 50), card('C', 6.2, 90)];
-    expect(rankPlans(cards)).toEqual([2, 1, 0]);
+    expect(rankPlans(cards)).toEqual([0, 1, 2]);
   });
 
-  it('breaks a tie on time spent dangerously packed', () => {
-    expect(rankPlans([card('A', null, 30), card('B', null, 5), card('C', null, 60)])).toEqual([1, 0, 2]);
+  it('breaks a danger tie on clearing time, never-cleared last', () => {
+    expect(rankPlans([card('A', 9, 10), card('B', 8, 10), card('C', 7, 10)])).toEqual([2, 1, 0]);
+    expect(rankPlans([card('A', null, 10), card('B', 8, 10), card('C', 7, 10)])).toEqual([2, 1, 0]);
+  });
+
+  it('does not compare Infinity with Infinity', () => {
+    expect(rankPlans([card('A', null, 1), card('B', null, 1)])).toEqual([0, 1]);
+    expect(rankPlans([card('A', null, 1), card('B', 4, 1)])).toEqual([1, 0]);
+    expect(rankPlans([card('A', 4, 1), card('B', null, 1)])).toEqual([0, 1]);
+    for (const order of [
+      rankPlans([card('A', null, 1), card('B', null, 1)]),
+      rankPlans([card('A', null, 1), card('B', 4, 1)]),
+    ]) expect(order.every(Number.isInteger)).toBe(true);
   });
 
   it('writes a verdict a judge can read out', () => {
     const text = verdictText(['A', 'B', 'C'], ['Officers', 'Open Gate 2', 'Close Gate 1'], [card('A', 6.2, 1), card('B', 8.6, 1), card('C', null, 1)], 'Gate 1');
-    expect(text).toBe('Plan A (Officers) cleared the crowd at Gate 1 fastest, in 6.2 min. Others: B 8.6 min, C never cleared.');
+    expect(text).toBe(
+      'Plan A (Officers) cleared the crowd at Gate 1 fastest, in 6.2 min. ' +
+        'Weighted danger near the incident plus spillover: A 1.0, B 1.0, C 1.0. ' +
+        'Others: B 8.6 min, C never cleared.',
+    );
   });
 
   it('counts people from density', () => {

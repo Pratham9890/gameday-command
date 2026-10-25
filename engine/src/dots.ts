@@ -10,6 +10,21 @@ export const STATE_INDEX: Record<DotState, number> = DOT_STATES.reduce(
 );
 
 /**
+ * Numeric state codes, sourced from STATE_INDEX so they can never drift from the
+ * array DOT_STATES orders. Hot loops compare STATE.walking instead of strings.
+ */
+export const STATE = {
+  arriving: STATE_INDEX.arriving,
+  tailgating: STATE_INDEX.tailgating,
+  queued: STATE_INDEX.queued,
+  walking: STATE_INDEX.walking,
+  seated: STATE_INDEX.seated,
+  sheltering: STATE_INDEX.sheltering,
+  leaving: STATE_INDEX.leaving,
+  gone: STATE_INDEX.gone,
+} as const;
+
+/**
  * All dot state in parallel typed arrays, laid out exactly like Snapshot.dots so
  * snapshot and restore are copies rather than conversions. 20,000 dots is
  * 20,000 * 18 bytes, small enough to clone per replay frame.

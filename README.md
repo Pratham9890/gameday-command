@@ -4,6 +4,15 @@ A practice tool for police commanders who run game day at Ohio Stadium. It simul
 
 The commander always makes the call. The tool shows tradeoffs; it never tells police what to do. Fan behavior is an **assumption, not a forecast**, and the app says so on screen.
 
+## Forecast layer (in progress)
+
+`engine/src/forecast.ts` now holds the pure ensemble: normalised weights, Gaussian
+reweighting, ESS, systematic resampling with jitter, weighted p10/p50/p90 and the
+computed improving share. `app/src/sensors.ts` holds the synthetic observation model
+(coverage, dropout, latency, seeded noise). Neither is wired to a checkpoint/worker
+loop yet, so the app still does not claim forecast skill; see `docs/forecast.md` for
+the boundary and the remaining work.
+
 ## Architecture
 
 Five npm workspaces plus one frozen contract at the root. Every lane talks to the others only through `contracts.ts`.
@@ -89,7 +98,7 @@ Measured on an 800x800 grid (the stadium plus half a mile at 2 m cells) with 20,
 - **103x real time** through a lightning delay that asks every dot at once
 - **57,974 dot decisions collapse to about 144 distinct model calls**
 
-The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153498) covering the stadium plus half a mile: an 800x800 grid of 2 m cells with 12 gates, the bowl and its concourse, 140 parking lots, and closable real streets — Woody Hayes Drive, Lane Avenue, Cannon Drive. Three plans run on it side by side with 100,000 fans at **56.8x real time each** — and that is the UI's speed setting, not the engine's ceiling.
+The real Ohio Stadium map is in, built from an OpenStreetMap extract (way 119153498) covering the stadium plus half a mile: an 800x800 grid of 2 m cells with 11 gates (Gate 8 omitted: no lot reaches it), the bowl and its concourse, 140 parking lots, and closable real streets — Woody Hayes Drive, Lane Avenue, Cannon Drive. Three plans run on it side by side with 100,000 fans at **56.8x real time each** — and that is the UI's speed setting, not the engine's ceiling.
 
 Refetch the map with `npm run fetch-map` (it is committed, so you only need this to update it).
 

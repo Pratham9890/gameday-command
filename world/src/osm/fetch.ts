@@ -69,8 +69,17 @@ export function trimElement(element: OsmElement): OsmElement | null {
   return out.geometry || out.members?.length ? out : null;
 }
 
-/** Download and trim the area around a stadium, trying mirrors when a server is busy. */
-export async function fetchExtract(center: LatLon, radiusM = STADIUM_RADIUS_M, url = OVERPASS_URL): Promise<OsmExtract & { bbox: ReturnType<typeof bboxAround> }> {
+/**
+ * Download and trim the area around a stadium, trying mirrors when a server is busy.
+ * `onBytes` gets the running total of body bytes as the Overpass answer streams in
+ * (Overpass sends no length, so this is progress by size, not a percentage).
+ */
+export async function fetchExtract(
+  center: LatLon,
+  radiusM = STADIUM_RADIUS_M,
+  url = OVERPASS_URL,
+  onBytes?: (totalBytes: number) => void,
+): Promise<OsmExtract & { bbox: ReturnType<typeof bboxAround> }> {
   let raw: { elements: OsmElement[] } | null = null;
   const errors: string[] = [];
   for (const server of [url, ...OVERPASS_MIRRORS.filter((m) => m !== url)]) {
@@ -85,7 +94,35 @@ export async function fetchExtract(center: LatLon, radiusM = STADIUM_RADIUS_M, u
         errors.push(`${new URL(server).host} ${res.status}`);
         continue;
       }
-      raw = (await res.json()) as { elements: OsmElement[] };
+      // Read the body by hand so the import screen can show bytes arriving.
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      let total = 0;
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          total += value.byteLength;
+          text += decoder.decode(value, { stream: true });
+          try {
+            onBytes?.(total);
+          } catch {
+            // Progress is best effort: a broken UI stream must not fail the download.
+          }
+        }
+        text += decoder.decode();
+      } else {
+        text = await res.text();
+        total = text.length;
+        try {
+          onBytes?.(total);
+        } catch {
+          // As above.
+        }
+      }
+      raw = JSON.parse(text) as { elements: OsmElement[] };
       break;
     } catch (error) {
       errors.push(`${new URL(server).host} ${error instanceof Error ? error.message : String(error)}`);
@@ -105,6 +142,10 @@ export async function fetchExtract(center: LatLon, radiusM = STADIUM_RADIUS_M, u
 export interface StadiumHit {
   name: string;
   where: string;
+  /** Address parts from Nominatim, when it answered with `addressdetails`. */
+  city?: string;
+  state?: string;
+  country?: string;
   osmType: 'way' | 'relation' | 'node';
   osmId: number;
   lat: number;
@@ -114,30 +155,51 @@ export interface StadiumHit {
   wikidata?: string;
 }
 
+/** Picks the first non-empty string: Nominatim files places under different keys by size. */
+function firstOf(...values: (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    if (value?.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 /** Find stadiums by name through Nominatim. Only leisure=stadium results come back. */
 export async function searchStadiums(q: string, url = NOMINATIM_URL): Promise<StadiumHit[]> {
-  const params = new URLSearchParams({ q, format: 'jsonv2', limit: '15', extratags: '1' });
+  const params = new URLSearchParams({ q, format: 'jsonv2', limit: '15', extratags: '1', addressdetails: '1' });
   const res = await fetch(`${url}/search?${params}`, { headers: { 'user-agent': USER_AGENT, 'accept-language': 'en' } });
   if (!res.ok) throw new Error(`Nominatim returned ${res.status} ${res.statusText}`);
   const rows = (await res.json()) as {
     category?: string; type?: string; osm_type: string; osm_id: number; lat: string; lon: string;
-    name?: string; display_name: string; extratags?: Record<string, string>; importance?: number;
+    name?: string; display_name: string; address?: Record<string, string>;
+    extratags?: Record<string, string>; importance?: number;
   }[];
   // Most important first: "Beaver Stadium" should find Penn State's before a
   // high-school ground of the same name.
   rows.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
   return rows
     .filter((r) => r.category === 'leisure' && r.type === 'stadium' && (r.osm_type === 'way' || r.osm_type === 'relation'))
-    .map((r) => ({
-      name: r.name || r.display_name.split(',')[0]!,
-      where: r.display_name.split(',').slice(1, 4).join(',').trim(),
-      osmType: r.osm_type as StadiumHit['osmType'],
-      osmId: r.osm_id,
-      lat: Number(r.lat),
-      lon: Number(r.lon),
-      capacity: Number(r.extratags?.capacity) || undefined,
-      wikidata: /^Q\d+$/.test(r.extratags?.wikidata ?? '') ? r.extratags!.wikidata : undefined,
-    }));
+    .map((r) => {
+      // City, state, country reads better than the street and neighbourhood that
+      // display_name starts with. Only fall back to display_name when address is empty.
+      const city = firstOf(r.address?.city, r.address?.town, r.address?.village, r.address?.municipality, r.address?.county);
+      const state = firstOf(r.address?.state, r.address?.region, r.address?.province);
+      const country = firstOf(r.address?.country);
+      const where = [city, state, country].filter((part): part is string => !!part).join(', ')
+        || r.display_name.split(',').slice(1, 4).join(',').trim();
+      return {
+        name: r.name || r.display_name.split(',')[0]!,
+        where,
+        city,
+        state,
+        country,
+        osmType: r.osm_type as StadiumHit['osmType'],
+        osmId: r.osm_id,
+        lat: Number(r.lat),
+        lon: Number(r.lon),
+        capacity: Number(r.extratags?.capacity) || undefined,
+        wikidata: /^Q\d+$/.test(r.extratags?.wikidata ?? '') ? r.extratags!.wikidata : undefined,
+      };
+    });
 }
 
 /** Home teams (in Wikidata's order) and maximum capacity for a stadium's Wikidata item. Best effort: empty on any failure. */

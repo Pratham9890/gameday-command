@@ -173,29 +173,36 @@ export function lightningDelay(map: MapBundle, at = 1800): Incident {
     at,
     placeId: stands?.id,
     cells: stands?.cells,
-    safeCount: 0,
+    safeCount: stands ? safeCountFor(stands.cells) : 0,
     note: 'Lightning within 8 miles. Everyone in the stands has to get out of the open.',
   };
 }
 
-/** The street a suspicious package would close: the longest one on the map. */
+/** The street a suspicious package would close: Woody Hayes Drive when mapped, else the longest. */
 export function biggestStreet(map: MapBundle) {
-  return map.closables
-    .filter((c) => c.id.startsWith('street-') || /lane|plaza/i.test(c.id))
-    .sort((a, b) => b.cells.length - a.cells.length)[0];
+  const streets = map.closables.filter((c) => c.id.startsWith('street-') || /lane|plaza/i.test(c.id));
+  return (
+    streets.find((c) => /Woody Hayes/i.test(c.name)) ??
+    streets.sort((a, b) => b.cells.length - a.cells.length)[0]
+  );
 }
 
 /** A suspicious package closing a street as the game lets out. */
 export function suspiciousPackage(map: MapBundle, at = GAME_END_S): Incident {
   const street = biggestStreet(map) ?? map.closables[map.closables.length - 1];
   if (!street) throw new Error('map has nothing closable for a package incident');
+  // A standoff cordon around a point on the street, not the whole street: the
+  // package closes the road, but the danger zone is the crowd held back around
+  // it. A whole-street zone could never be occupied, so no plan could clear.
+  const point = street.cells[Math.floor(street.cells.length / 2)]!;
+  const cells = expandCells(map, [point], 8);
   return {
     id: 'inc-package',
     kind: 'suspicious_package',
     at,
-    cells: street.cells,
-    safeCount: safeCountFor(street.cells),
-    note: `Unattended bag on ${street.name}. The street closes as the game lets out.`,
+    cells,
+    safeCount: safeCountFor(cells),
+    note: `Unattended bag on ${street.name}. A 32 m cordon closes the street as the game lets out.`,
   };
 }
 

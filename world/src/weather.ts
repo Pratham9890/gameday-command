@@ -73,15 +73,20 @@ export const weatherTimeline = (id: string) => WEATHER_TIMELINES.find((w) => w.i
 /**
  * The sky at time t. A lightning delay always has lightning once it fires,
  * whatever scenario was picked: the incident IS the lightning, and the map
- * showing sunshine over a lightning delay would be a lie.
+ * showing sunshine over a lightning delay would be a lie. The all-clear comes
+ * 30 minutes after the strike.
  */
+export const LIGHTNING_CLEAR_S = 30 * 60;
+
 export function weatherAt(timeline: WeatherTimeline | undefined, t: SimSeconds, incident?: Incident): WeatherState {
   let current = CLEAR_SKY;
   for (const segment of timeline?.segments ?? []) {
     if (segment.from <= t) current = segment.state;
     else break;
   }
-  if (incident?.kind === 'lightning_delay' && t >= incident.at && !current.lightning) {
+  const lightningNow =
+    incident?.kind === 'lightning_delay' && t >= incident.at && t < incident.at + LIGHTNING_CLEAR_S;
+  if (lightningNow && !current.lightning) {
     return {
       ...current,
       kind: 'thunderstorm',
@@ -100,11 +105,13 @@ export function walkFactor(w: WeatherState): number {
     case 'rain':
       return 1 - 0.08 * w.intensity;
     case 'heavy_rain':
-      return 1 - 0.16 * w.intensity;
+      // Research bands: heavy rain costs about 27% of free walking speed.
+      return 1 - 0.27 * w.intensity;
     case 'thunderstorm':
       return 1 - 0.1 * w.intensity;
     case 'snow':
-      return 1 - 0.3 * w.intensity;
+      // And snow about 20%, not the 30% first assumed.
+      return 1 - 0.2 * w.intensity;
     case 'fog':
       return 1 - 0.04 * w.intensity;
     case 'heat':
@@ -121,13 +128,15 @@ export function driveFactor(w: WeatherState): number {
     case 'rain':
       return Math.min(sight, 1 - 0.2 * w.intensity);
     case 'heavy_rain':
-      return Math.min(sight, 1 - 0.38 * w.intensity);
+      // About a 16% loss at full intensity, as measured, not 38%.
+      return Math.min(sight, 1 - 0.16 * w.intensity);
     case 'thunderstorm':
-      return Math.min(sight, 1 - 0.35 * w.intensity);
+      return Math.min(sight, 1 - 0.16 * w.intensity);
     case 'snow':
       return Math.min(sight, 1 - 0.5 * w.intensity);
     case 'fog':
-      return sight;
+      // Fog has a floor near -12%: drivers slow, they do not stop.
+      return Math.min(1, Math.max(0.88, w.visibilityM / 1250));
     default:
       return 1;
   }

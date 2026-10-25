@@ -1,6 +1,7 @@
-import type { MapBundle, VehicleFrame } from '../../contracts.ts';
+import type { CellKind, MapBundle, VehicleFrame } from '../../contracts.ts';
 import { CELL_SIZE_M, DOT_GROUP_SIZE, DOT_STATES, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import { VEHICLE_TYPES } from '../../world/src/vehicles.ts';
+import { makePlaceIndex } from './heat.ts';
 import type { PlaceIndex } from './heat.ts';
 
 /**
@@ -100,6 +101,61 @@ const CROWD_MIN = 30;
 const STOPPED_MIN = 2;
 
 /**
+ * Cells a pedestrian can be on. The engine's flow field treats every cell that
+ * is not `blocked` as walkable (`engine/src/flowfield.ts`, `passable()`), so a
+ * dot may stand on `road`, `parking`, `concourse`, `stands` and `shelter` cells.
+ * Density on a `blocked` cell is not people — nothing can stand inside a wall —
+ * so it is an artefact and is not counted.
+ */
+const pedestrianCell = (kind: CellKind) => kind !== 'blocked';
+
+/**
+ * Cells a vehicle can be on: the road network and the parking lots.
+ *
+ * The engine's road network (`engine/src/traffic.ts`) also accepts walk cells
+ * within 3 cells of a lot as a *driveway*, because OSM rarely maps the stub into
+ * a lot, and it lets an emergency vehicle drive the plazas and the concourse
+ * ring. Both are left out here on purpose: a car creeping down a driveway is
+ * not a traffic queue, and an on-scene ambulance is not congestion. Counting
+ * either would put a vehicle on a cell that general traffic never uses, which is
+ * exactly the "cars in the concourse" reading this guards against.
+ */
+const vehicleCell = (kind: CellKind) => kind === 'road' || kind === 'parking';
+
+/**
+ * OSM highway classes that make a street a freeway. The tags ride along in
+ * `MapBundle.streets` (`contracts.ts:122`), so no engine code is consulted.
+ */
+const FREEWAY_CLASSES = new Set(['motorway', 'motorway_link', 'trunk', 'trunk_link']);
+
+/** Names of the freeway-class streets on this map. */
+function freewayStreetNames(map: MapBundle): Set<string> {
+  const names = new Set<string>();
+  for (const s of map.streets ?? []) if (s.name && FREEWAY_CLASSES.has(s.kind)) names.add(s.name);
+  return names;
+}
+
+/**
+ * A `PlaceIndex` that knows every walkable feature but no freeway, for naming a
+ * pedestrian area. `makePlaceIndex` is frozen for this order, and it names any
+ * cell within three cells of a closable street; handing it a copy of the map
+ * with the freeway streets taken out of `closables` keeps every gate, lot and
+ * surface street and drops only the freeway names. Built once per map.
+ */
+const walkIndexes = new WeakMap<MapBundle, PlaceIndex>();
+function walkablePlaceIndex(map: MapBundle, freewayNames: Set<string>): PlaceIndex {
+  let index = walkIndexes.get(map);
+  if (!index) {
+    index = makePlaceIndex({ ...map, closables: map.closables.filter((c) => !freewayNames.has(c.name)) });
+    walkIndexes.set(map, index);
+  }
+  return index;
+}
+
+const isFreewayLabel = (where: string, freewayNames: Set<string>) =>
+  where.startsWith('On ') && freewayNames.has(where.slice(3));
+
+/**
  * The worst places right now, for the commander to look at first.
  *
  * Seated fans are left out: a full section of stands is 5 people per m² and
@@ -107,6 +163,14 @@ const STOPPED_MIN = 2;
  * What is counted is people on their feet packed at 3 per m² or more, and
  * vehicles stopped or crawling. Neighbouring hot blocks merge into one area,
  * so a queue down a street is one entry, not twenty.
+ *
+ * Each agent is only counted on a cell it can actually be on (the predicates
+ * above), and the name comes from the dominant agent's own cells: the block
+ * where most of that agent sits, not the merged area's centre of mass, which
+ * can land on a street nothing in the area is touching. A crowd is never named
+ * after a freeway — if its people really are standing on a freeway cell, the
+ * area is named for the nearest walkable feature instead — while cars on a
+ * freeway are named for it, because that is where they are.
  *
  * This ranks; it does not prescribe. Where to send officers stays the
  * commander's call.
@@ -131,7 +195,11 @@ export function policeHotspots(
   if (density) {
     for (let c = 0; c < density.length; c++) {
       const v = density[c]!;
-      if (v < CROWDED || map.cells[c] === 'stands') continue;
+      const kind = map.cells[c]!;
+      // A stand is walkable but is left out even so: a full seated section is
+      // 5/m² by design, and `standingDensity()` has already removed the seated
+      // fans, so what is left there is a seated crowd, not a crush.
+      if (v < CROWDED || !pedestrianCell(kind) || kind === 'stands') continue;
       const b = (((c / W) | 0) / BLOCK | 0) * BW + (((c % W) / BLOCK) | 0);
       crowd[b] = crowd[b]! + v * area;
       if (v > peak[b]!) peak[b] = v;
@@ -146,6 +214,9 @@ export function policeHotspots(
       const cx = Math.floor(vehicles.x[i]! / CELL_SIZE_M);
       const cy = Math.floor(vehicles.y[i]! / CELL_SIZE_M);
       if (cx < 0 || cy < 0 || cx >= W || cy >= H) continue;
+      const cell = cy * W + cx;
+      // The centre cell decides, as it does for the map's own vehicle layers.
+      if (!vehicleCell(map.cells[cell]!)) continue;
       const b = ((cy / BLOCK) | 0) * BW + ((cx / BLOCK) | 0);
       if (level === FLOW_JAM) stopped[b]!++;
       else slow[b]!++;
@@ -156,11 +227,17 @@ export function policeHotspots(
   // street is one car per block. The area as a whole still has to clear the bar.
   const hot = (b: number) => crowd[b]! >= CROWD_MIN || stopped[b]! >= 1 || slow[b]! >= 2;
   const seen = new Uint8Array(BW * BH);
-  const found: Omit<PoliceHotspot, 'rank' | 'where'>[] = [];
+  type Area = Omit<PoliceHotspot, 'rank' | 'where'> & {
+    /** The block where most of the crowd sits, and the one where most of the jam does. */
+    crowdBlock: number;
+    vehBlock: number;
+  };
+  const found: Area[] = [];
   const stack: number[] = [];
   for (let start = 0; start < BW * BH; start++) {
     if (seen[start] || !hot(start)) continue;
     let people = 0, pk = 0, st = 0, sl = 0, bx0 = BW, by0 = BH, bx1 = 0, by1 = 0, sx = 0, sy = 0, wsum = 0;
+    let crowdBlock = -1, crowdBlockPeople = 0, vehBlock = -1, vehBlockWeight = 0;
     stack.push(start);
     seen[start] = 1;
     while (stack.length) {
@@ -171,6 +248,15 @@ export function policeHotspots(
       if (peak[b]! > pk) pk = peak[b]!;
       st += stopped[b]!;
       sl += slow[b]!;
+      if (crowd[b]! > crowdBlockPeople) {
+        crowdBlockPeople = crowd[b]!;
+        crowdBlock = b;
+      }
+      const vehWeight = stopped[b]! * 20 + slow[b]! * 5;
+      if (vehWeight > vehBlockWeight) {
+        vehBlockWeight = vehWeight;
+        vehBlock = b;
+      }
       const w = crowd[b]! + stopped[b]! * 20 + slow[b]! * 5 + 1;
       sx += (bx + 0.5) * w;
       sy += (by + 0.5) * w;
@@ -214,12 +300,95 @@ export function policeHotspots(
       y1: Math.min(H - 1, (by1 + 1) * BLOCK - 1),
       cx: (sx / wsum) * BLOCK * CELL_SIZE_M,
       cy: (sy / wsum) * BLOCK * CELL_SIZE_M,
+      crowdBlock,
+      vehBlock,
     });
   }
   found.sort((a, b) => b.score - a.score);
+
+  const freewayNames = freewayStreetNames(map);
+  /** Built on demand: a map with no freeway street never needs the second index. */
+  let walkPlaces: PlaceIndex | undefined;
+
+  /**
+   * The cell that best stands for a block: the densest crowd cell in it, or the
+   * drivable cell nearest its middle. Searching the block, rather than using
+   * the area's centroid, is what stops a 12 m block that merely touches a road
+   * from naming a crowd that is somewhere else.
+   */
+  const cellInBlock = (b: number, agent: 'crowd' | 'traffic'): number => {
+    const x0 = (b % BW) * BLOCK;
+    const y0 = ((b / BW) | 0) * BLOCK;
+    const midX = x0 + BLOCK / 2;
+    const midY = y0 + BLOCK / 2;
+    let best = -1;
+    let bestValue = -1;
+    let bestDistance = Infinity;
+    for (let dy = 0; dy < BLOCK; dy++) {
+      for (let dx = 0; dx < BLOCK; dx++) {
+        const x = x0 + dx;
+        const y = y0 + dy;
+        if (x >= W || y >= H) continue;
+        const c = y * W + x;
+        const kind = map.cells[c]!;
+        if (agent === 'crowd') {
+          if (!pedestrianCell(kind) || kind === 'stands') continue;
+          const v = density ? density[c]! : 0;
+          if (v > bestValue) {
+            bestValue = v;
+            best = c;
+          }
+        } else {
+          if (!vehicleCell(kind)) continue;
+          const d = (x + 0.5 - midX) ** 2 + (y + 0.5 - midY) ** 2;
+          if (d < bestDistance) {
+            bestDistance = d;
+            best = c;
+          }
+        }
+      }
+    }
+    if (best >= 0) return best;
+    // Nothing eligible in the block itself, which should not happen: fall back to
+    // its middle cell so the name is still in the area.
+    const fx = Math.min(W - 1, Math.max(0, Math.floor(midX)));
+    const fy = Math.min(H - 1, Math.max(0, Math.floor(midY)));
+    return fy * W + fx;
+  };
+
+  // Naming is the slow part, so only the ones shown get a name.
   return found.slice(0, limit).map((h, i) => {
-    const cell = Math.min(H - 1, Math.floor(h.cy / CELL_SIZE_M)) * W + Math.min(W - 1, Math.floor(h.cx / CELL_SIZE_M));
-    return { ...h, rank: i + 1, where: places.describe(cell) };
+    // Name the area by whichever agent dominates it. A jam is weighted the way
+    // the area's weight is above, so "mostly cars" means what the ranking means.
+    const byCrowd = h.kind === 'crowd' || (h.kind === 'both' && h.crowdedPeople >= h.stoppedVehicles * 20 + h.slowVehicles * 5);
+    const block = byCrowd ? h.crowdBlock : h.vehBlock;
+    const cell =
+      block >= 0
+        ? cellInBlock(block, byCrowd ? 'crowd' : 'traffic')
+        : Math.min(H - 1, Math.floor(h.cy / CELL_SIZE_M)) * W + Math.min(W - 1, Math.floor(h.cx / CELL_SIZE_M));
+    let where = places.describe(cell);
+    // Pedestrians are never located "on a freeway": the nearest walkable
+    // feature names the area instead. (Traffic on a freeway is named for it.)
+    if (byCrowd && isFreewayLabel(where, freewayNames)) {
+      where = (walkPlaces ??= walkablePlaceIndex(map, freewayNames)).describe(cell);
+    }
+    return {
+      rank: i + 1,
+      kind: h.kind,
+      level: h.level,
+      where,
+      crowdedPeople: h.crowdedPeople,
+      peakDensity: h.peakDensity,
+      stoppedVehicles: h.stoppedVehicles,
+      slowVehicles: h.slowVehicles,
+      score: h.score,
+      x0: h.x0,
+      y0: h.y0,
+      x1: h.x1,
+      y1: h.y1,
+      cx: h.cx,
+      cy: h.cy,
+    };
   });
 }
 

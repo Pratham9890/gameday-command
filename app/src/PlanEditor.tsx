@@ -16,7 +16,10 @@ export function describeAction(action: PlanAction, map?: MapBundle): string {
     case 'hold_officers':
       return `Hold ${action.officerIds.length} officers back`;
     case 'alert':
-      return `${action.channel === 'pa' ? 'PA announcement' : 'Phone alert'} reaching ${Math.round(action.reachShare * 100)}% of fans`;
+      // The plan sets a share of the fans the alert can reach; the live status
+      // in live-steps.ts says how many it has reached so far. Wording them
+      // apart stops the two figures reading as the same measurement.
+      return `${action.channel === 'pa' ? 'PA announcement' : 'Phone alert'} aimed at ${Math.round(action.reachShare * 100)}% of fans in range`;
     case 'redirect':
       return `Send ${place(action.fromPlaceId)} fans to ${place(action.toPlaceId)}`;
     case 'shelter_order':
@@ -74,7 +77,7 @@ export function PlanEditor({ plan, map, disabled, onChange }: PlanEditorProps) {
               value={action.at / 60}
               onChange={(e) => update(index, { at: Math.max(0, Number(e.target.value)) * 60 })}
             />
-            min in
+            min after the incident
           </label>
           {action.type === 'send_officers' && (
             <label className="step-n">
@@ -85,7 +88,7 @@ export function PlanEditor({ plan, map, disabled, onChange }: PlanEditorProps) {
                 value={action.count}
                 onChange={(e) => update(index, { count: Math.max(0, Number(e.target.value)) } as Partial<PlanAction>)}
               />
-              cops
+              officers
             </label>
           )}
           {action.type === 'alert' && (

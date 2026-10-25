@@ -36,7 +36,7 @@ const ROAD_RADIUS: Record<string, number> = {
 const FOOT_WAYS = new Set(['footway', 'path', 'pedestrian', 'steps', 'cycleway', 'corridor', 'track']);
 const BLOCKING_BARRIERS = new Set(['wall', 'fence', 'hedge', 'retaining_wall', 'guard_rail']);
 
-/** A gate's assumed throughput. Ohio Stadium holds 104,944 and fills in roughly an hour. */
+/** A gate's assumed throughput. Ohio Stadium seats about 102,000 (cited in sources). */
 export const GATE_THROUGHPUT_PER_MIN = 200;
 const GATE_COUNT = 12;
 const CONCOURSE_RADIUS_CELLS = 2;
@@ -44,6 +44,8 @@ const CONCOURSE_RADIUS_CELLS = 2;
 const GATE_HALF_WIDTH_CELLS = 3;
 /** How deep the queue block outside a gate runs, in cells. */
 const GATE_DEPTH_CELLS = 4;
+/** Named lots this close to the bowl become reserved tailgate zones. */
+const TAILGATE_RADIUS_M = 200;
 /** Field plus sidelines and end zones, 160 ft by 360 ft with a margin. */
 const FIELD_WIDTH_M = 61;
 const FIELD_LENGTH_M = 122;
@@ -138,8 +140,9 @@ export interface StadiumOptions {
   theme?: StadiumTheme;
 }
 
-const OHIO_CAPACITY = 104_944;
-/** Ohio Stadium has 12 gates for about 105,000; other stadiums scale from that. */
+/** Ohio Stadium's listed capacity (102,780; see the map sources). */
+const OHIO_CAPACITY = 102_780;
+/** Ohio Stadium has 12 gates for about 103,000; other stadiums scale from that. */
 const SEATS_PER_GATE = OHIO_CAPACITY / GATE_COUNT;
 
 export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {}): MapBundle {
@@ -174,7 +177,9 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   for (const lot of parkingRings) fillPolygon(lot.points, width, height, set('parking'));
 
   // 2. Ways: roads and footpaths. Road centrelines are kept as well, so the
-  // app can paint lane markings and street names over the 2 m cells.
+  // app can paint lane markings and street names over the 2 m cells. Freeway
+  // cells stay `road` here, because traffic drives them; walkers are kept off
+  // them by the engine's flow fields (`motorwayCells` in engine/src/flowfield.ts).
   const streets: { name: string; kind: string; points: number[] }[] = [];
   for (const element of extract.elements) {
     const highway = element.tags?.highway;
@@ -205,7 +210,8 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   let outlineCells = 0;
   fillPolygon(outline, width, height, () => outlineCells++);
   const estimated = options.id === undefined ? OHIO_CAPACITY : Math.round(outlineCells * CELL_SIZE_M * CELL_SIZE_M * 2.7);
-  const capacity = options.capacity ?? (Number(stadium?.tags?.capacity) || estimated);
+  // Ohio Stadium uses the cited figure its source line states, not the OSM tag (104,944).
+  const capacity = options.capacity ?? (options.id === undefined ? 102_000 : Number(stadium?.tags?.capacity) || estimated);
   const gateCount = Math.max(2, Math.min(16, Math.round(capacity / SEATS_PER_GATE)));
   // A small ground gets narrow gate openings, or the openings are the stadium.
   const gateHalfWidth = outlineCells > 4000 ? GATE_HALF_WIDTH_CELLS : 1;
@@ -272,7 +278,7 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     { x: 0, y: 0 },
   );
 
-  const gates: Place[] = [];
+  let gates: Place[] = [];
   const closables: { id: Id; name: string; cells: number[] }[] = [];
 
   for (let g = 0; g < gateCount; g++) {
@@ -429,6 +435,74 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     });
   });
 
+  // A gate nobody can walk to from any lot is decoration, not a gate. Gate 8
+  // (SSW) was exactly that: 0 of 41,030 lot cells could reach it without
+  // crossing the bowl, so it admitted nobody all game and held a whole sector
+  // of seats out of the model. Drop it and say so in the map sources.
+  const outside = new Uint8Array(cells.length);
+  const queue = new Int32Array(cells.length);
+  let head = 0;
+  let tail = 0;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== 'parking') continue;
+    outside[i] = 1;
+    queue[tail++] = i;
+  }
+  while (head < tail) {
+    const cell = queue[head++]!;
+    const cx = cell % width;
+    const cy = (cell / width) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        const next = y * width + x;
+        if (outside[next]) continue;
+        const kind = cells[next];
+        if (kind === 'blocked' || kind === 'stands' || kind === 'concourse') continue;
+        outside[next] = 1;
+        queue[tail++] = next;
+      }
+    }
+  }
+  const droppedGates = gates.filter((gate) => !gate.cells.some((cell) => outside[cell] === 1));
+  if (droppedGates.length > 0) {
+    gates = gates.filter((gate) => !droppedGates.includes(gate));
+    for (const gate of droppedGates) {
+      // Seal the corridor the gate punched through the shell. Leaving it open
+      // would be a doorway around the bowl with no gate, which is exactly the
+      // leak the shell exists to stop.
+      let gx = 0;
+      let gy = 0;
+      for (const cell of gate.cells) {
+        gx += cell % width;
+        gy += (cell / width) | 0;
+        cells[cell] = 'blocked';
+      }
+      gx /= Math.max(1, gate.cells.length);
+      gy /= Math.max(1, gate.cells.length);
+      const dx = centroid.x - gx;
+      const dy = centroid.y - gy;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = dx / len;
+      const ny = dy / len;
+      strokeLine(
+        { x: Math.round(gx - nx * 8), y: Math.round(gy - ny * 8) },
+        { x: Math.round(gx + nx * 30), y: Math.round(gy + ny * 30) },
+        GATE_HALF_WIDTH_CELLS + 1,
+        width,
+        height,
+        set('blocked'),
+      );
+      for (const cell of gate.cells) cells[cell] = 'blocked';
+      const door = `${gate.id}-door`;
+      const at = closables.findIndex((c) => c.id === door);
+      if (at >= 0) closables.splice(at, 1);
+    }
+  }
+
   // The biggest named streets become closable, for the suspicious package.
   const streetCells = [...streetWays.entries()]
     .map(([name, ways]) => {
@@ -477,6 +551,36 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
   }
   places.push(...lots);
 
+  // 7. Tailgates. OSM tags these areas as parking, not as tailgate zones, so the
+  // label is derived rather than mapped: a reserved zone over the same cells,
+  // one per named lot close enough to walk a cooler to the gates. Only lots
+  // within TAILGATE_RADIUS_M of the stands qualify; the far ones are not a
+  // tailgate anybody walks from, and two of them cannot reach a gate at all.
+  // The cells stay 'parking' in the grid, so they remain walkable, and the
+  // engine reads tailgates as neither a parking destination nor an exit.
+  const tailgates = lots
+    .map((lot) => {
+      let x = 0;
+      let y = 0;
+      for (const cell of lot.cells) {
+        x += cell % width;
+        y += (cell / width) | 0;
+      }
+      const distanceM = Math.hypot(x / lot.cells.length - bx, y / lot.cells.length - by) * CELL_SIZE_M;
+      return { lot, distanceM };
+    })
+    .filter(({ distanceM }) => distanceM <= TAILGATE_RADIUS_M)
+    .sort((a, b) => a.distanceM - b.distanceM);
+  for (const { lot } of tailgates) {
+    places.push({
+      id: `tailgate-${lot.id}`,
+      name: `Tailgate — ${lot.name}`,
+      kind: 'tailgate',
+      cells: [...lot.cells],
+      capacity: lot.cells.length * 4,
+    });
+  }
+
   return {
     version: CONTRACT_VERSION,
     id: options.id ?? STADIUM_MAP_ID,
@@ -494,7 +598,16 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     sources: [
       { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: `https://www.openstreetmap.org/${stadium.type}/${stadium.id}` },
       { label: `Fetched ${extract.fetchedAt.slice(0, 10)} via Overpass API`, url: 'https://overpass-api.de/' },
-      { label: `Assumption, not mapped data: ${gateCount} gates placed at even bearings, ${GATE_THROUGHPUT_PER_MIN} people/min each`, url: 'local' },
+      { label: `Assumption, not mapped data: ${gates.length} gates placed at even bearings, ${GATE_THROUGHPUT_PER_MIN} people/min each`, url: 'local' },
+      options.id === undefined
+        ? { label: 'Capacity: about 102,000 (Ohio Stadium, cited; rounded from 102,780)', url: 'https://en.wikipedia.org/wiki/Ohio_Stadium' }
+        : { label: `Capacity: ${capacity.toLocaleString('en-US')} (OSM tag, or estimated from the outline)`, url: 'local' },
+      ...(droppedGates.length > 0
+        ? [{
+            label: `Omitted from the model: ${droppedGates.map((g) => g.name).join(', ')} - no parking-lot cell can walk there without crossing the bowl`,
+            url: 'local',
+          }]
+        : []),
     ],
   };
 }

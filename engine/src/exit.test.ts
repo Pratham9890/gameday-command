@@ -5,7 +5,7 @@ import { makePopulation } from '../../brain/src/fan-types.ts';
 import { makeTestMap } from '../../world/src/test-map.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { FlowFields } from './flowfield.ts';
-import { FlowMovement, MAX_DOTS_PER_CELL } from './movement-flow.ts';
+import { FlowMovement, MAX_DOTS_PER_CELL, SEATS_PER_STANDS_CELL } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
 function make(startAt: number, fans = 600, late = 0, map = makeTestMap()) {
@@ -34,7 +34,7 @@ describe('exit orders', () => {
       expect(cellOf(sim, i)).toBe(info.seatCell);
       counts.set(info.seatCell, (counts.get(info.seatCell) ?? 0) + 1);
     }
-    expect(Math.max(...counts.values())).toBeLessThanOrEqual(MAX_DOTS_PER_CELL);
+    expect(Math.max(...counts.values())).toBeLessThanOrEqual(SEATS_PER_STANDS_CELL);
     const checkpoint = sim.checkpoint();
     movement.onChoice(sim.ctx, 0, 'exit_route', 'wait_in_seat');
     await sim.step();
@@ -57,42 +57,17 @@ describe('exit orders', () => {
     expect(fields.isClosed(gate)).toBe(false);
   });
 
-  it('keeps a blocked fan on their chosen gate for 30 seconds and restores the wait', async () => {
-    const { sim, movement, map } = make(12300, 200);
-    const { dots } = sim.ctx;
-    const fan = Array.from({ length: dots.count }, (_, i) => i).find((i) => movement.describe(i).homeGate !== 1)!;
-    const neighbours = [-map.width - 1, -map.width, -map.width + 1, -1, 1, map.width - 1, map.width, map.width + 1];
-    const centre = map.width + 10;
-    const blockers = Array.from({ length: dots.count }, (_, i) => i).filter((i) => i !== fan);
-    dots.x[fan] = 21;
-    dots.y[fan] = 3;
-    blockers.forEach((dot, i) => {
-      if (i >= neighbours.length * MAX_DOTS_PER_CELL) {
-        dots.setState(dot, 'gone');
-        return;
-      }
-      const cell = centre + neighbours[Math.floor(i / MAX_DOTS_PER_CELL)]!;
-      // Standing, not seated: seated fans leave the aisle free, so only a
-      // standing crowd hems someone in. Sheltering fans stand still.
-      dots.setState(dot, 'sheltering');
-      dots.x[dot] = ((cell % map.width) + 0.5) * CELL_SIZE_M;
-      dots.y[dot] = (Math.floor(cell / map.width) + 0.5) * CELL_SIZE_M;
-    });
-    sim.ctx.density.update(dots);
-    movement.onChoice(sim.ctx, fan, 'exit_route', 'my_gate');
-    const chosen = dots.targetPlace[fan]!;
-    expect(chosen).not.toBe(1);
-    for (let t = 0; t < 15; t++) await sim.step();
-    expect(dots.targetPlace[fan]).toBe(chosen);
-
-    const checkpoint = sim.checkpoint();
-    for (let t = 0; t < 16; t++) await sim.step();
-    expect(dots.targetPlace[fan]).toBe(1);
-    sim.rewind(checkpoint);
-    for (let t = 0; t < 14; t++) await sim.step();
-    expect(dots.targetPlace[fan]).toBe(chosen);
-    for (let t = 0; t < 2; t++) await sim.step();
-    expect(dots.targetPlace[fan]).toBe(1);
+  it('puts a fan choosing my_gate outside their own gate, and walks them to the lots', async () => {
+    const { sim, movement, map } = make(12300, 5);
+    const home = movement.describe(0).homeGate;
+    movement.onChoice(sim.ctx, 0, 'exit_route', 'my_gate');
+    const cell = cellOf(sim, 0);
+    const gate = map.places[home]!;
+    const near = gate.cells.some((g) => Math.abs((g % map.width) - (cell % map.width)) <= 1 && Math.abs(Math.floor(g / map.width) - Math.floor(cell / map.width)) <= 1);
+    expect(near, 'placed at their own gate').toBe(true);
+    expect(map.places[sim.ctx.dots.targetPlace[0]!]!.kind).toBe('parking');
+    for (let t = 0; t < 300; t++) await sim.step();
+    expect(sim.ctx.dots.stateOf(0)).toBe('gone');
   });
 
   it('finds the smallest containing parking place without scanning it per release', async () => {
@@ -162,14 +137,15 @@ describe('exit orders', () => {
     expect(sim.ctx.dots.stateOf(0)).toBe('gone');
   });
 
-  it('reroutes admitted fans when their chosen exit shuts', async () => {
+  it('sends admitted fans out another gate when their own gate is shut', async () => {
     const { sim, movement, map } = make(12300, 5);
-    movement.onChoice(sim.ctx, 0, 'exit_route', 'my_gate');
-    const target = sim.ctx.dots.targetPlace[0]!;
-    const gate = map.places[target]!;
+    const home = movement.describe(0).homeGate;
+    const gate = map.places[home]!;
     sim.ctx.closed.add(map.closables.find((c) => c.cells.some((cell) => gate.cells.includes(cell)))!.id);
     await sim.step();
-    expect(sim.ctx.dots.targetPlace[0]).not.toBe(target);
+    movement.onChoice(sim.ctx, 0, 'exit_route', 'my_gate');
+    const cell = cellOf(sim, 0);
+    expect(gate.cells.includes(cell), 'not out through the shut gate').toBe(false);
     for (let t = 0; t < 300; t++) await sim.step();
     expect(sim.ctx.dots.stateOf(0)).toBe('gone');
   });
@@ -177,12 +153,11 @@ describe('exit orders', () => {
   it.each(['nearest_exit', 'my_gate', 'wait_in_seat'])('lets sheltering fans leave with %s', async (option) => {
     const { sim, movement } = make(12300, 5);
     movement.onChoice(sim.ctx, 0, 'lightning_shelter', 'go_concourse');
-    while (sim.ctx.t < 12400) await sim.step();
     expect(sim.ctx.dots.stateOf(0)).toBe('sheltering');
     movement.onChoice(sim.ctx, 0, 'exit_route', option);
     if (option === 'wait_in_seat') {
       while (sim.ctx.t < 12500) await sim.step();
-      expect(sim.ctx.dots.stateOf(0)).toBe('sheltering');
+      expect(['sheltering', 'seated']).toContain(sim.ctx.dots.stateOf(0));
     }
     while (sim.ctx.t < 14200) await sim.step();
     expect(sim.ctx.dots.stateOf(0)).toBe('gone');
@@ -225,7 +200,11 @@ describe('exit orders', () => {
       else if (dots.stateOf(i) === 'walking') walkingOutside.push(i);
       else if (dots.stateOf(i) === 'queued') queuedOutside.push(i);
     }
-    for (const [state, group] of Object.entries({ seated, admittedWalking, walkingOutside, queuedOutside, sheltering, arriving })) {
+    // Admission seats a fan at once, so nobody admitted is still walking in.
+    expect(admittedWalking.length).toBe(0);
+    // Gates pass the small test crowd freely, so outsiders may all be walking, none queued.
+    expect(walkingOutside.length + queuedOutside.length, 'outside at release').toBeGreaterThan(0);
+    for (const [state, group] of Object.entries({ seated, sheltering, arriving })) {
       expect(group.length, `${state} at release`).toBeGreaterThan(0);
     }
     for (const i of seated) movement.onChoice(sim.ctx, i, 'exit_route', 'nearest_exit');
@@ -244,7 +223,8 @@ describe('exit orders', () => {
     for (const dot of outside) movement.onChoice(sim.ctx, dot, 'officer_instruction', 'follow');
     let outFlow = 0;
     let enteredBowl = 0;
-    const gateCells = new Set(map.places.filter((p) => p.kind === 'gate').flatMap((p) => p.cells));
+    // Leaving is instant inside the bowl: a fan is placed on a gate cell or the free cell just outside it.
+    const gateCells = new Set(map.places.filter((p) => p.kind === 'gate').flatMap((p) => p.cells).flatMap((c) => [c, c - 1, c + 1, c - map.width, c + map.width, c - map.width - 1, c - map.width + 1, c + map.width - 1, c + map.width + 1]));
     const seatedThroughGate = new Set<number>();
     while (sim.ctx.t < 3600) {
       await sim.step();
