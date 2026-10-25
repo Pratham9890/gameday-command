@@ -900,9 +900,14 @@ export function ComparisonMaps(props: ComparisonMapsProps) {
       return;
     }
 
-    // Otherwise, the heat colour under the cursor.
+    // Otherwise, the heat colour under the cursor. Use the same standing
+    // density the heat layer and the scorecard use: raw stands density now
+    // includes both decks and is not a crush reading.
     const cell = Math.floor(my / CELL_SIZE_M) * map.width + Math.floor(mx / CELL_SIZE_M);
-    const density = (scrubIndex === null ? runs[index]?.latest.current : viewFor(runs[index]!))?.density?.peoplePerM2[cell] ?? 0;
+    const view = scrubIndex === null ? runs[index]?.latest.current : viewFor(runs[index]!);
+    const raw = view?.density?.peoplePerM2;
+    const standing = view && raw ? standingDensity(map, view.frame, raw) : undefined;
+    const density = standing?.[cell] ?? 0;
     const band = bandOf(density, bands);
     onPick(band >= 0 ? { type: 'cell', run: index, cell, band, density } : null);
   };

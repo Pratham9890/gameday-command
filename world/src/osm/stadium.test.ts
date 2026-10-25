@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeOfficers, policeStations } from '../officers.ts';
+import { suspiciousPackage } from '../incidents.ts';
 import { CELL_SIZE_M } from '../../../contracts.ts';
 import { FlowFields, UNREACHABLE } from '../../../engine/src/flowfield.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from './stadium.ts';
@@ -54,8 +55,52 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
     const labels = map.sources.map((s) => s.label).join(' ');
     expect(labels).toMatch(/OpenStreetMap/);
     expect(labels).toMatch(/[Aa]ssumption/);
+    expect(labels).toMatch(/11 gates/);
+    expect(labels).not.toMatch(/12 gates/);
   });
 
+  it('drops or reaches the SSW gate instead of leaving a dead gate', () => {
+    const ssw = map.places.find((p) => p.kind === 'gate' && /\(SSW\)/.test(p.name));
+    if (ssw) {
+      const fields = new FlowFields(map);
+      fields.setClosed(new Set());
+      const index = map.places.indexOf(ssw);
+      const field = fields.field(index, true);
+      const lots = map.places.filter((p) => p.kind === 'parking');
+      const sample = lots.flatMap((l) => l.cells.filter((_, i) => i % 97 === 0)).slice(0, 200);
+      expect(sample.filter((cell) => field.dist[cell] !== UNREACHABLE).length).toBe(sample.length);
+    } else {
+      expect(map.sources.map((s) => s.label).join(' ')).toMatch(/Omitted from the model:.*SSW/);
+    }
+  });
+
+  it('closing Woody Hayes changes the walkable mask', () => {
+    const gate = map.places.findIndex((p) => p.kind === 'gate');
+    const lots = map.places.filter((p) => p.kind === 'parking' && p.id !== 'lots');
+    const fields = new FlowFields(map);
+    fields.setClosed(new Set());
+    const before = fields.field(gate, true).dist;
+    fields.setClosed(new Set(['street-woody-hayes-drive']));
+    const after = fields.field(gate, true).dist;
+    const changed = lots.some((lot) =>
+      lot.cells.some((cell) => before[cell] !== UNREACHABLE && (after[cell] === UNREACHABLE || after[cell]! > before[cell]!)),
+    );
+    expect(changed).toBe(true);
+  });
+
+  it('keeps the freeway drivable but makes pedestrians pay to use it', () => {
+    const freeway = (map.streets ?? []).filter((s) => s.kind === 'motorway' || s.kind === 'trunk');
+    expect(freeway.length).toBeGreaterThan(0);
+    let road = 0;
+    for (const street of freeway) {
+      for (let i = 0; i < street.points.length; i += 2) {
+        const x = Math.floor(street.points[i]! / CELL_SIZE_M);
+        const y = Math.floor(street.points[i + 1]! / CELL_SIZE_M);
+        if (map.cells[y * map.width + x] === 'road') road++;
+      }
+    }
+    expect(road).toBeGreaterThan(0); // vehicles still have SR-315
+  });
   it('lets fans in the lots walk to every gate', () => {
     const fields = new FlowFields(map);
     fields.setClosed(new Set());
@@ -65,7 +110,7 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
 
     map.places.forEach((place, index) => {
       if (place.kind !== 'gate') return;
-      const field = fields.field(index);
+      const field = fields.field(index, true);
       const reachable = sample.filter((cell) => field.dist[cell] !== UNREACHABLE).length;
       expect(reachable, `${place.name} unreachable from the lots`).toBe(sample.length);
     });
@@ -97,6 +142,15 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
       gates.every((g) => Math.hypot((cell % map.width) - g.x, Math.floor(cell / map.width) - g.y) > 22),
     );
     expect(away).toEqual([]);
+  });
+
+  it('states the real capacity and closes Woody Hayes for a package', () => {
+    const seating = map.places.find((p) => p.kind === 'seating')!;
+    expect(seating.capacity).toBe(102_000);
+    expect(map.sources.map((s) => s.label).join(' ')).toMatch(/102,000/);
+    const packageIncident = suspiciousPackage(map);
+    expect(packageIncident.note).toMatch(/Woody Hayes/);
+    expect(map.closables.some((c) => /Woody Hayes/i.test(c.name))).toBe(true);
   });
 
   it('puts police posts out on the streets around the stadium', () => {

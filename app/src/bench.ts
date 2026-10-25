@@ -8,7 +8,7 @@
  * the renderer rather than the engine.
  */
 import type { DecisionDefaults, MapBundle, Scorecard, SimConfig, Snapshot, WorkerIn, WorkerOut } from '../../contracts.ts';
-import { CONTRACT_VERSION, DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE } from '../../contracts.ts';
+import { CONTRACT_VERSION, DOT_GROUP_SIZE } from '../../contracts.ts';
 import { makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { gateSurge, windowFor } from '../../world/src/incidents.ts';
@@ -45,7 +45,7 @@ async function run(label: string, fans: number): Promise<Record<string, unknown>
     endAt: window_.endAt,
     // Very high: pacing must never be what limits the measurement.
     speed: 1_000_000,
-    dangerDensity: DEFAULT_DANGER_DENSITY,
+    dangerDensity: 3.5,
     mapId: map.id,
     incident,
     plan,

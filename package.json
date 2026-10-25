@@ -16,7 +16,7 @@
     "serve": "node --watch server/src/index.ts",
     "fetch-map": "node world/scripts/fetch-map.ts",
     "warm": "node scripts/warm-cache.ts",
-    "seed:export": "sqlite3 \"$DB_PATH\" \".mode json\" \"select key, odds, model, ms from decision_cache order by key;\" > server/data/decision-seed.json"
+    "seed:export": "node scripts/seed-export.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

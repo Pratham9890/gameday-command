@@ -72,6 +72,16 @@ const CROWD_STOP_EMS = 3.5;
 const SQUEEZE_AFTER_S = 25;
 const RIDESHARE_DWELL_S = 45;
 
+/**
+ * Queue capacity for a ring buffer holding every cell at once: one power of
+ * two, with a slot left free so full and empty stay distinguishable.
+ */
+function ringCapacity(n: number): number {
+  let cap = 2;
+  while (cap <= n) cap <<= 1;
+  return cap;
+}
+
 interface Field {
   dist: Uint16Array;
   dir: Uint8Array;
@@ -373,6 +383,13 @@ export class TrafficModel {
 
   private readonly occOwner: Int32Array;
   private readonly occCount: Uint8Array;
+  /**
+   * Cells that hold a count since the last rebuild. The clear visits these
+   * instead of the whole grid; every cell is listed at most once, because a
+   * cell is recorded only on the step from 0 to 1.
+   */
+  private readonly occTouched: Int32Array;
+  private occTouchedCount = 0;
   private readonly closedCells: Uint8Array;
   private closedKey = '\u0000';
 
@@ -381,6 +398,8 @@ export class TrafficModel {
   private emsField: Field | null = null;
   private lotsDirty = true;
   private readonly bfsQueue: Int32Array;
+  /** Cells the field being built reached, in discovery order. */
+  private readonly fieldTouched: Int32Array;
 
   private out = 0;
   private emergencyDispatched = false;
@@ -423,8 +442,10 @@ export class TrafficModel {
     this.dotCounted = new Uint8Array(init.population.dots);
     this.occOwner = new Int32Array(size);
     this.occCount = new Uint8Array(size);
+    this.occTouched = new Int32Array(size);
     this.closedCells = new Uint8Array(size);
-    this.bfsQueue = new Int32Array(size);
+    this.fieldTouched = new Int32Array(size);
+    this.bfsQueue = new Int32Array(ringCapacity(size));
 
     this.spawn(general);
     if (ems) {
@@ -607,23 +628,39 @@ export class TrafficModel {
     const dist = new Uint16Array(size).fill(UNREACHABLE);
     const dir = new Uint8Array(size);
     const q = this.bfsQueue;
+    // Typed ring buffer: head and tail only ever grow, the mask wraps them. The
+    // walk is uniform-cost, so cells leave in nondecreasing distance order and
+    // none is ever queued twice; one power-of-two slot stays free.
+    const slot = q.length - 1;
     const closed = this.closedCells;
+    // Every cell this field reaches, in the order it was reached. The queue walk
+    // is uniform-cost, so a cell's distance does not depend on the order its
+    // neighbours are dequeued in; the list is the same set either way.
+    const touched = this.fieldTouched;
+    let touchedCount = 0;
     let head = 0;
     let tail = 0;
     for (const c of seeds) {
       if (c < 0 || c >= size || !this.allowed(c, ems) || dist[c] === 0) continue;
       dist[c] = 0;
-      q[tail++] = c;
+      touched[touchedCount++] = c;
+      q[tail & slot] = c;
+      tail++;
     }
     for (let phase = 0; phase < 2; phase++) {
       if (phase === 1) {
         // Restart from every reached cell, expanding into closed cells only.
         head = 0;
         tail = 0;
-        for (let c = 0; c < size; c++) if (dist[c] !== UNREACHABLE) q[tail++] = c;
+        const reached = touchedCount;
+        for (let k = 0; k < reached; k++) {
+          q[tail & slot] = touched[k]!;
+          tail++;
+        }
       }
       while (head < tail) {
-        const c = q[head++]!;
+        const c = q[head & slot]!;
+        head++;
         const cx = c % W;
         const cy = (c / W) | 0;
         const next = dist[c]! + 1;
@@ -634,13 +671,21 @@ export class TrafficModel {
           const n = y * W + x;
           if (!this.allowed(n, ems)) continue;
           if ((closed[n] === 1) !== (phase === 1)) continue;
-          if (dist[n]! <= next) continue;
+          const before = dist[n]!;
+          if (before <= next) continue;
           dist[n] = next;
-          q[tail++] = n;
+          // One entry per cell: recorded the first time the walk reaches it.
+          if (before === UNREACHABLE) touched[touchedCount++] = n;
+          q[tail & slot] = n;
+          tail++;
         }
       }
     }
-    for (let c = 0; c < size; c++) {
+    // Only cells the walk reached have a direction, and each one's is a pure
+    // function of `dist`, so visiting the reach list gives the same grid as
+    // visiting the map in cell order.
+    for (let k = 0; k < touchedCount; k++) {
+      const c = touched[k]!;
       if (dist[c] === UNREACHABLE || dist[c] === 0) continue;
       const cx = c % W;
       const cy = (c / W) | 0;
@@ -746,12 +791,26 @@ export class TrafficModel {
 
   /** Mark the cells under every moving vehicle's footprint, front bumper to back. */
   private rebuildOccupancy(): void {
-    this.occCount.fill(0);
+    // Clear only what the last step set. A full-grid wipe touched every cell on
+    // every one of the 3,600 steps, and traffic holds a few hundred at most.
+    const touched = this.occTouched;
+    for (let k = 0; k < this.occTouchedCount; k++) this.occCount[touched[k]!] = 0;
+    this.occTouchedCount = 0;
     for (let i = 0; i < this.count; i++) {
       const m = this.mode[i]!;
       if (m !== MODE_INBOUND && m !== MODE_OUTBOUND && m !== MODE_EMS && m !== MODE_ON_SCENE) continue;
       this.markFootprint(i);
     }
+  }
+
+  /**
+   * Add vehicle i to a cell's occupancy, recording the cell once so the next
+   * rebuild can clear it without sweeping the grid.
+   */
+  private claimCell(cell: number, i: number): void {
+    if (this.occCount[cell] === 0) this.occTouched[this.occTouchedCount++] = cell;
+    this.occOwner[cell] = i + 1;
+    this.occCount[cell] = Math.min(255, this.occCount[cell]! + 1);
   }
 
   private markFootprint(i: number): void {
@@ -764,8 +823,7 @@ export class TrafficModel {
       if (c < 0 || c === last) continue;
       last = c;
       if (this.occOwner[c] === i + 1 && this.occCount[c]! > 0) continue;
-      this.occOwner[c] = i + 1;
-      this.occCount[c] = Math.min(255, this.occCount[c]! + 1);
+      this.claimCell(c, i);
     }
   }
 
@@ -815,10 +873,7 @@ export class TrafficModel {
       if (next < 0) return moved ? 'moved' : 'blocked';
 
       // Claim the cell now, so a vehicle stepping after us this second sees it.
-      if (this.occCount[next] === 0 || this.occOwner[next] !== i + 1) {
-        this.occOwner[next] = i + 1;
-        this.occCount[next] = Math.min(255, this.occCount[next]! + 1);
-      }
+      if (this.occCount[next] === 0 || this.occOwner[next] !== i + 1) this.claimCell(next, i);
       const tx = ((next % W) + 0.5) * CELL_SIZE_M;
       const ty = (((next / W) | 0) + 0.5) * CELL_SIZE_M;
       const dx = tx - this.hx[i]!;
@@ -893,7 +948,14 @@ export class TrafficModel {
     return true;
   }
 
-  /** Fans who chose to go back to their cars free up cars to drive away. */
+  /**
+   * Fans who chose to go back to their cars free up cars to drive away.
+   *
+   * The walk over the dots stays whole. `DensityField.occupied` cannot stand in
+   * for it: `DensityField.update` skips `gone` dots, so the very fans this loop
+   * is looking for are absent from the occupancy list, and driving demand off
+   * it would drop every event and change every result.
+   */
   private noticeFansAtCars(dots: DotStore, t: SimSeconds): void {
     for (let d = 0; d < dots.count; d++) {
       if (this.dotCounted[d] || dots.state[d] !== GONE_DOT) continue;
@@ -955,8 +1017,7 @@ export class TrafficModel {
         this.heading[i] = Math.atan2(DIR_DY[dir]!, DIR_DX[dir]!);
         this.speed[i] = this.type(i).maxSpeedMps * 0.6;
         this.mode[i] = anyLotOpen ? MODE_INBOUND : MODE_OUTBOUND;
-        this.occOwner[cell] = i + 1;
-        this.occCount[cell] = 1;
+        this.claimCell(cell, i);
         continue;
       }
 
@@ -1195,5 +1256,9 @@ export class TrafficModel {
     this.closedKey = '\u0000';
     this.lotsDirty = true;
     this.emsField = null;
+    // Occupancy is not carried in the snapshot; start it clean so the sparse
+    // clear cannot leave a count behind from the state we replaced.
+    this.occCount.fill(0);
+    this.occTouchedCount = 0;
   }
 }

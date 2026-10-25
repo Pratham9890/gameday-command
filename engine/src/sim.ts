@@ -124,6 +124,10 @@ export class Simulation {
    * the streets instead of a straight line through buildings.
    */
   private officerFields: FlowFields;
+  /** The incident zone as configured, for the dot count. */
+  private readonly zoneCells: readonly number[];
+  /** The same zone as one byte per map cell: membership is a single read. */
+  private readonly zoneMask: Uint8Array;
   /** Alerts that reached people since the app last asked, with who they reached. */
   private alerts: { t: SimSeconds; dots: Int32Array }[] = [];
   private readonly alerted: Uint8Array;
@@ -168,6 +172,11 @@ export class Simulation {
       this.officerHome.set(officer.id, officer.cell);
     }
     this.officerFields = new FlowFields(map);
+    this.zoneCells = config.incident.cells ?? [];
+    this.zoneMask = new Uint8Array(map.width * map.height);
+    for (const cell of this.zoneCells) {
+      if (cell >= 0 && cell < this.zoneMask.length) this.zoneMask[cell] = 1;
+    }
     // A package at game end only makes sense alongside the crowd leaving.
     this.hooks = createWorldHooks(
       config.incident,
@@ -403,6 +412,19 @@ export class Simulation {
     return out;
   }
 
+  /** True when any officer stands on an incident cell. */
+  private officerInZone(): boolean {
+    const mask = this.zoneMask;
+    for (const officer of this.ctx.officers) {
+      const cell = officer.cell;
+      // Officers are on the map; the fallback keeps an off-map cell exact.
+      if (cell >= 0 && cell < mask.length) {
+        if (mask[cell] === 1) return true;
+      } else if (this.zoneCells.includes(cell)) return true;
+    }
+    return false;
+  }
+
   private officerNear(cell: number): boolean {
     if (cell < 0) return false;
     const width = this.ctx.map.width;
@@ -582,14 +604,17 @@ export class Simulation {
     });
     const traffic = this.traffic?.metrics();
 
-    const zone = config.incident.cells ?? [];
+    const zone = this.zoneCells;
     this.scorer.observe({
       t: this.ctx.t,
       dt: SIM_DT,
       density: this.ctx.density.view(this.ctx.t),
       standingPerM2: this.ctx.density.standingPerM2,
+      // Live cells only: empty ones cannot cross a threshold, so the sums hold.
+      occupied: this.ctx.density.occupied,
+      occupiedCount: this.ctx.density.occupiedCount,
       dotsInZone: this.ctx.density.dotsInCells(zone),
-      officerInZone: zone.some((cell) => this.ctx.officers.some((o) => o.cell === cell)),
+      officerInZone: this.officerInZone(),
       officersCommitted: this.hooks.committedOfficers(),
       traffic,
     });

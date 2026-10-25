@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Briefing, DecisionDefaults, Incident, MapBundle, ResponsePlan, Scorecard, SimConfig, VehicleKind } from '../../contracts.ts';
-import { CELL_SIZE_M, DEFAULT_DANGER_DENSITY, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
+import { CELL_SIZE_M, DOT_GROUP_SIZE, FRAME_EVERY_S, VEHICLE_KINDS, VEHICLE_STATES } from '../../contracts.ts';
 import { FAN_TYPES, makePopulation } from '../../brain/src/fan-types.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { INCIDENT_LABELS, incidentsFor, windowFor } from '../../world/src/incidents.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { DEFAULT_VEHICLES, VEHICLE_TYPES, VEHICLE_TYPE_LIST } from '../../world/src/vehicles.ts';
-import { WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
+import { WEATHER_LABELS, WEATHER_TIMELINES, weatherTimeline } from '../../world/src/weather.ts';
 import { getBriefing, getDecisionDefaults, getMap, saveComparison } from './api.ts';
 import { ComparisonMaps, type FocusBox, type MapPick } from './ComparisonMaps.tsx';
 import { CrowdView } from './CrowdView.tsx';
 import { Inspector, type EditRequest } from './Inspector.tsx';
 import { applyDisabled, describeAction, PlanEditor } from './PlanEditor.tsx';
 import { OfficerPanel } from './OfficerPanel.tsx';
+import { OfficerRoster, ZoneTable, LotBoard } from './SideBoards.tsx';
 import { GatesPanel } from './GatesPanel.tsx';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
 import { clearText, clockText, incidentStatus, liveStats, rankPlans, verdictText } from './story.ts';
+import { wallClock } from './dayclock.ts';
 import { HOTSPOT_COLOUR, policeHotspots, standingDensity, type PoliceHotspot } from './congestion.ts';
 import { bandTotals, heatBands, hotspots, makePlaceIndex, type Hotspot } from './heat.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
@@ -40,7 +42,9 @@ const STADIUM_FANS = 100_000;
 const TEST_FANS = 1200;
 const OFFICERS = 24;
 const SPEEDS = [5, 20, 60] as const;
-const DANGER = DEFAULT_DANGER_DENSITY;
+// Per-run danger line: 3.5 p/m2, not the contract default 4. A 4 p/m2 line
+// only fires at the 5 p/m2 cap in this model, so plans separated by noise.
+const DANGER = 3.5;
 
 const fanCount = (map: MapBundle) => (map.width > 200 ? STADIUM_FANS : TEST_FANS);
 /** The test map is a gate wall and a lot with no streets between them. */
@@ -565,6 +569,12 @@ export function App() {
   const liveFans = loaded ? fanCount(loaded.map) : 0;
   const liveDots = runs[closeRun]!.latest.current?.frame.x.length ?? 0;
   const fansPerDot = liveDots > 0 ? Math.round(liveFans / liveDots) : null;
+  // The sky actually on the map for the run being shown, from its latest frame.
+  // The picker carries the scenario; a lightning delay overrides the scene after
+  // the scenario was picked, so the header must not read "Clear" over a storm.
+  // Null until the first frame, and nothing is rendered then.
+  const shownWeather = runs[closeRun]!.latest.current?.frame.weather ?? null;
+  const liveSky = shownWeather ? `${WEATHER_LABELS[shownWeather.kind]}, ${Math.round(shownWeather.tempC)}°C` : null;
   // People on their feet per run, which every colour and count below is built
   // from: seated fans are dense and safe, as in the scorecard's danger minutes.
   const standing = useMemo(
@@ -678,6 +688,13 @@ export function App() {
               </option>
             ))}
           </select>
+          {/* What the sky is doing on the map now, beside the scenario that was
+              picked: the two differ once an incident changes the weather. */}
+          {liveSky && (
+            <span className="live-sky" title="The sky in the run on the map right now">
+              on the map: {liveSky}
+            </span>
+          )}
           <label className="toggle" title="Simulate vehicle traffic alongside the crowd">
             <input type="checkbox" checked={trafficOn} onChange={(e) => setTrafficOn(e.target.checked)} disabled={!loaded || !hasRoads(loaded.map)} />
             vehicles
@@ -920,7 +937,7 @@ export function App() {
               </div>
 
               <div className="replay">
-                <span className="replay-label">{scrub === null ? 'Live' : clockText(scrubT ?? t)}</span>
+                <span className="replay-label">{wallClock(scrubT ?? t)} · {scrub === null ? 'Live' : clockText(scrubT ?? t)}</span>
                 <input
                   type="range"
                   min={0}
@@ -1096,6 +1113,8 @@ export function App() {
             )}
           </section>
 
+          {loaded && runs[closeRun] && <OfficerRoster map={loaded.map} run={runs[closeRun]!} />}
+
           <section className="panel">
             <h2>1 · Situation</h2>
             <div className="situations">
@@ -1157,8 +1176,16 @@ export function App() {
             </section>
           )}
 
+          {loaded && runs[closeRun] && <ZoneTable map={loaded.map} run={runs[closeRun]!} />}
+          {loaded && runs[closeRun] && <LotBoard map={loaded.map} run={runs[closeRun]!} />}
+
           <section className="panel verdict">
             <h2>3 · Verdict</h2>
+            {/* Who wrote this, at the top: a template summary folded into grey
+                type under the text still read as if a model had written it. */}
+            {allDone && briefing?.canned && (
+              <p className="verdict-template">Template briefing — the AI writer was not running, so this wording is fixed.</p>
+            )}
             {!allDone && <p className="muted">Appears when all three plans finish.</p>}
             {allDone && incident && (
               <>
@@ -1177,7 +1204,7 @@ export function App() {
                     <p className="briefing-text">{briefing.text}</p>
                     <p className="muted">
                       {briefing.canned
-                        ? 'Filled in from a template, because the on-device AI writer was not running.'
+                        ? 'Every figure is taken straight from the scorecards, with no judgement added.'
                         : 'Written by an on-device AI model. Every number in it is checked against the results.'}
                     </p>
                   </details>

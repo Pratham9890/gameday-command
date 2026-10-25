@@ -1,0 +1,8 @@
+/* Seized and dead gates, above the normal table. Red on purpose: a gate with a
+   queue and no admissions is an incident, not a row to read past. Colours match
+   .gates .bad / .gates .ok in styles.css; this file only adds the block layout,
+   which is scoped to the gates panel and owned by ORD-009. */
+.gates .gate-alerts { display: flex; flex-direction: column; gap: 3px; margin: 0 0 8px; }
+.gates .gate-alerts .alert { color: #ff8589; font-size: 12px; font-weight: 600; line-height: 1.35; }
+.gates .gate-alerts .alert.unused { color: #ffb3b5; }
+.gates .gate-alerts .alert strong { text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }

@@ -29,7 +29,12 @@ describe('plan step status', () => {
   it('reports how many fans an alert reached', () => {
     const alert = { at: 0, type: 'alert' as const, channel: 'pa' as const, message: 'Use Gate 2', reachShare: 0.7 };
     expect(stepStatus(alert, 0, 5, null, [], map)).toBe('going out…');
-    expect(stepStatus(alert, 0, 5, null, [{ t: 1, dots: new Int32Array(200) }], map)).toBe('reached 1,000 fans');
+    expect(stepStatus(alert, 0, 5, null, [{ t: 1, dots: new Int32Array(200) }], map)).toBe('reached 1,000 fans so far');
+    // a live count is not the share the plan aimed at, and must not read as one
+    const status = stepStatus(alert, 0, 5, null, [{ t: 1, dots: new Int32Array(200) }], map)!;
+    expect(status).toContain('so far');
+    expect(status).not.toContain('%');
+    expect(status).not.toContain('aimed at');
   });
 
   it('marks a door shut only once it really is', () => {

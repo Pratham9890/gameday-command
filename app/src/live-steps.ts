@@ -35,7 +35,9 @@ export function stepStatus(
     }
     case 'alert': {
       const sent = alerts.find((a) => a.t >= firedAt);
-      return sent ? `reached ${n(sent.dots.length * DOT_GROUP_SIZE)} fans` : 'going out…';
+      // "so far": this is what the alert has actually touched, not the share
+      // the plan aimed at (see describeAction in PlanEditor.tsx).
+      return sent ? `reached ${n(sent.dots.length * DOT_GROUP_SIZE)} fans so far` : 'going out…';
     }
     case 'close':
       return scene?.closed.includes(action.closableId) ? 'shut' : null;

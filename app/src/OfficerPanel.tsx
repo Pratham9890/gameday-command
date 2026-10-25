@@ -49,7 +49,7 @@ export function OfficerPanel({ map, run, label, officerId, onClose }: OfficerPan
             <dl className="detail">
               <dt>from their post</dt>
               <dd>{fromHome} m</dd>
-              <dt>fans spoken to</dt>
+              <dt>fans spoken to (modelled)</dt>
               <dd>{officer.told.toLocaleString()}</dd>
               <dt>did as told</dt>
               <dd>{share === null ? '—' : `${officer.followed.toLocaleString()} (${share}%)`}</dd>
@@ -59,7 +59,9 @@ export function OfficerPanel({ map, run, label, officerId, onClose }: OfficerPan
             <h4>What they do</h4>
             <p className="muted">
               Officers walk to where the plan sends them along the streets. On scene they keep directing the people around them: at a
-              jammed gate they send its queue to the next open gate, and each officer at a gate speeds up entry by 10%.
+              jammed gate they send its queue to the next open gate. These are model assumptions, not observations: this simulation
+              adds 10% to a gate's throughput for each officer standing on it, up to 40%, and counts a fan as spoken to when the
+              model has an officer address them.
             </p>
           </section>
         </>

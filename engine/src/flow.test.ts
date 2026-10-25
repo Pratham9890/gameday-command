@@ -8,7 +8,7 @@ import { playbookFor } from '../../world/src/playbook.ts';
 import { testGateSurge } from '../../world/src/incidents.ts';
 import { makeOfficers } from '../../world/src/officers.ts';
 import { DIR_DX, DIR_DY, FlowFields, stepCost, UNREACHABLE } from './flowfield.ts';
-import { densityFactor, FlowMovement, MAX_DOTS_PER_CELL, RHO_JAM } from './movement-flow.ts';
+import { densityFactor, FlowMovement, MAX_DOTS_PER_CELL, RHO_JAM, SEATS_PER_STANDS_CELL } from './movement-flow.ts';
 import { Simulation } from './sim.ts';
 
 const map = makeTestMap();
@@ -116,9 +116,10 @@ describe('density slows walking', () => {
   });
 
   it('is already well under half speed at the danger line', () => {
-    // 4 people per square meter is the scorecard's danger threshold
-    expect(densityFactor(4)).toBeLessThan(0.5);
-    expect(densityFactor(4)).toBeGreaterThan(0.2);
+    // 4 people per square meter is the scorecard's danger threshold.
+    // Weidmann gives 0.116 here; the old linear curve gave 0.259.
+    expect(densityFactor(4)).toBeLessThan(0.2);
+    expect(densityFactor(4)).toBeGreaterThan(0.1);
   });
 
   it('falls as density rises', () => {
@@ -171,7 +172,9 @@ async function runToEnd(sim: Simulation) {
 
 describe('FlowMovement on the test map', () => {
   it('starts everyone off the map, then walks them in and seats them', async () => {
-    const sim = makeSim();
+    // A run that starts at kickoff has no observed build-up to pre-seat, so it
+    // begins with everyone off-map even though their arrival time has passed.
+    const sim = makeSim({ startAt: 0 });
     const startStates = new Set(Array.from({ length: sim.ctx.dots.count }, (_, i) => sim.ctx.dots.stateOf(i)));
     expect(startStates).toEqual(new Set(['arriving']));
 
@@ -238,12 +241,20 @@ describe('FlowMovement on the test map', () => {
   });
 
   it('diverges when the plan changes but the seed does not', async () => {
-    const a = makeSim({ planIndex: 0 });
-    const c = makeSim({ planIndex: 2 });
-    await runToEnd(a);
-    await runToEnd(c);
-    // plan C closes the hot gate, so the crowd cannot end up in the same place
-    expect(Array.from(a.ctx.dots.state)).not.toEqual(Array.from(c.ctx.dots.state));
+    const a = makeSim({ planIndex: 0, incidentAt: -600 });
+    const c = makeSim({ planIndex: 2, incidentAt: -600 });
+    // Final dot states can converge now that seating is instant, so compare the
+    // gates' admitted flow over the run: plan C shuts the hot gate, plan A never
+    // does. Summing each step's rolling in/min leaves a different per-gate total.
+    const seenA = new Int32Array(map.places.length);
+    const seenC = new Int32Array(map.places.length);
+    while (!a.done || !c.done) {
+      if (!a.done) await a.step();
+      if (!c.done) await c.step();
+      for (const gate of a.gateStats()) seenA[gate.place] += gate.inPerMin;
+      for (const gate of c.gateStats()) seenC[gate.place] += gate.inPerMin;
+    }
+    expect(Array.from(seenA)).not.toEqual(Array.from(seenC));
   });
 
   it('never lets more dots into a cell than physically fit', async () => {
@@ -258,16 +269,28 @@ describe('FlowMovement on the test map', () => {
     while (!sim.done) {
       await sim.step();
       const counts = new Int32Array(map.cells.length);
-      const { x, y, state, count } = sim.ctx.dots;
+      const seatedCounts = new Int32Array(map.cells.length);
+      const { x, y, count } = sim.ctx.dots;
       for (let i = 0; i < count; i++) {
-        if (sim.ctx.dots.stateOf(i) === 'gone') continue;
+        const state = sim.ctx.dots.stateOf(i);
+        if (state === 'gone') continue;
         if (x[i]! < 0 || y[i]! < 0) continue;
-        counts[((y[i]! / CELL_SIZE_M) | 0) * width + ((x[i]! / CELL_SIZE_M) | 0)]!++;
+        const cell = ((y[i]! / CELL_SIZE_M) | 0) * width + ((x[i]! / CELL_SIZE_M) | 0);
+        counts[cell]!++;
+        if (state === 'seated') seatedCounts[cell]!++;
       }
-      void state;
-      let worst = 0;
-      for (let c = 0; c < counts.length; c++) if (counts[c]! > worst) worst = counts[c]!;
-      expect(worst, `t=${sim.ctx.t} packed ${worst} dots into one cell`).toBeLessThanOrEqual(MAX_DOTS_PER_CELL);
+      let worstStanding = 0;
+      let worstSeated = 0;
+      for (let c = 0; c < counts.length; c++) {
+        worstStanding = Math.max(worstStanding, counts[c]! - seatedCounts[c]!);
+        worstSeated = Math.max(worstSeated, seatedCounts[c]!);
+      }
+      expect(worstStanding, `t=${sim.ctx.t} packed ${worstStanding} standing dots into one cell`).toBeLessThanOrEqual(
+        MAX_DOTS_PER_CELL,
+      );
+      expect(worstSeated, `t=${sim.ctx.t} packed ${worstSeated} seated dots into one cell`).toBeLessThanOrEqual(
+        SEATS_PER_STANDS_CELL,
+      );
     }
   });
 
@@ -336,6 +359,25 @@ describe('FlowMovement on the test map', () => {
     expect(posted.length).toBe(6);
     expect(posted.every((o) => map.places[o.place]?.kind === 'gate')).toBe(true);
     expect(posted.reduce((n, o) => n + o.told, 0)).toBeGreaterThan(0);
+  });
+
+  it('redirects the whole queue when a gate shuts, not only the last 40 m', async () => {
+    const sim = makeSim({ fans: 4000, startAt: -600, endAt: 0, planIndex: 2, incidentAt: -300 });
+    let shut = -1;
+    let farTargets = 0;
+    while (!sim.done) {
+      await sim.step();
+      const stat = sim.gateStats().find((g) => !g.open);
+      if (!stat) continue;
+      shut = stat.place;
+      if (sim.ctx.t < -300 + 60) continue;
+      farTargets = 0;
+      for (let i = 0; i < sim.ctx.dots.count; i++) {
+        if (sim.ctx.dots.targetPlace[i] === shut && !sim['opts'].movement.describe!(i).admitted) farTargets++;
+      }
+      expect(farTargets).toBe(0);
+    }
+    expect(shut).toBeGreaterThanOrEqual(0);
   });
 
   it('enforces the gates: a shut gate passes nobody, and nobody gets in unscreened', async () => {

@@ -31,8 +31,9 @@ describe('Scorer against a hand count', () => {
 
     const card = scorer.finish();
 
-    // 2 cells over threshold x 0.5 min x 2 samples
-    expect(card.dangerMinutes).toBeCloseTo(2, 6);
+    // 2 cells over threshold, both within 30 m of the incident, so weight 2:
+    // 2 x 2 x 0.5 min x 2 samples = 4. (Old unweighted value: 2.)
+    expect(card.dangerMinutes).toBeCloseTo(4, 6);
     expect(card.peakDensity).toBeCloseTo(5, 6);
     // 3 officers x 60 seconds total
     expect(card.officerMinutesUsed).toBeCloseTo(3, 6);
@@ -57,7 +58,7 @@ describe('Scorer against a hand count', () => {
       officersCommitted: 0,
     });
     const card = scorer.finish();
-    expect(card.dangerMinutes).toBeCloseTo(1, 6); // one standing cell over 4, for one minute
+    expect(card.dangerMinutes).toBeCloseTo(2, 6); // one near-incident standing cell, weight 2, one minute
     expect(card.peakDensity).toBeCloseTo(4.5, 6);
   });
 
@@ -68,7 +69,7 @@ describe('Scorer against a hand count', () => {
     scorer.observe({ ...packed, t: 60, dt: 60 }); // before the incident: ignored
     scorer.observe({ ...packed, t: 120, dt: 60, density: grid([4.5, 0, 0, 0]) });
     const card = scorer.finish();
-    expect(card.dangerMinutes).toBeCloseTo(1, 6);
+    expect(card.dangerMinutes).toBeCloseTo(2, 6); // near the incident, weight 2
     expect(card.peakDensity).toBeCloseTo(4.5, 6);
   });
 

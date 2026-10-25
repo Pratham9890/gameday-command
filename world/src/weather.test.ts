@@ -60,7 +60,14 @@ describe('weather', () => {
     // Same seed, same crowd, slower feet: the frames must differ.
     expect(snow.frame().x).not.toEqual(clear.frame().x);
     expect(walkFactor(weatherAt(weatherTimeline('rain-at-kickoff'), 60))).toBeLessThan(1);
-    expect(driveFactor(weatherAt(weatherTimeline('fog'), 0))).toBeLessThan(0.6);
+    // Research coefficients: heavy rain costs 27% of walking speed, snow 20%,
+    // and fog has a driving floor near -12% (old: fog < 0.6).
+    expect(walkFactor(weatherAt(weatherTimeline('rain-at-kickoff'), 60))).toBeCloseTo(0.757, 3);
+    expect(walkFactor(weatherAt(weatherTimeline('snow'), 0))).toBeCloseTo(0.85, 3);
+    const fogDrive = driveFactor(weatherAt(weatherTimeline('fog'), 0));
+    expect(fogDrive).toBeCloseTo(0.88, 3);
+    expect(fogDrive).toBeGreaterThan(0.8);
+    expect(fogDrive).toBeLessThan(0.95);
   });
 
   it('follows the timeline and puts lightning over a lightning delay', () => {
@@ -72,6 +79,10 @@ describe('weather', () => {
     const after = weatherAt(weatherTimeline('clear'), 600, incident);
     expect(after.lightning).toBe(true);
     expect(decisionWeather(after)).toBe('lightning');
+    // The all-clear comes 30 minutes after the strike.
+    const cleared = weatherAt(weatherTimeline('clear'), 600 + 30 * 60, incident);
+    expect(cleared.lightning).toBe(false);
+    expect(decisionWeather(cleared)).toBe('clear');
   });
 
   it('maps every scenario onto the three skies a decision knows', () => {

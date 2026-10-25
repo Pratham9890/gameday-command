@@ -8,10 +8,11 @@ function doorFor(map: MapBundle, place: Place): Id | undefined {
   return map.closables.find((c) => c.cells.some((cell) => place.cells.includes(cell)))?.id;
 }
 
-/** A closable that is not a door of any place, i.e. a street segment. */
+/** A closable that is not a door of any place, i.e. a street segment. Woody Hayes when mapped. */
 function streetFor(map: MapBundle): Id | undefined {
   const doors = new Set(map.places.flatMap((p) => map.closables.filter((c) => c.cells.some((cell) => p.cells.includes(cell))).map((c) => c.id)));
-  return map.closables.find((c) => !doors.has(c.id))?.id;
+  const streets = map.closables.filter((c) => !doors.has(c.id));
+  return streets.find((c) => /Woody Hayes/i.test(c.name))?.id ?? streets[0]?.id;
 }
 
 /** Shelters if the map has them, otherwise concourses. Lightning needs somewhere indoors. */

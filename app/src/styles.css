@@ -530,3 +530,25 @@ main > .areas-panel, main > .vehicles-panel { margin-top: 12px; }
 .hotspots .level.high { background: #ff9b2b33; color: #ffbf73; }
 .hotspots .level.watch { background: #f5d54726; color: #f5d547; }
 .hotspots li.critical button { border-color: #ff3b5c88; }
+
+/* ORD-008 — honest labels: the live sky beside the scenario picker, and the
+   template-briefing label at the top of the verdict. New rules only. */
+.controls .live-sky { color: var(--dim); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.verdict .verdict-template {
+  margin: 0 0 10px; padding: 6px 10px; border-left: 3px solid #f5d547; border-radius: 4px;
+  background: #f5d54714; color: #f5d547; font-size: 12px;
+}
+
+
+/* Zone, lot and roster boards: keep figures in columns, never run into names. */
+.oc-table { overflow-x: auto; }
+.oc-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.oc-table th, .oc-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); white-space: nowrap; }
+.oc-table th { color: var(--muted); font-weight: 600; }
+.oc-num { text-align: right; font-variant-numeric: tabular-nums; }
+.lot-board { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.lot-board li { display: grid; grid-template-columns: minmax(0, 1fr) 64px 38px; gap: 8px; align-items: center; font-size: 12px; }
+.lot-board li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lot-board b { text-align: right; font-variant-numeric: tabular-nums; }
+.lot-board .oc-bar { position: relative; display: block; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; }
+.lot-board .oc-bar::after { content: ''; position: absolute; inset: 0 auto 0 0; width: var(--value, 0%); background: var(--accent, #7aa2ff); border-radius: 3px; }
