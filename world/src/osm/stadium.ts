@@ -595,6 +595,12 @@ export function buildStadiumMap(extract: OsmExtract, options: StadiumOptions = {
     fieldAxis: axis,
     sport,
     theme: options.theme ?? (options.id === undefined ? OHIO_THEME : themeFor(options.name ?? stadium?.tags?.name ?? '')),
+    geo: {
+      center: { lat: extract.center.lat, lon: extract.center.lon },
+      radiusM: extract.radiusM,
+      cellSizeM: CELL_SIZE_M,
+      projection: 'local-equirectangular',
+    },
     sources: [
       { label: 'Map geometry: OpenStreetMap contributors (ODbL)', url: `https://www.openstreetmap.org/${stadium.type}/${stadium.id}` },
       { label: `Fetched ${extract.fetchedAt.slice(0, 10)} via Overpass API`, url: 'https://overpass-api.de/' },

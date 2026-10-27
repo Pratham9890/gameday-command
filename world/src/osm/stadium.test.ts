@@ -20,6 +20,26 @@ suite('Ohio Stadium map from OpenStreetMap', () => {
     expect(map.width * CELL_SIZE_M).toBe(1600);
   });
 
+  it('carries the georeference the grid was rasterised with', () => {
+    const extract = loadExtract();
+    expect(map.geo).toEqual({
+      center: { lat: extract.center.lat, lon: extract.center.lon },
+      radiusM: extract.radiusM,
+      cellSizeM: CELL_SIZE_M,
+      projection: 'local-equirectangular',
+    });
+    // The grid is 2 * radiusM on a side, so the georeference and the size agree.
+    expect(map.width * CELL_SIZE_M).toBe(2 * map.geo!.radiusM);
+    // Inverting the projection puts the bowl's own OSM centre back on a stands cell.
+    const { center, radiusM } = map.geo!;
+    const toCell = (lat: number, lon: number) => {
+      const xM = (lon - center.lon) * 111_320 * Math.cos((center.lat * Math.PI) / 180) + radiusM;
+      const yM = (center.lat - lat) * 111_320 + radiusM;
+      return Math.floor(yM / CELL_SIZE_M) * map.width + Math.floor(xM / CELL_SIZE_M);
+    };
+    expect(['stands', 'concourse']).toContain(map.cells[toCell(center.lat, center.lon)]);
+  });
+
   it('finds the bowl, not the arena next door', () => {
     const stands = map.cells.filter((c) => c === 'stands').length;
     const concourse = map.cells.filter((c) => c === 'concourse').length;

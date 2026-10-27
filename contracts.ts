@@ -135,6 +135,26 @@ export interface MapBundle {
   sport?: 'football' | 'soccer' | 'cricket' | 'baseball';
   /** v2: the home team's colours, for the stands, field and gate badges. Hex like "#00274c". */
   theme?: StadiumTheme;
+  /**
+   * v3: where the grid sits on the Earth, so it can be drawn on a basemap.
+   * Absent for synthetic maps (the test map) and for imports saved before v3.
+   */
+  geo?: MapGeo;
+}
+
+/**
+ * v3: the grid's georeference. World metres run from the grid's north-west
+ * corner, x east and y south, through a local equirectangular projection
+ * (`world/src/osm/raster.ts` makeProjection):
+ *   lng = center.lon + (xM - radiusM) / (111320 * cos(center.lat))
+ *   lat = center.lat - (yM - radiusM) / 111320
+ */
+export interface MapGeo {
+  center: { lat: number; lon: number };
+  /** Half the grid's edge in metres: the grid is 2 * radiusM square. */
+  radiusM: number;
+  cellSizeM: number;
+  projection: 'local-equirectangular';
 }
 
 // ─────────────────────────── Crowd [C] ─────────────────────────────
