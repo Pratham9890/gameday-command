@@ -71,7 +71,7 @@ export function loadConfig(env: Env = process.env): PlatformConfig {
   if (Boolean(username) !== Boolean(password)) warnings.push('Admin bootstrap needs GAMEDAY_ADMIN_USER and GAMEDAY_ADMIN_PASSWORD (or _FILE); ignored.');
 
   const contact = env.GAMEDAY_FEED_CONTACT?.trim() || null;
-  const feedsWanted = env.GAMEDAY_FEEDS === undefined ? Boolean(contact) : flag(env.GAMEDAY_FEEDS);
+  const feedsWanted = env.GAMEDAY_FEEDS?.trim() ? flag(env.GAMEDAY_FEEDS) : Boolean(contact);
   if (feedsWanted && !contact) warnings.push('Feeds are on but GAMEDAY_FEED_CONTACT is empty; the NWS adapter stays off until a contact is set.');
 
   const lat = num(env.GAMEDAY_VENUE_LAT, OHIO_STADIUM.lat);
