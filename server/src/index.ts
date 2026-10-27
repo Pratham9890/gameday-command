@@ -146,6 +146,7 @@ export function createApp(db: Db, options: AppOptions = {}): Hono<AppEnv> {
   const warmLater = makeWarmer(db);
   const platform = createPlatform(db, options.config ?? loadConfig(), options);
 
+  platform.maps = (id) => (id === 'default' ? defaultMap() : mapById(id));
   const app = new Hono<AppEnv>();
   platforms.set(app, platform);
   mountPlatform(app, platform);

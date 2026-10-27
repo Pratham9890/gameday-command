@@ -1,4 +1,5 @@
 import { dirname, join, resolve } from 'node:path';
+import type { MapBundle } from '../../../contracts.ts';
 import type { Db } from '../db.ts';
 import type { Actor, AuthMode, Position } from '../types.ts';
 import type { PlatformConfig } from './config.ts';
@@ -43,6 +44,8 @@ export interface Platform {
   resolver: Resolver;
   transport: FetchTransport;
   hub: EventHub | null;
+  /** The map bundles the server can build (set by createApp), for GIS exports and sketches. */
+  maps: (id: string) => MapBundle | undefined;
   authMode(): AuthMode;
   /** The actor a live session acts as, or null if its account or display grant is gone. */
   actorForSession(session: SessionRow): Actor | null;
@@ -87,6 +90,7 @@ export function createPlatform(db: Db, config: PlatformConfig, opts: PlatformOpt
     resolver: fetchDeps.resolver,
     transport: fetchDeps.transport,
     hub: null,
+    maps: () => undefined,
     authMode: () => (config.demo ? 'demo' : users.count() === 0 ? 'setup' : 'accounts'),
     actorForSession(session) {
       if (session.kind === 'display') {
