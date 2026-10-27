@@ -17,7 +17,9 @@
     "serve": "node --watch server/src/index.ts",
     "fetch-map": "node world/scripts/fetch-map.ts",
     "warm": "node scripts/warm-cache.ts",
-    "seed:export": "node scripts/seed-export.ts"
+    "seed:export": "node scripts/seed-export.ts",
+    "admin:create": "node server/scripts/admin-create.ts",
+    "backup": "node server/scripts/backup.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

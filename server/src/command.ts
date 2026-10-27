@@ -6,6 +6,9 @@ import { fetchExtract, searchStadiums, stadiumFacts } from '../../world/src/osm/
 import { themeFor } from '../../world/src/teams.ts';
 import { buildStadiumMap, type OsmExtract, type StadiumOptions } from '../../world/src/osm/stadium.ts';
 import type { Db } from './db.ts';
+import type { AppEnv } from './platform/http.ts';
+import type { Platform } from './platform/platform.ts';
+import { fetchConditions } from './routes/feeds.ts';
 
 /**
  * Routes for the commander's brief: importing any stadium from OpenStreetMap,
@@ -14,8 +17,6 @@ import type { Db } from './db.ts';
  */
 
 const STADIUM_DIR = resolve(process.env.STADIUM_DIR ?? './data/stadiums');
-const FEED_TIMEOUT_MS = 8000;
-const FEED_MAX_BYTES = 512 * 1024;
 
 /** Byte progress is chatty: one line per 100 ms or 256 KB of growth, whichever comes first. */
 const IMPORT_PROGRESS_MS = 100;
@@ -167,7 +168,7 @@ export function migrateCommandTables(db: Db): void {
   `);
 }
 
-export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name: string; theme?: unknown }[], forget: (id: string) => void): void {
+export function addCommandRoutes(app: Hono<AppEnv>, db: Db, builtIn: { id: string; name: string; theme?: unknown }[], forget: (id: string) => void, platform: Platform): void {
   migrateCommandTables(db);
 
   app.get('/api/maps', (c) => c.json([...builtIn, ...importedIds().map((m) => ({ ...m, imported: true }))]));
@@ -264,24 +265,13 @@ export function addCommandRoutes(app: Hono, db: Db, builtIn: { id: string; name:
     return c.json(rows.map((r) => ({ ...JSON.parse(r.json), at: r.created_at })));
   });
 
-  // A live conditions feed, fetched here so the browser is not stopped by CORS. Text only, size-capped.
+  // A live conditions feed, fetched here so the browser is not stopped by CORS. Text only, size-capped,
+  // and only from hosts on the administrator's outbound allowlist: private, loopback and link-local
+  // addresses are refused even after DNS and redirects (PLT-14). It used to fetch any URL at all.
   app.post('/api/conditions/fetch', async (c) => {
     const { url } = await c.req.json<{ url: string }>();
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return c.json({ error: 'not a URL' }, 400);
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return c.json({ error: 'only http and https feeds' }, 400);
-    try {
-      const res = await fetch(parsed, { signal: AbortSignal.timeout(FEED_TIMEOUT_MS), headers: { accept: 'application/json, text/csv, text/plain' } });
-      if (!res.ok) return c.json({ error: `feed returned ${res.status}` }, 502);
-      const text = await res.text();
-      if (text.length > FEED_MAX_BYTES) return c.json({ error: 'feed is larger than 512 KB' }, 413);
-      return c.json({ text, fetchedAt: new Date().toISOString() });
-    } catch (error) {
-      return c.json({ error: `feed fetch failed: ${error instanceof Error ? error.message : String(error)}` }, 502);
-    }
+    const result = await fetchConditions(platform, c, String(url ?? ''));
+    if (!result.ok) return c.json({ error: result.error, ...(result.reason ? { reason: result.reason, message: result.message } : {}) }, result.status);
+    return c.json({ text: result.text, fetchedAt: result.fetchedAt });
   });
 }

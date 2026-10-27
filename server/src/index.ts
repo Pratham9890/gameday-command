@@ -1,4 +1,3 @@
-import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { BriefingRequest, DecisionAnswer, DecisionAsk, Incident, MapBundle, ResponsePlan, Scorecard } from '../../contracts.ts';
 import { DECISION_TIMEOUT_MS } from '../../contracts.ts';
@@ -8,12 +7,18 @@ import { oddsAreValid } from '../../brain/src/sample.ts';
 import { makeTestMap } from '../../world/src/test-map.ts';
 import { playbookFor } from '../../world/src/playbook.ts';
 import { buildStadiumMap, extractExists, loadExtract, STADIUM_MAP_ID } from '../../world/src/osm/stadium.ts';
-import { openDb, type Db } from './db.ts';
+import type { Db } from './db.ts';
 import { addCommandRoutes, importedMap } from './command.ts';
 import { OHIO_THEME } from '../../world/src/teams.ts';
 import { askKev } from './kev.ts';
 import { briefingIsSupported, templateBriefing } from './briefing.ts';
 import { askFm, briefingFrom } from './fm.ts';
+import type { AppEnv } from './platform/http.ts';
+import { loadConfig, type PlatformConfig } from './platform/config.ts';
+import { createPlatform, type Platform, type PlatformOptions } from './platform/platform.ts';
+import { mountPlatform } from './platform/app.ts';
+import { stampFor } from './routes/library.ts';
+import type { PlanDocumentBody } from './types.ts';
 
 const KEV_URL = process.env.KEV_URL ?? 'http://127.0.0.1:8009';
 /** What Kev's /v1/systemone accepts as a model name; GET /v1/models lists them. */
@@ -33,7 +38,6 @@ const KEV_CONCURRENCY = Number(process.env.KEV_CONCURRENCY ?? 4);
 /** Background warming has no commander waiting on it, so it can be patient. */
 const KEV_WARM_TIMEOUT_MS = Number(process.env.KEV_WARM_TIMEOUT_MS ?? 30000);
 const WARM_TIMEOUT_MS = KEV_WARM_TIMEOUT_MS;
-const PORT = Number(process.env.PORT ?? 8787);
 const FM_URL = process.env.FM_URL ?? 'http://127.0.0.1:8080';
 const FM_MODEL = process.env.FM_MODEL ?? 'system';
 const FM_TIMEOUT_MS = Number(process.env.FM_TIMEOUT_MS ?? 20000);
@@ -119,10 +123,32 @@ function makeWarmer(db: Db) {
   };
 }
 
-export function createApp(db: Db): Hono {
-  const warmLater = makeWarmer(db);
+export interface AppOptions extends PlatformOptions {
+  config?: PlatformConfig;
+}
 
-  const app = new Hono();
+const platforms = new WeakMap<object, Platform>();
+
+/** The platform services behind an app made by `createApp`. */
+export function platformOf(app: object): Platform {
+  const platform = platforms.get(app);
+  if (!platform) throw new Error('not an app made by createApp');
+  return platform;
+}
+
+/**
+ * The whole HTTP app: the v3 platform (accounts, roles, audit, events,
+ * documents, feeds, products) and every v2 route, each behind `can()`.
+ * `createApp(db)` with no options reads the environment, so with nothing set
+ * it behaves as before for loopback callers until the first account exists.
+ */
+export function createApp(db: Db, options: AppOptions = {}): Hono<AppEnv> {
+  const warmLater = makeWarmer(db);
+  const platform = createPlatform(db, options.config ?? loadConfig(), options);
+
+  const app = new Hono<AppEnv>();
+  platforms.set(app, platform);
+  mountPlatform(app, platform);
 
   app.get('/api/health', (c) =>
     c.json({
@@ -148,6 +174,7 @@ export function createApp(db: Db): Hono {
     db,
     [...(extractExists() ? [{ id: STADIUM_MAP_ID, name: 'Ohio Stadium + 0.5 mi', theme: OHIO_THEME }] : []), { id: TEST_MAP_ID, name: 'Three-gate test map' }],
     (id) => built.delete(id),
+    platform,
   );
 
   /**
@@ -235,24 +262,40 @@ export function createApp(db: Db): Hono {
     return c.json({ answers: asks.map((ask) => answers.get(ask.key) ?? fallbackFor(ask)) });
   });
 
+  /**
+   * The playbook's built-in plans, then saved ones. Saved plans now live in the
+   * versioned document store (scope `default`), so an edit survives a reload
+   * (audit defect D-14) and every save is attributed; rows from the v2 `plans`
+   * table are still read so an old database loses nothing.
+   */
   app.get('/api/plans', (c) => {
-    const kind = c.req.query('incident');
-    const saved = (db.prepare('select json from plans where incident = ?').all(kind ?? '') as { json: string }[]).map(
-      (row) => JSON.parse(row.json) as ResponsePlan,
-    );
+    const kind = c.req.query('incident') ?? '';
+    const legacy = (db.prepare('select json from plans where incident = ?').all(kind) as { json: string }[]).map((row) => JSON.parse(row.json) as ResponsePlan);
+    const versioned = platform.documents
+      .list({ kind: 'plan' })
+      .map((summary) => platform.documents.get(summary.id, summary.version)?.body as PlanDocumentBody | undefined)
+      .map((body) => body?.responsePlan)
+      .filter((plan): plan is ResponsePlan => Boolean(plan) && plan!.forIncident === kind);
+    const ids = new Set(versioned.map((p) => p.id));
     const builtIn = kind ? playbookFor(kind as ResponsePlan['forIncident'], defaultMap()) : [];
-    return c.json([...builtIn, ...saved]);
+    return c.json([...builtIn, ...legacy.filter((p) => !ids.has(p.id)), ...versioned]);
   });
 
   app.post('/api/plans', async (c) => {
     const plan = await c.req.json<ResponsePlan>();
     const id = plan.id || crypto.randomUUID();
-    db.prepare('insert or replace into plans (id, incident, json) values (?, ?, ?)').run(
-      id,
-      plan.forIncident,
-      JSON.stringify({ ...plan, id }),
-    );
-    return c.json({ id });
+    const responsePlan = { ...plan, id };
+    const actor = c.get('actor')!;
+    const stamp = stampFor(actor, 'plan.write');
+    const existing = platform.documents.latest(id);
+    try {
+      if (!existing) platform.documents.create(stamp, { id, kind: 'plan', scope: 'default', name: plan.name || id, body: { responsePlan } satisfies PlanDocumentBody });
+      else platform.documents.update(stamp, id, { expectedVersion: existing.version, name: plan.name || existing.name, body: { ...(existing.body as PlanDocumentBody), responsePlan } });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+    const saved = platform.documents.latest(id)!;
+    return c.json({ id, version: saved.version, revision: saved.revision, status: saved.status });
   });
 
   app.post('/api/comparisons', async (c) => {
@@ -290,10 +333,21 @@ export function createApp(db: Db): Hono {
 
 // Windows hands argv[1] over with backslashes; without this the server exits silently there.
 if (process.argv[1]?.replaceAll('\\', '/').includes('server/src/index.ts')) {
-  const db = openDb();
-  const app = createApp(db);
-  const cached = (db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n;
-  serve({ fetch: app.fetch, port: PORT });
-  console.log(`gameday server on http://127.0.0.1:${PORT} (kev ${KEV_URL}, fm ${FM_URL})`);
-  console.log(`${cached} decisions cached — fan decisions come from the model, not the fallback table`);
+  // Not a top-level await: server.ts imports this module, which must finish evaluating first.
+  void import('./server.ts')
+    .then(async ({ startServer }) => {
+      const running = await startServer();
+      const { platform } = running;
+      const cached = (platform.db.prepare('select count(*) as n from decision_cache').get() as { n: number }).n;
+      console.log(`gameday server on ${running.url} (kev ${KEV_URL}, fm ${FM_URL})`);
+      console.log(`${cached} decisions cached — fan decisions come from the model, not the fallback table`);
+      for (const line of running.notes) console.log(line);
+      const stop = () => void running.close().then(() => process.exit(0));
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+    })
+    .catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
+    });
 }
