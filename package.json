@@ -19,7 +19,8 @@
     "warm": "node scripts/warm-cache.ts",
     "seed:export": "node scripts/seed-export.ts",
     "admin:create": "node server/scripts/admin-create.ts",
-    "backup": "node server/scripts/backup.ts"
+    "backup": "node server/scripts/backup.ts",
+    "weather:check": "node server/scripts/weather-check.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -4,6 +4,10 @@
  */
 export type Check<T> = (value: unknown, path: string, errors: string[]) => T;
 export type Infer<C> = C extends Check<infer T> ? T : never;
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type OptionalKeys<S> = { [K in keyof S]: undefined extends Infer<S[K]> ? K : never }[keyof S];
+/** An object schema's type: fields checked with `v.optional` become optional properties. */
+export type Shape<S> = { [K in Exclude<keyof S, OptionalKeys<S>>]: Infer<S[K]> } & { [K in OptionalKeys<S>]?: Infer<S[K]> };
 
 const describe = (value: unknown) => (value === null ? 'null' : Array.isArray(value) ? 'an array' : typeof value);
 
@@ -64,11 +68,11 @@ export const v = {
       return value.map((entry, i) => item(entry, `${path}[${i}]`, errors));
     };
   },
-  object<S extends Record<string, Check<unknown>>>(shape: S, opts: { extra?: boolean } = {}): Check<{ [K in keyof S]: Infer<S[K]> }> {
+  object<S extends Record<string, Check<unknown>>>(shape: S, opts: { extra?: boolean } = {}): Check<Shape<S>> {
     return (value, path, errors) => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         errors.push(`${path}: expected an object, got ${describe(value)}`);
-        return {} as { [K in keyof S]: Infer<S[K]> };
+        return {} as Shape<S>;
       }
       const record = value as Record<string, unknown>;
       const out: Record<string, unknown> = opts.extra ? { ...record } : {};
@@ -79,7 +83,7 @@ export const v = {
       if (!opts.extra) {
         for (const key of Object.keys(record)) if (!(key in shape)) errors.push(`${path ? `${path}.` : ''}${key}: is not a known field`);
       }
-      return out as { [K in keyof S]: Infer<S[K]> };
+      return out as Shape<S>;
     };
   },
   optional<T>(check: Check<T>): Check<T | undefined> {
@@ -89,7 +93,7 @@ export const v = {
     return (value, path, errors) => (value === null ? null : check(value, path, errors));
   },
   /** Any JSON value, bounded in size and depth. */
-  json(opts: { maxBytes?: number; maxDepth?: number } = {}): Check<unknown> {
+  json(opts: { maxBytes?: number; maxDepth?: number } = {}): Check<JsonValue> {
     const { maxBytes = 2 * 1024 * 1024, maxDepth = 32 } = opts;
     return (value, path, errors) => {
       if (value === undefined) {
@@ -98,7 +102,7 @@ export const v = {
       }
       if (depthOf(value) > maxDepth) errors.push(`${path}: nested deeper than ${maxDepth}`);
       else if (JSON.stringify(value).length > maxBytes) errors.push(`${path}: larger than ${maxBytes} bytes`);
-      return value;
+      return value as JsonValue;
     };
   },
   record<T>(item: Check<T>, opts: { maxKeys?: number } = {}): Check<Record<string, T>> {

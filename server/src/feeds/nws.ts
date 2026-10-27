@@ -29,8 +29,13 @@ export const NWS_INTERVALS = {
   alertsMs: 60_000,
 };
 
-/** After these ages a part is marked stale. Observations are hourly; alerts must be current. */
-export const STALE_AFTER_S = { observation: 90 * 60, hourly: 3 * 60 * 60, alerts: 5 * 60 };
+/**
+ * After these ages a part is marked stale. An observation is judged by when it
+ * was observed (stations report hourly); the forecast and the alert list by
+ * when we last confirmed them with the NWS (a forecast grid is often several
+ * hours old and still current; an alert list we could not refresh is not).
+ */
+export const STALE_AFTER_S = { observation: 90 * 60, hourly: 2 * 60 * 60, alerts: 5 * 60 };
 
 interface QuantValue {
   unitCode?: string;
@@ -130,7 +135,7 @@ export function normalizeHourly(body: unknown, url: string, fetchedAt: number, n
     asOf,
     fetchedAt: iso(fetchedAt),
     staleAfterS: STALE_AFTER_S.hourly,
-    stale: ageS(asOf, now) > STALE_AFTER_S.hourly,
+    stale: (now - fetchedAt) / 1000 > STALE_AFTER_S.hourly,
     licence: LICENCE,
     url,
   };
@@ -382,7 +387,7 @@ export function restale(report: WeatherReport, now: number): WeatherReport {
     }
     parts.push(s);
   }
-  if (report.hourly) parts.push(stale(report.hourly.provenance, 'asOf'));
+  if (report.hourly) parts.push(stale(report.hourly.provenance, 'fetchedAt'));
   if (report.alerts) parts.push(stale(report.alerts.provenance, 'fetchedAt'));
   if (report.status === 'not_configured' || report.status === 'disabled') return report;
   const any = report.observation || report.hourly || report.alerts;
