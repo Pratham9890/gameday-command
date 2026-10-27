@@ -1,0 +1,150 @@
+{
+ "recordedAt": "2026-10-27T01:16:55Z",
+ "url": "https://api.weather.gov/alerts/active?point=40.0016,-83.0197",
+ "status": 200,
+ "headers": {
+  "content-type": "application/geo+json",
+  "etag": "W/\"da93513ef9cf99e3091b086f0b638a34\"",
+  "cache-control": "public, max-age=5, s-maxage=5",
+  "expires": "Tue, 27 Oct 2026 01:17:01 GMT",
+  "date": "Tue, 27 Oct 2026 01:16:56 GMT"
+ },
+ "body": {
+  "@context": [
+   "https://geojson.org/geojson-ld/geojson-context.jsonld",
+   {
+    "@version": "1.1",
+    "wx": "https://api.weather.gov/ontology#",
+    "@vocab": "https://api.weather.gov/ontology#"
+   }
+  ],
+  "type": "FeatureCollection",
+  "features": [
+   {
+    "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.a33cc2301e34db0d057a41c19f4119e9648a24a4.001.1",
+    "type": "Feature",
+    "geometry": {
+     "type": "Polygon",
+     "coordinates": [
+      [
+       [
+        -103.83,
+        30.83
+       ],
+       [
+        -103.66,
+        31.03
+       ],
+       [
+        -103.53,
+        31
+       ],
+       [
+        -103.27,
+        30.84
+       ],
+       [
+        -103.44,
+        30.66
+       ],
+       [
+        -103.44,
+        30.67
+       ],
+       [
+        -103.48,
+        30.64
+       ],
+       [
+        -103.83,
+        30.83
+       ]
+      ]
+     ]
+    },
+    "properties": {
+     "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.a33cc2301e34db0d057a41c19f4119e9648a24a4.001.1",
+     "@type": "wx:Alert",
+     "id": "urn:oid:2.49.0.1.840.0.a33cc2301e34db0d057a41c19f4119e9648a24a4.001.1",
+     "areaDesc": "Jeff Davis, TX; Pecos, TX; Reeves, TX",
+     "geocode": {
+      "SAME": [
+       "048243",
+       "048371",
+       "048389"
+      ],
+      "UGC": [
+       "TXC243",
+       "TXC371",
+       "TXC389"
+      ]
+     },
+     "affectedZones": [
+      "https://api.weather.gov/zones/county/TXC243",
+      "https://api.weather.gov/zones/county/TXC371",
+      "https://api.weather.gov/zones/county/TXC389"
+     ],
+     "references": [],
+     "sent": "2026-10-26T19:51:00-05:00",
+     "effective": "2026-10-26T19:51:00-05:00",
+     "onset": "2026-10-26T19:51:00-05:00",
+     "expires": "2026-10-26T23:45:00-05:00",
+     "ends": "2026-10-26T23:45:00-05:00",
+     "status": "Actual",
+     "messageType": "Alert",
+     "category": "Met",
+     "severity": "Severe",
+     "certainty": "Likely",
+     "urgency": "Immediate",
+     "event": "Flash Flood Warning",
+     "sender": "w-nws.webmaster@noaa.gov",
+     "senderName": "NWS Midland/Odessa TX",
+     "headline": "Flash Flood Warning issued October 26 at 7:51PM CDT until October 26 at 11:45PM CDT by NWS Midland/Odessa TX",
+     "description": "FFWMAF\n\nThe National Weather Service in Midland/Odessa has issued a\n\n* Flash Flood Warning for...\nEast Central Jeff Davis County in southwestern Texas...\nWest Central Pecos County in southwestern Texas...\nSouth Central Reeves County in southwestern Texas...\n\n* Until 1145 PM CDT.\n\n* At 751 PM CDT, Doppler radar indicated thunderstorms producing\nheavy rain across the warned area. Between 2 and 5 inches of rain\nhave fallen. Flash flooding is ongoing or expected to begin\nshortly.\n\nHAZARD...Flash flooding caused by thunderstorms.\n\nSOURCE...Radar indicated.\n\nIMPACT...Flash flooding of small creeks and streams, urban areas,\nhighways, streets and underpasses as well as other poor\ndrainage and low-lying areas.\n\n* Some locations that will experience flash flooding include...\nBalmorhea Lake and Saragosa.",
+     "instruction": "Turn around, don't drown when encountering flooded roads. Most flood\ndeaths occur in vehicles.\n\nBe especially cautious at night when it is harder to recognize the\ndangers of flooding.\n\nBe aware of your surroundings and do not drive on flooded roads.",
+     "response": "Avoid",
+     "note": null,
+     "parameters": {
+      "AWIPSidentifier": [
+       "FFWMAF"
+      ],
+      "WMOidentifier": [
+       "WGUS54 KMAF 270051"
+      ],
+      "flashFloodDetection": [
+       "RADAR INDICATED"
+      ],
+      "BLOCKCHANNEL": [
+       "EAS",
+       "NWEM",
+       "CMAS"
+      ],
+      "EAS-ORG": [
+       "WXR"
+      ],
+      "VTEC": [
+       "/O.NEW.KMAF.FF.W.0248.261027T0051Z-261027T0445Z/"
+      ],
+      "eventEndingTime": [
+       "2026-10-26T23:45:00-05:00"
+      ]
+     },
+     "scope": "Public",
+     "code": "IPAWSv1.0",
+     "language": "en-US",
+     "web": "http://www.weather.gov",
+     "eventCode": {
+      "SAME": [
+       "FFW"
+      ],
+      "NationalWeatherService": [
+       "FFW"
+      ]
+     }
+    }
+   }
+  ],
+  "title": "Recorded structure fixture: one real alert (Texas) used only to exercise parsing",
+  "updated": "2026-10-27T01:15:11+00:00"
+ }
+}

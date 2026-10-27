@@ -1,0 +1,123 @@
+{
+ "recordedAt": "2026-10-27T01:16:55Z",
+ "url": "https://api.weather.gov/points/40.0016,-83.0197",
+ "status": 200,
+ "headers": {
+  "content-type": "application/geo+json",
+  "cache-control": "public, max-age=86400, s-maxage=86400",
+  "expires": "Wed, 28 Oct 2026 01:16:47 GMT",
+  "date": "Tue, 27 Oct 2026 01:16:47 GMT"
+ },
+ "body": {
+  "@context": [
+   "https://geojson.org/geojson-ld/geojson-context.jsonld",
+   {
+    "@version": "1.1",
+    "wx": "https://api.weather.gov/ontology#",
+    "s": "https://schema.org/",
+    "geo": "http://www.opengis.net/ont/geosparql#",
+    "unit": "http://codes.wmo.int/common/unit/",
+    "@vocab": "https://api.weather.gov/ontology#",
+    "geometry": {
+     "@id": "s:GeoCoordinates",
+     "@type": "geo:wktLiteral"
+    },
+    "city": "s:addressLocality",
+    "state": "s:addressRegion",
+    "distance": {
+     "@id": "s:Distance",
+     "@type": "s:QuantitativeValue"
+    },
+    "bearing": {
+     "@type": "s:QuantitativeValue"
+    },
+    "value": {
+     "@id": "s:value"
+    },
+    "unitCode": {
+     "@id": "s:unitCode",
+     "@type": "@id"
+    },
+    "forecastOffice": {
+     "@type": "@id"
+    },
+    "forecastGridData": {
+     "@type": "@id"
+    },
+    "publicZone": {
+     "@type": "@id"
+    },
+    "county": {
+     "@type": "@id"
+    }
+   }
+  ],
+  "id": "https://api.weather.gov/points/40.0016,-83.0197",
+  "type": "Feature",
+  "geometry": {
+   "type": "Point",
+   "coordinates": [
+    -83.0197,
+    40.0016
+   ]
+  },
+  "properties": {
+   "@id": "https://api.weather.gov/points/40.0016,-83.0197",
+   "@type": "wx:Point",
+   "cwa": "ILN",
+   "type": "land",
+   "forecastOffice": "https://api.weather.gov/offices/ILN",
+   "gridId": "ILN",
+   "gridX": 84,
+   "gridY": 83,
+   "forecast": "https://api.weather.gov/gridpoints/ILN/84,83/forecast",
+   "forecastHourly": "https://api.weather.gov/gridpoints/ILN/84,83/forecast/hourly",
+   "forecastGridData": "https://api.weather.gov/gridpoints/ILN/84,83",
+   "observationStations": "https://api.weather.gov/gridpoints/ILN/84,83/stations",
+   "relativeLocation": {
+    "type": "Feature",
+    "geometry": {
+     "type": "Point",
+     "coordinates": [
+      -82.985594,
+      39.9855308
+     ]
+    },
+    "properties": {
+     "city": "Columbus",
+     "state": "OH",
+     "distance": {
+      "unitCode": "wmoUnit:m",
+      "value": 0
+     },
+     "bearing": {
+      "unitCode": "wmoUnit:degree_(angle)",
+      "value": 0
+     }
+    }
+   },
+   "forecastZone": "https://api.weather.gov/zones/forecast/OHZ055",
+   "county": "https://api.weather.gov/zones/county/OHC049",
+   "fireWeatherZone": "https://api.weather.gov/zones/fire/OHZ055",
+   "timeZone": "America/New_York",
+   "radarStation": "KILN",
+   "astronomicalData": {
+    "sunrise": "2026-10-27T07:55:48-04:00",
+    "sunset": "2026-10-27T18:36:02-04:00",
+    "transit": "2026-10-27T13:15:55-04:00",
+    "civilTwilightBegin": "2026-10-27T07:28:05-04:00",
+    "civilTwilightEnd": "2026-10-27T19:03:45-04:00",
+    "nauticalTwilightBegin": "2026-10-27T06:56:19-04:00",
+    "nauticalTwilightEnd": "2026-10-27T19:35:31-04:00",
+    "astronomicalTwilightBegin": "2026-10-27T06:24:52-04:00",
+    "astronomicalTwilightEnd": "2026-10-27T20:06:58-04:00"
+   },
+   "nwr": {
+    "transmitter": "KIG86",
+    "sameCode": "039049",
+    "areaBroadcast": "https://api.weather.gov/radio/KIG86/broadcast",
+    "pointBroadcast": "https://api.weather.gov/points/40.0016,-83.0197/radio"
+   }
+  }
+ }
+}
